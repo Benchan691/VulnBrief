@@ -1,0 +1,355 @@
+{% extends 'base.html' %}
+{% block title %}Newsletters{% endblock %}
+
+{% block content %}
+<div class="container">
+
+    <!-- Breadcrumb -->
+    <nav aria-label="breadcrumb" class="mt-2 mb-3">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item">
+                <a href="/"><i class="bi bi-house-door"></i> Home</a>
+            </li>
+            {% for crumb in breadcrumbs %}
+                {% if loop.last %}
+                    <li class="breadcrumb-item active">{{ crumb.name }}</li>
+                {% else %}
+                    <li class="breadcrumb-item">
+                        <a href="/?path={{ crumb.path }}">{{ crumb.name }}</a>
+                    </li>
+                {% endif %}
+            {% endfor %}
+        </ol>
+    </nav>
+
+    <!-- Page header -->
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <h2 class="mb-0">
+            <i class="bi bi-journals me-2"></i>
+            {% if breadcrumbs %}{{ breadcrumbs[-1].name }}{% else %}Newsletters{% endif %}
+        </h2>
+        <div class="d-flex gap-2 flex-wrap">
+            <a href="/en" target="_blank" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-display me-1"></i>Splunk EN
+            </a>
+            <a href="/cn" target="_blank" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-display me-1"></i>Splunk CN
+            </a>
+            <a href="/zh" target="_blank" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-display me-1"></i>Splunk ZH
+            </a>
+        </div>
+    </div>
+
+    <!-- Search -->
+    <div class="mb-3 position-relative">
+        <i class="bi bi-search position-absolute text-muted" style="top:50%;transform:translateY(-50%);left:12px;pointer-events:none;"></i>
+        <input type="text" id="search-input" class="form-control ps-4"
+               placeholder="Search files and folders…" autocomplete="off">
+    </div>
+
+    <!-- File table -->
+    <div class="card shadow-sm border-0">
+        <table class="table table-hover align-middle mb-0" id="file-table">
+            <thead class="table-dark">
+                <tr>
+                    <th>Name</th>
+                    <th style="width:90px">Size</th>
+                    <th style="width:155px">Modified</th>
+                    <th style="width:200px">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Up one level -->
+                {% if parent_path is not none %}
+                <tr>
+                    <td colspan="4">
+                        <a href="/?path={{ parent_path }}" class="text-decoration-none text-secondary">
+                            <i class="bi bi-arrow-up-circle me-2"></i>..
+                        </a>
+                    </td>
+                </tr>
+                {% endif %}
+
+                {% for entry in entries %}
+                <tr class="file-row">
+                    <!-- Name -->
+                    <td>
+                        {% if entry.is_dir %}
+                            <a href="/?path={{ entry.path }}" class="text-decoration-none fw-medium">
+                                <i class="bi bi-folder-fill me-2 text-warning"></i>{{ entry.name }}
+                            </a>
+                        {% elif entry.is_html %}
+                            <a href="/view/{{ entry.path }}" target="_blank" class="text-decoration-none">
+                                <i class="bi bi-file-earmark-code me-2 text-primary"></i>{{ entry.name }}
+                            </a>
+                        {% else %}
+                            <span class="text-muted">
+                                <i class="bi bi-file-earmark me-2"></i>{{ entry.name }}
+                            </span>
+                        {% endif %}
+                    </td>
+
+                    <!-- Size -->
+                    <td class="text-muted small">{{ entry.size or '—' }}</td>
+
+                    <!-- Modified -->
+                    <td class="text-muted small">{{ entry.mtime }}</td>
+
+                    <!-- Actions -->
+                    <td>
+                        {% if entry.is_html %}
+                        <div class="d-flex gap-1">
+                            <a href="/view/{{ entry.path }}" target="_blank"
+                               class="btn btn-outline-primary btn-sm" title="Open in new tab">
+                                <i class="bi bi-eye me-1"></i>View
+                            </a>
+                            <button class="btn btn-outline-secondary btn-sm btn-copy-html"
+                                    data-path="/view/{{ entry.path }}"
+                                    title="Copy raw HTML to clipboard">
+                                <i class="bi bi-clipboard me-1"></i>Copy HTML
+                            </button>
+                            <div class="dropdown">
+                                <button class="btn btn-outline-secondary btn-sm dropdown-toggle"
+                                        type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    Set as
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li>
+                                        <button class="dropdown-item btn-set-as"
+                                                data-lang="en"
+                                                data-path="{{ entry.path }}"
+                                                data-name="{{ entry.name }}">
+                                            <i class="bi bi-pin-angle me-2"></i>Splunk News (EN)
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button class="dropdown-item btn-set-as"
+                                                data-lang="cn"
+                                                data-path="{{ entry.path }}"
+                                                data-name="{{ entry.name }}">
+                                            <i class="bi bi-pin-angle me-2"></i>Splunk News (CN)
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button class="dropdown-item btn-set-as"
+                                                data-lang="zh"
+                                                data-path="{{ entry.path }}"
+                                                data-name="{{ entry.name }}">
+                                            <i class="bi bi-pin-angle me-2"></i>Splunk News (ZH)
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+
+                <!-- Empty state row -->
+                <tr id="empty-row" style="display:none;">
+                    <td colspan="4" class="text-center py-4 text-muted">
+                        <i class="bi bi-search me-2"></i>No results match your search.
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+
+        {% if not entries %}
+        <div class="text-center py-5 text-muted">
+            <i class="bi bi-folder2-open display-4 d-block mb-2"></i>
+            <p class="mb-0">This folder is empty.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- File count -->
+    {% if entries %}
+    <p class="text-muted small mt-2 mb-0" id="file-count">
+        {{ entries|length }} item{{ 's' if entries|length != 1 else '' }}
+    </p>
+    {% endif %}
+
+</div>
+{% endblock %}
+
+<!-- Set-As confirmation modal -->
+<div class="modal fade" id="setAsModal" tabindex="-1" aria-labelledby="setAsModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="setAsModalLabel"><i class="bi bi-pin-angle me-2"></i>Set as Splunk News</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="setAsModalBody"></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="setAsConfirmBtn">
+                    <i class="bi bi-check-lg me-1"></i>Confirm
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Copy-HTML toast -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999">
+    <div id="copy-toast" class="toast align-items-center text-bg-success border-0" role="alert" aria-live="polite" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body">
+                <i class="bi bi-clipboard-check me-2"></i>HTML copied to clipboard!
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    </div>
+    <div id="copy-toast-error" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="polite" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body">
+                <i class="bi bi-exclamation-triangle me-2"></i>Failed to copy HTML.
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    </div>
+    <div id="setas-toast" class="toast align-items-center text-bg-success border-0" role="alert" aria-live="polite" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body" id="setas-toast-body">
+                <i class="bi bi-check-circle me-2"></i>News file updated!
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    </div>
+    <div id="setas-toast-error" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="polite" aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body">
+                <i class="bi bi-exclamation-triangle me-2"></i>Failed to update news file.
+            </div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    </div>
+</div>
+
+{% block script %}
+<script>
+(function () {
+    const input = document.getElementById('search-input');
+    const rows  = document.querySelectorAll('#file-table .file-row');
+    const empty = document.getElementById('empty-row');
+    const count = document.getElementById('file-count');
+    const total = rows.length;
+
+    input.addEventListener('input', function () {
+        const q = this.value.toLowerCase().trim();
+        let visible = 0;
+
+        rows.forEach(function (row) {
+            const name = row.querySelector('td').textContent.toLowerCase();
+            const show = !q || name.includes(q);
+            row.style.display = show ? '' : 'none';
+            if (show) visible++;
+        });
+
+        if (empty) empty.style.display = (visible === 0 && q) ? '' : 'none';
+        if (count) count.textContent = q
+            ? visible + ' of ' + total + ' item' + (total !== 1 ? 's' : '')
+            : total + ' item' + (total !== 1 ? 's' : '');
+    });
+})();
+
+// Copy HTML to clipboard
+(function () {
+    const successToast = new bootstrap.Toast(document.getElementById('copy-toast'), { delay: 2500 });
+    const errorToast   = new bootstrap.Toast(document.getElementById('copy-toast-error'), { delay: 3000 });
+
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest('.btn-copy-html');
+        if (!btn) return;
+
+        const path = btn.dataset.path;
+        const icon = btn.querySelector('i');
+        btn.disabled = true;
+        icon.className = 'bi bi-hourglass-split me-1';
+
+        fetch(path)
+            .then(function (res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.text();
+            })
+            .then(function (html) {
+                return navigator.clipboard.writeText(html);
+            })
+            .then(function () {
+                icon.className = 'bi bi-clipboard-check me-1';
+                successToast.show();
+                setTimeout(function () {
+                    icon.className = 'bi bi-clipboard me-1';
+                    btn.disabled = false;
+                }, 2500);
+            })
+            .catch(function () {
+                icon.className = 'bi bi-clipboard me-1';
+                btn.disabled = false;
+                errorToast.show();
+            });
+    });
+})();
+
+// Set As
+(function () {
+    let pendingPath = null;
+    let pendingLang = null;
+    const modal       = new bootstrap.Modal(document.getElementById('setAsModal'));
+    const modalBody   = document.getElementById('setAsModalBody');
+    const confirmBtn  = document.getElementById('setAsConfirmBtn');
+    const successToast = new bootstrap.Toast(document.getElementById('setas-toast'),       { delay: 3000 });
+    const errorToast   = new bootstrap.Toast(document.getElementById('setas-toast-error'), { delay: 3000 });
+    const toastBody    = document.getElementById('setas-toast-body');
+
+    document.addEventListener('click', function (e) {
+        const btn = e.target.closest('.btn-set-as');
+        if (!btn) return;
+
+        pendingPath = btn.dataset.path;
+        pendingLang = btn.dataset.lang;
+        const name  = btn.dataset.name;
+        const label = pendingLang.toUpperCase();
+
+        modalBody.innerHTML =
+            '<p>Set <strong>' + name + '</strong> as <strong>Splunk News (' + label + ')</strong>?</p>' +
+            '<p class="text-muted small mb-0">This will overwrite the current <code>news_' + pendingLang + '.html</code>.</p>';
+        modal.show();
+    });
+
+    confirmBtn.addEventListener('click', function () {
+        if (!pendingPath || !pendingLang) return;
+
+        const path = pendingPath;
+        const lang = pendingLang;
+        pendingPath = pendingLang = null;
+
+        confirmBtn.disabled = true;
+        modal.hide();
+
+        fetch('/set-news', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path, lang: lang })
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        })
+        .then(function () {
+            toastBody.innerHTML = '<i class="bi bi-check-circle me-2"></i>Set as Splunk News (' + lang.toUpperCase() + ') successfully!';
+            successToast.show();
+        })
+        .catch(function () {
+            errorToast.show();
+        })
+        .finally(function () {
+            confirmBtn.disabled = false;
+        });
+    });
+})();
+</script>
+{% endblock %}

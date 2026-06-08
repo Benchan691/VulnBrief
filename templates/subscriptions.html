@@ -1,0 +1,309 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="mb-0"><i class="bi bi-people-fill me-2"></i>Subscription Management</h2>
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#subscriptionModal">
+            <i class="bi bi-plus-lg me-1"></i>Add Subscription
+        </button>
+    </div>
+
+    <table id="subscriptions-table" class="display w-100">
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Team</th>
+                <th>Subscriptions</th>
+                <th>Report</th>
+                <th>Actions</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+    </table>
+
+<!-- Modal -->
+<div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="editModalTitle">Source List</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="checkboxListContainer">
+          <!-- Checkbox list will be dynamically generated here -->
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" id="edit-confirm">Confirm</button>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="deleteModalTitle">Confirm To Delete</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="deleteConfirmContainer">
+          <!-- Checkbox list will be dynamically generated here -->
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="delete-confirm"><i class="bi bi-trash3 me-1"></i>Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="modal fade" id="subscriptionModal" tabindex="-1" aria-labelledby="subscriptionModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="subscriptionModalLabel">Add Subscription</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form action="{{ url_for('subscription.add_subscription') }}" method="post">
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email:</label>
+                        <input type="email" name="email" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="team" class="form-label">Team:</label>
+                        <input type="text" name="team" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Sources:</label><br>
+                        <div class="d-flex flex-wrap gap-2">
+                            {% for source in sources %}
+                                <div class="form-check border rounded px-3 py-1">
+                                    <input type="checkbox" name="subscriptions" value="{{source}}" class="form-check-input" id="add_{{ source }}">
+                                    <label class="form-check-label" for="add_{{ source }}">{{source}}</label>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="mb-3 d-flex gap-2">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="selectAll()">Select All</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetCheckboxes()">Reset</button>
+                    </div>
+                    <div class="mb-3">
+                        <button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-1"></i>Add Subscription</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>
+<script>
+    function selectAll() {
+        var checkboxes = document.querySelectorAll('input[name="subscriptions"]');
+        checkboxes.forEach(function(checkbox) {
+            checkbox.checked = true;
+        });
+    }
+    
+    function resetCheckboxes() {
+        var checkboxes = document.querySelectorAll('input[name="subscriptions"]');
+        checkboxes.forEach(function(checkbox) {
+            checkbox.checked = false;
+        });
+    }
+</script>
+<script>
+  "{% set s = sources %}"
+  var decodedString = "{{s}}".replace(/&#39;/g, '"');
+  var decodedString = $("<textarea/>").html(decodedString).text();
+  var sources = JSON.parse(decodedString);
+let table = new DataTable('#subscriptions-table',{
+  ajax:"{{ url_for('subscription.get_subscriptions') }}",
+  columns: [
+        { data: 'email' },
+        { data: 'team' },
+        { data: 'subscriptions' },
+        { data: null},
+        { data: null},
+        { data: null},
+    ],
+    columnDefs: [
+    {
+        defaultContent: '<div class="d-flex gap-1">' +
+          '<button class="btn btn-outline-primary btn-sm btn-action-edit" data-bs-toggle="modal" data-bs-target="#editModal" title="Edit subscriptions"><i class="bi bi-pencil"></i></button>' +
+          '<button class="btn btn-outline-danger btn-sm btn-action-delete" data-bs-toggle="modal" data-bs-target="#deleteModal" title="Delete"><i class="bi bi-trash3"></i></button>' +
+          '</div>',
+        targets: 4
+    },
+    {
+      data:'enable',
+      render: (data,type)=>{
+          if (data.enabled)
+          return '<button class="btn btn-success btn-sm btn-action-toggle-disable">Enabled</button>'
+        else
+        return '<button class="btn btn-secondary btn-sm btn-action-toggle-enable">Disabled</button>'
+        },
+        targets: 5
+    },
+    {
+      data:'report',
+      render: (data,type)=>{
+          if (data.report)
+          return '<button class="btn btn-success btn-sm btn-action-toggle-report-disable">Enabled</button>'
+        else
+        return '<button class="btn btn-secondary btn-sm btn-action-toggle-report-enable">Disabled</button>'
+        },
+        targets: 3
+    }
+    ]
+
+});
+table.on('click', '.btn-action-edit', function (e) {
+    let data = table.row(e.target.closest('tr')).data();
+    populateCheckboxList(data);
+});
+
+table.on('click', '.btn-action-delete', function (e) {
+    let data = table.row(e.target.closest('tr')).data();
+    var deleteConfirmContainer = document.getElementById('deleteConfirmContainer');
+    deleteConfirmContainer.innerHTML = `<p>Are you sure you want to delete <strong>${data.email}</strong>?</p><input id="delete-id" hidden value="${data.email}">`;
+});
+
+function toggle(data,enabled){
+  fetch("{{ url_for('subscription.toggle') }}", {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body:JSON.stringify({email:data.email,enabled})
+    }).then(()=>{table.ajax.reload(null,false);})
+}
+function toggleReport(data,enabled){
+  fetch("{{ url_for('subscription.toggle_report') }}", {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body:JSON.stringify({email:data.email,enabled})
+    }).then(()=>{table.ajax.reload(null,false);})
+}
+table.on('click', '.btn-action-toggle-enable', function (e) {
+  let data = table.row(e.target.closest('tr')).data();
+  toggle(data,true);
+  });
+table.on('click', '.btn-action-toggle-disable', function (e) {
+  let data = table.row(e.target.closest('tr')).data();
+  toggle(data,false);
+  });
+
+table.on('click', '.btn-action-toggle-report-enable', function (e) {
+  let data = table.row(e.target.closest('tr')).data();
+  toggleReport(data,true);
+  });
+table.on('click', '.btn-action-toggle-report-disable', function (e) {
+  let data = table.row(e.target.closest('tr')).data();
+  toggleReport(data,false);
+  });
+
+
+function populateCheckboxList(data) {
+  var checkboxListContainer = document.getElementById('checkboxListContainer');
+  checkboxListContainer.innerHTML = `<p id="customer-p"><strong>${data.email}</strong></p>`;
+
+  sources.forEach(function(source) {
+    var checkboxItem = document.createElement('div');
+    checkboxItem.className = 'form-check';
+
+    var checkboxInput = document.createElement('input');
+    checkboxInput.type = 'checkbox';
+    checkboxInput.className = 'form-check-input';
+    checkboxInput.value = source;
+    if (data.subscriptions.includes(source)){
+      checkboxInput.checked = true
+    }
+
+
+    var checkboxLabel = document.createElement('label');
+    checkboxLabel.className = 'form-check-label';
+    checkboxLabel.textContent = source;
+
+    checkboxItem.appendChild(checkboxInput);
+    checkboxItem.appendChild(checkboxLabel);
+
+    checkboxListContainer.appendChild(checkboxItem);
+  });
+}
+document.getElementById('editModal').addEventListener('show.bs.modal', function(event) {
+  var buttonId = event.relatedTarget.id;
+  var modalTitle = document.getElementById('editModalTitle');
+  modalTitle.textContent = "Edit Subscription List";
+  populateCheckboxList(buttonId);
+});
+
+function updateDictionary(buttonId) {
+  var checkboxListContainer = document.getElementById('checkboxListContainer');
+  var checkboxes = checkboxListContainer.querySelectorAll('input[type="checkbox"]');
+  var checkedSources = Array.from(checkboxes)
+    .filter(function(checkbox) {
+      return checkbox.checked;
+    })
+    .map(function(checkbox) {
+      return checkbox.value;
+    });
+
+  return checkedSources;
+}
+
+$("#edit-confirm").click(()=>{
+  var buttonId = document.getElementById('customer-p').textContent;
+  let checkedSources = updateDictionary(buttonId);
+  var modal = document.getElementById('editModal');
+  var modalInstance = bootstrap.Modal.getInstance(modal);
+  modalInstance.hide();
+  fetch('/edit_subscription', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({"email":buttonId,"subscriptions":checkedSources})
+  })
+    .then(function(response) {
+      // Handle the response from the backend
+      console.log('Dictionary updated successfully');
+      table.ajax.reload(null, false);
+    })
+    .catch(function(error) {
+      console.error('Error updating dictionary:', error);
+    });
+});
+
+$("#delete-confirm").click(()=>{
+  var buttonId = $('#delete-id').val();
+  console.log(buttonId);
+  var modal = document.getElementById('deleteModal');
+  var modalInstance = bootstrap.Modal.getInstance(modal);
+  modalInstance.hide();
+  fetch('/remove_subscription', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({"email":buttonId})
+  })
+    .then(function(response) {
+      // Handle the response from the backend
+      console.log('Deleted successfully');
+      table.ajax.reload(null, false);
+    })
+    .catch(function(error) {
+      console.error('Error updating dictionary:', error);
+    });
+});
+
+</script>
+{% endblock %}
