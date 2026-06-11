@@ -411,7 +411,7 @@ def store_completed_summary(reference, result, provider='company_ai'):
 
 
 def _requeue_task(task, owner, error, config, channel, claimed):
-    max_attempts = config.get('COMPANY_AI_MAX_TASK_ATTEMPTS', 10)
+    max_attempts = config['COMPANY_AI_MAX_TASK_ATTEMPTS']
     if (claimed or {}).get('attempts', 0) >= max_attempts:
         _fail_task(task, owner, error)
         return

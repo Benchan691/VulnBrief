@@ -64,7 +64,7 @@ Minimum sections:
 }
 ```
 
-Environment variables can override file settings (see `.env.example`). `RABBITMQ_URL` takes precedence over `rabbitmq.url` when set.
+Environment variables can override **any** loaded setting (see `.env.example`). `config/config.json` is still required as the base file; env wins when both are set. List values accept JSON arrays (`["a","b"]`) or comma-separated strings (`a,b`).
 
 TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them local if your deployment uses them.
 

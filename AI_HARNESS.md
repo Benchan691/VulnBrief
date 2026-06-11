@@ -99,7 +99,8 @@ python3 -m venv .venv
 RabbitMQ is hosted on CloudAMQP. Set `rabbitmq.url` in `config/config.json`
 to your `amqps://` connection URL (vhost, user, and password from the CloudAMQP
 dashboard). Queue name and priorities stay in the same `rabbitmq` section.
-`RABBITMQ_URL` and related env vars can still override file config when set.
+Every setting loaded from `config/config.json` can be overridden by an
+environment variable; see `.env.example` for the full list.
 
 Start the preprocessing worker and the web server in separate terminals:
 

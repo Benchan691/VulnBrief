@@ -115,3 +115,74 @@ def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
     assert overridden['COMPANY_AI_PARALLEL_CHATS'] == 9
     assert overridden['RABBITMQ_REPORT_PRIORITY'] == 7
     assert overridden['REPORT_JSON_ERROR_MESSAGE'] == 'Environment JSON error: ${error}'
+
+
+def test_file_only_settings_can_be_overridden_by_environment(tmp_path, monkeypatch):
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.json').write_text(
+        json.dumps({
+            'mongo_uri': 'mongodb://example/',
+            'web_database': 'web',
+            'vulnerabilities_database': 'vulnerabilities',
+            'flask_secret_key': 'secret',
+            'company_ai': {
+                'start_prompt': 'from-file',
+                'public_key_b64': 'file-key',
+                'sign_secret': 'file-secret',
+                'api_timezone': 'Asia/Shanghai',
+                'sse_connection_delay_seconds': 2,
+                'dataset_ids': ['file-dataset'],
+                'file_ids': ['file-id'],
+            },
+            'company_ai_preprocessing': {
+                'max_task_attempts': 10,
+            },
+            'report_processing': {
+                'item_json_retries': 2,
+                'final_json_retries': 2,
+                'deny_keys': ['raw'],
+                'deny_prefixes': ['raw_'],
+                'max_depth': 6,
+                'max_list_items': 100,
+                'max_string_chars': 12000,
+                'preview_after_each_item': True,
+            },
+        }),
+        encoding='utf-8',
+    )
+
+    monkeypatch.setenv('COMPANY_AI_START_PROMPT', 'from-env')
+    monkeypatch.setenv('COMPANY_AI_PUBLIC_KEY_B64', 'env-key')
+    monkeypatch.setenv('COMPANY_AI_SIGN_SECRET', 'env-secret')
+    monkeypatch.setenv('COMPANY_AI_API_TIMEZONE', 'UTC')
+    monkeypatch.setenv('COMPANY_AI_SSE_DELAY_SECONDS', '3.5')
+    monkeypatch.setenv('COMPANY_AI_DATASET_IDS', '["env-dataset"]')
+    monkeypatch.setenv('COMPANY_AI_FILE_IDS', 'env-file-a,env-file-b')
+    monkeypatch.setenv('COMPANY_AI_MAX_TASK_ATTEMPTS', '12')
+    monkeypatch.setenv('REPORT_ITEM_JSON_RETRIES', '6')
+    monkeypatch.setenv('REPORT_FINAL_JSON_RETRIES', '7')
+    monkeypatch.setenv('REPORT_DENY_KEYS', '["secret","raw"]')
+    monkeypatch.setenv('REPORT_DENY_PREFIXES', 'tmp_,raw_')
+    monkeypatch.setenv('REPORT_MAX_DEPTH', '9')
+    monkeypatch.setenv('REPORT_MAX_LIST_ITEMS', '42')
+    monkeypatch.setenv('REPORT_MAX_STRING_CHARS', '5000')
+    monkeypatch.setenv('REPORT_PREVIEW_AFTER_EACH_ITEM', 'false')
+
+    loaded = load_application_config(str(tmp_path))
+    assert loaded['COMPANY_AI_START_PROMPT'] == 'from-env'
+    assert loaded['COMPANY_AI_PUBLIC_KEY_B64'] == 'env-key'
+    assert loaded['COMPANY_AI_SIGN_SECRET'] == 'env-secret'
+    assert loaded['COMPANY_AI_API_TIMEZONE'] == 'UTC'
+    assert loaded['COMPANY_AI_SSE_DELAY_SECONDS'] == 3.5
+    assert loaded['COMPANY_AI_DATASET_IDS'] == ['env-dataset']
+    assert loaded['COMPANY_AI_FILE_IDS'] == ['env-file-a', 'env-file-b']
+    assert loaded['COMPANY_AI_MAX_TASK_ATTEMPTS'] == 12
+    assert loaded['REPORT_ITEM_JSON_RETRIES'] == 6
+    assert loaded['REPORT_FINAL_JSON_RETRIES'] == 7
+    assert loaded['REPORT_DENY_KEYS'] == ['secret', 'raw']
+    assert loaded['REPORT_DENY_PREFIXES'] == ['tmp_', 'raw_']
+    assert loaded['REPORT_MAX_DEPTH'] == 9
+    assert loaded['REPORT_MAX_LIST_ITEMS'] == 42
+    assert loaded['REPORT_MAX_STRING_CHARS'] == 5000
+    assert loaded['REPORT_PREVIEW_AFTER_EACH_ITEM'] is False
