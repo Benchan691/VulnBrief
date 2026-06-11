@@ -1,309 +1,328 @@
 {% extends 'base.html' %}
+{% block title %}Subscriptions{% endblock %}
+
 {% block content %}
 <div class="container">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="mb-0"><i class="bi bi-people-fill me-2"></i>Subscription Management</h2>
-        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#subscriptionModal">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+            <h2 class="mb-1"><i class="bi bi-people me-2"></i>Subscription Management</h2>
+            <p class="text-muted mb-0">Manage review-collection subscriptions and run recent selections for Vulnerability Reviews.</p>
+        </div>
+        <button id="add-btn" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#subscription-modal">
             <i class="bi bi-plus-lg me-1"></i>Add Subscription
         </button>
     </div>
 
-    <table id="subscriptions-table" class="display w-100">
-        <thead>
-            <tr>
-                <th>Email</th>
-                <th>Team</th>
-                <th>Subscriptions</th>
-                <th>Report</th>
-                <th>Actions</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-    </table>
-
-<!-- Modal -->
-<div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title" id="editModalTitle">Source List</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+    <div id="message" class="alert d-none" role="alert"></div>
+    <div class="card shadow-sm border-0 overflow-hidden">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Email</th>
+                        <th>Team</th>
+                        <th>Subscription List</th>
+                        <th style="width:210px">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="subscription-rows"></tbody>
+            </table>
         </div>
-        <div class="modal-body" id="checkboxListContainer">
-          <!-- Checkbox list will be dynamically generated here -->
+        <div id="loading" class="text-center text-muted py-5">
+            <div class="spinner-border spinner-border-sm me-2"></div>Loading subscriptions...
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-primary" id="edit-confirm">Confirm</button>
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-        </div>
-      </div>
+        <div id="empty" class="text-center text-muted py-5 d-none">No subscriptions yet.</div>
     </div>
-  </div>
+</div>
 
-<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title" id="deleteModalTitle">Confirm To Delete</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body" id="deleteConfirmContainer">
-          <!-- Checkbox list will be dynamically generated here -->
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="button" class="btn btn-danger" id="delete-confirm"><i class="bi bi-trash3 me-1"></i>Delete</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="modal fade" id="subscriptionModal" tabindex="-1" aria-labelledby="subscriptionModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
+<div class="modal fade" id="subscription-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="subscriptionModalLabel">Add Subscription</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <h5 class="modal-title" id="subscription-modal-title">Add Subscription</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
-                <form action="{{ url_for('subscription.add_subscription') }}" method="post">
-                    <div class="mb-3">
-                        <label for="email" class="form-label">Email:</label>
-                        <input type="email" name="email" class="form-control" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="team" class="form-label">Team:</label>
-                        <input type="text" name="team" class="form-control" required>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Sources:</label><br>
-                        <div class="d-flex flex-wrap gap-2">
-                            {% for source in sources %}
-                                <div class="form-check border rounded px-3 py-1">
-                                    <input type="checkbox" name="subscriptions" value="{{source}}" class="form-check-input" id="add_{{ source }}">
-                                    <label class="form-check-label" for="add_{{ source }}">{{source}}</label>
-                                </div>
-                            {% endfor %}
+            <form id="subscription-form">
+                <div class="modal-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label for="email" class="form-label">Email</label>
+                            <input id="email" type="email" class="form-control" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="team" class="form-label">Team</label>
+                            <input id="team" class="form-control" required>
                         </div>
                     </div>
-                    <div class="mb-3 d-flex gap-2">
-                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="selectAll()">Select All</button>
-                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetCheckboxes()">Reset</button>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <label class="form-label mb-0">Review Collections</label>
+                        <div class="d-flex gap-2">
+                            <button id="select-all-btn" type="button" class="btn btn-outline-secondary btn-sm">Select All</button>
+                            <button id="reset-btn" type="button" class="btn btn-outline-secondary btn-sm">Reset</button>
+                        </div>
                     </div>
-                    <div class="mb-3">
-                        <button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-lg me-1"></i>Add Subscription</button>
-                    </div>
-                </form>
-            </div>
+                    <div id="collection-options" class="d-flex flex-wrap gap-2"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="run-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Run Recent Selection</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="run-form">
+                <div class="modal-body">
+                    <p id="run-description" class="text-muted"></p>
+                    <div class="mb-3">
+                        <label for="run-window" class="form-label">Time Window</label>
+                        <select id="run-window" class="form-select">
+                            <option value="daily" selected>Daily (today 00:00 to now)</option>
+                            <option value="week">Week (last 7 days to now)</option>
+                            <option value="custom">Custom range</option>
+                        </select>
+                    </div>
+                    <div id="custom-window-fields" class="d-none">
+                        <div class="mb-3">
+                            <label for="run-start-custom" class="form-label">Start</label>
+                            <input id="run-start-custom" type="datetime-local" class="form-control">
+                        </div>
+                        <div>
+                            <label for="run-end-custom" class="form-label">End</label>
+                            <input id="run-end-custom" type="datetime-local" class="form-control">
+                        </div>
+                    </div>
+                    <p class="text-muted small mt-3 mb-0">Times use Asia/Hong_Kong. A successful Run replaces the current Vulnerability Reviews selection.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button id="run-confirm" type="submit" class="btn btn-success"><i class="bi bi-play-fill me-1"></i>Run</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
 {% block script %}
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>
 <script>
-    function selectAll() {
-        var checkboxes = document.querySelectorAll('input[name="subscriptions"]');
-        checkboxes.forEach(function(checkbox) {
-            checkbox.checked = true;
+(function () {
+    const subscriptionsUrl = {{ url_for('subscription.get_subscriptions')|tojson }};
+    const reviewsUrl = {{ url_for('review.get_review_collections')|tojson }};
+    const reviewsPageUrl = {{ url_for('review.reviews')|tojson }};
+    const selectionStorageKey = 'vulnerabilityReviewSelections';
+    const rows = document.getElementById('subscription-rows');
+    const loading = document.getElementById('loading');
+    const empty = document.getElementById('empty');
+    const message = document.getElementById('message');
+    const options = document.getElementById('collection-options');
+    const subscriptionModal = new bootstrap.Modal(document.getElementById('subscription-modal'));
+    const runModal = new bootstrap.Modal(document.getElementById('run-modal'));
+    const runWindow = document.getElementById('run-window');
+    const customWindowFields = document.getElementById('custom-window-fields');
+    let subscriptions = [];
+    let reviewCollections = [];
+    let editingEmail = null;
+    let runningEmail = null;
+
+    function apiUrl(email, suffix) {
+        return subscriptionsUrl + '/' + encodeURIComponent(email) + (suffix || '');
+    }
+
+    function showMessage(text, kind) {
+        message.textContent = text;
+        message.className = 'alert alert-' + kind;
+    }
+
+    function requestJson(url, options) {
+        return fetch(url, options).then(function (response) {
+            return response.json().then(function (body) {
+                if (!response.ok) throw new Error(body.error || 'Request failed.');
+                return body;
+            });
         });
     }
-    
-    function resetCheckboxes() {
-        var checkboxes = document.querySelectorAll('input[name="subscriptions"]');
-        checkboxes.forEach(function(checkbox) {
-            checkbox.checked = false;
+
+    function selectedCollections() {
+        return Array.from(options.querySelectorAll('input:checked')).map(function (input) {
+            return input.value;
         });
     }
-</script>
-<script>
-  "{% set s = sources %}"
-  var decodedString = "{{s}}".replace(/&#39;/g, '"');
-  var decodedString = $("<textarea/>").html(decodedString).text();
-  var sources = JSON.parse(decodedString);
-let table = new DataTable('#subscriptions-table',{
-  ajax:"{{ url_for('subscription.get_subscriptions') }}",
-  columns: [
-        { data: 'email' },
-        { data: 'team' },
-        { data: 'subscriptions' },
-        { data: null},
-        { data: null},
-        { data: null},
-    ],
-    columnDefs: [
-    {
-        defaultContent: '<div class="d-flex gap-1">' +
-          '<button class="btn btn-outline-primary btn-sm btn-action-edit" data-bs-toggle="modal" data-bs-target="#editModal" title="Edit subscriptions"><i class="bi bi-pencil"></i></button>' +
-          '<button class="btn btn-outline-danger btn-sm btn-action-delete" data-bs-toggle="modal" data-bs-target="#deleteModal" title="Delete"><i class="bi bi-trash3"></i></button>' +
-          '</div>',
-        targets: 4
-    },
-    {
-      data:'enable',
-      render: (data,type)=>{
-          if (data.enabled)
-          return '<button class="btn btn-success btn-sm btn-action-toggle-disable">Enabled</button>'
-        else
-        return '<button class="btn btn-secondary btn-sm btn-action-toggle-enable">Disabled</button>'
-        },
-        targets: 5
-    },
-    {
-      data:'report',
-      render: (data,type)=>{
-          if (data.report)
-          return '<button class="btn btn-success btn-sm btn-action-toggle-report-disable">Enabled</button>'
-        else
-        return '<button class="btn btn-secondary btn-sm btn-action-toggle-report-enable">Disabled</button>'
-        },
-        targets: 3
-    }
-    ]
 
-});
-table.on('click', '.btn-action-edit', function (e) {
-    let data = table.row(e.target.closest('tr')).data();
-    populateCheckboxList(data);
-});
-
-table.on('click', '.btn-action-delete', function (e) {
-    let data = table.row(e.target.closest('tr')).data();
-    var deleteConfirmContainer = document.getElementById('deleteConfirmContainer');
-    deleteConfirmContainer.innerHTML = `<p>Are you sure you want to delete <strong>${data.email}</strong>?</p><input id="delete-id" hidden value="${data.email}">`;
-});
-
-function toggle(data,enabled){
-  fetch("{{ url_for('subscription.toggle') }}", {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body:JSON.stringify({email:data.email,enabled})
-    }).then(()=>{table.ajax.reload(null,false);})
-}
-function toggleReport(data,enabled){
-  fetch("{{ url_for('subscription.toggle_report') }}", {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body:JSON.stringify({email:data.email,enabled})
-    }).then(()=>{table.ajax.reload(null,false);})
-}
-table.on('click', '.btn-action-toggle-enable', function (e) {
-  let data = table.row(e.target.closest('tr')).data();
-  toggle(data,true);
-  });
-table.on('click', '.btn-action-toggle-disable', function (e) {
-  let data = table.row(e.target.closest('tr')).data();
-  toggle(data,false);
-  });
-
-table.on('click', '.btn-action-toggle-report-enable', function (e) {
-  let data = table.row(e.target.closest('tr')).data();
-  toggleReport(data,true);
-  });
-table.on('click', '.btn-action-toggle-report-disable', function (e) {
-  let data = table.row(e.target.closest('tr')).data();
-  toggleReport(data,false);
-  });
-
-
-function populateCheckboxList(data) {
-  var checkboxListContainer = document.getElementById('checkboxListContainer');
-  checkboxListContainer.innerHTML = `<p id="customer-p"><strong>${data.email}</strong></p>`;
-
-  sources.forEach(function(source) {
-    var checkboxItem = document.createElement('div');
-    checkboxItem.className = 'form-check';
-
-    var checkboxInput = document.createElement('input');
-    checkboxInput.type = 'checkbox';
-    checkboxInput.className = 'form-check-input';
-    checkboxInput.value = source;
-    if (data.subscriptions.includes(source)){
-      checkboxInput.checked = true
+    function renderCollectionOptions(selected) {
+        options.replaceChildren();
+        reviewCollections.forEach(function (name) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'form-check border rounded px-3 py-2';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'form-check-input';
+            input.value = name;
+            input.id = 'subscription-' + name;
+            input.checked = selected.includes(name);
+            const label = document.createElement('label');
+            label.className = 'form-check-label';
+            label.htmlFor = input.id;
+            label.textContent = name;
+            wrapper.append(input, label);
+            options.append(wrapper);
+        });
     }
 
+    function renderRows() {
+        rows.replaceChildren();
+        empty.classList.toggle('d-none', subscriptions.length !== 0);
+        subscriptions.forEach(function (subscription) {
+            const row = document.createElement('tr');
+            [subscription.email, subscription.team, subscription.subscriptions.join(', ') || '—'].forEach(function (value) {
+                const cell = document.createElement('td');
+                cell.textContent = value;
+                row.append(cell);
+            });
+            const action = document.createElement('td');
+            action.innerHTML =
+                '<div class="d-flex gap-1">' +
+                '<button class="btn btn-success btn-sm run-btn"><i class="bi bi-play-fill me-1"></i>Run</button>' +
+                '<button class="btn btn-outline-primary btn-sm edit-btn"><i class="bi bi-pencil"></i></button>' +
+                '<button class="btn btn-outline-danger btn-sm delete-btn"><i class="bi bi-trash3"></i></button>' +
+                '</div>';
+            action.querySelector('.run-btn').addEventListener('click', function () {
+                runningEmail = subscription.email;
+                document.getElementById('run-description').textContent =
+                    subscription.email + ' — ' + (subscription.subscriptions.join(', ') || 'No review collections selected');
+                runWindow.value = 'daily';
+                customWindowFields.classList.add('d-none');
+                runModal.show();
+            });
+            action.querySelector('.edit-btn').addEventListener('click', function () {
+                editingEmail = subscription.email;
+                document.getElementById('subscription-modal-title').textContent = 'Edit Subscription List';
+                document.getElementById('email').value = subscription.email;
+                document.getElementById('email').disabled = true;
+                document.getElementById('team').value = subscription.team;
+                document.getElementById('team').disabled = true;
+                renderCollectionOptions(subscription.subscriptions);
+                subscriptionModal.show();
+            });
+            action.querySelector('.delete-btn').addEventListener('click', function () {
+                if (!window.confirm('Delete subscription for ' + subscription.email + '?')) return;
+                requestJson(apiUrl(subscription.email), { method: 'DELETE' })
+                    .then(loadSubscriptions)
+                    .catch(function (reason) { showMessage(reason.message, 'danger'); });
+            });
+            row.append(action);
+            rows.append(row);
+        });
+    }
 
-    var checkboxLabel = document.createElement('label');
-    checkboxLabel.className = 'form-check-label';
-    checkboxLabel.textContent = source;
+    function loadSubscriptions() {
+        loading.classList.remove('d-none');
+        return requestJson(subscriptionsUrl)
+            .then(function (body) {
+                subscriptions = body.data;
+                renderRows();
+            })
+            .catch(function (reason) { showMessage(reason.message, 'danger'); })
+            .finally(function () { loading.classList.add('d-none'); });
+    }
 
-    checkboxItem.appendChild(checkboxInput);
-    checkboxItem.appendChild(checkboxLabel);
+    function runPayload() {
+        const windowValue = runWindow.value;
+        if (windowValue === 'custom') {
+            const start = document.getElementById('run-start-custom').value;
+            const end = document.getElementById('run-end-custom').value;
+            if (!start || !end) {
+                throw new Error('Custom window requires start and end times.');
+            }
+            return { window: 'custom', start: start, end: end };
+        }
+        return { window: windowValue };
+    }
 
-    checkboxListContainer.appendChild(checkboxItem);
-  });
-}
-document.getElementById('editModal').addEventListener('show.bs.modal', function(event) {
-  var buttonId = event.relatedTarget.id;
-  var modalTitle = document.getElementById('editModalTitle');
-  modalTitle.textContent = "Edit Subscription List";
-  populateCheckboxList(buttonId);
-});
-
-function updateDictionary(buttonId) {
-  var checkboxListContainer = document.getElementById('checkboxListContainer');
-  var checkboxes = checkboxListContainer.querySelectorAll('input[type="checkbox"]');
-  var checkedSources = Array.from(checkboxes)
-    .filter(function(checkbox) {
-      return checkbox.checked;
-    })
-    .map(function(checkbox) {
-      return checkbox.value;
+    document.getElementById('add-btn').addEventListener('click', function () {
+        editingEmail = null;
+        document.getElementById('subscription-modal-title').textContent = 'Add Subscription';
+        document.getElementById('subscription-form').reset();
+        document.getElementById('email').disabled = false;
+        document.getElementById('team').disabled = false;
+        renderCollectionOptions([]);
     });
 
-  return checkedSources;
-}
-
-$("#edit-confirm").click(()=>{
-  var buttonId = document.getElementById('customer-p').textContent;
-  let checkedSources = updateDictionary(buttonId);
-  var modal = document.getElementById('editModal');
-  var modalInstance = bootstrap.Modal.getInstance(modal);
-  modalInstance.hide();
-  fetch('/edit_subscription', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({"email":buttonId,"subscriptions":checkedSources})
-  })
-    .then(function(response) {
-      // Handle the response from the backend
-      console.log('Dictionary updated successfully');
-      table.ajax.reload(null, false);
-    })
-    .catch(function(error) {
-      console.error('Error updating dictionary:', error);
+    runWindow.addEventListener('change', function () {
+        customWindowFields.classList.toggle('d-none', runWindow.value !== 'custom');
     });
-});
 
-$("#delete-confirm").click(()=>{
-  var buttonId = $('#delete-id').val();
-  console.log(buttonId);
-  var modal = document.getElementById('deleteModal');
-  var modalInstance = bootstrap.Modal.getInstance(modal);
-  modalInstance.hide();
-  fetch('/remove_subscription', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({"email":buttonId})
-  })
-    .then(function(response) {
-      // Handle the response from the backend
-      console.log('Deleted successfully');
-      table.ajax.reload(null, false);
-    })
-    .catch(function(error) {
-      console.error('Error updating dictionary:', error);
+    document.getElementById('select-all-btn').addEventListener('click', function () {
+        options.querySelectorAll('input').forEach(function (input) { input.checked = true; });
     });
-});
+    document.getElementById('reset-btn').addEventListener('click', function () {
+        options.querySelectorAll('input').forEach(function (input) { input.checked = false; });
+    });
 
+    document.getElementById('subscription-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        const payload = {
+            email: document.getElementById('email').value,
+            team: document.getElementById('team').value,
+            subscriptions: selectedCollections()
+        };
+        const url = editingEmail ? apiUrl(editingEmail) : subscriptionsUrl;
+        requestJson(url, {
+            method: editingEmail ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(function () {
+                subscriptionModal.hide();
+                showMessage('Subscription saved.', 'success');
+                return loadSubscriptions();
+            })
+            .catch(function (reason) { showMessage(reason.message, 'danger'); });
+    });
+
+    document.getElementById('run-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        const confirm = document.getElementById('run-confirm');
+        confirm.disabled = true;
+        let payload;
+        try {
+            payload = runPayload();
+        } catch (reason) {
+            showMessage(reason.message, 'danger');
+            confirm.disabled = false;
+            return;
+        }
+        requestJson(apiUrl(runningEmail, '/run'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(function (body) {
+                if (!body.count) {
+                    runModal.hide();
+                    showMessage('No records were found in the selected time window. Existing review selections were preserved.', 'warning');
+                    return;
+                }
+                localStorage.setItem(selectionStorageKey, JSON.stringify(body.selections));
+                window.location.href = reviewsPageUrl;
+            })
+            .catch(function (reason) { showMessage(reason.message, 'danger'); })
+            .finally(function () { confirm.disabled = false; });
+    });
+
+    Promise.all([requestJson(reviewsUrl), loadSubscriptions()])
+        .then(function (results) {
+            reviewCollections = results[0].data.map(function (collection) { return collection.name; });
+        })
+        .catch(function (reason) { showMessage(reason.message, 'danger'); });
+})();
 </script>
 {% endblock %}

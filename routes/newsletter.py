@@ -1,17 +1,8 @@
 import os
 import shutil
-from functools import wraps
 from . import newsletter_blueprint
-from flask import render_template, request, jsonify, session, redirect, url_for, current_app
-
-
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'username' not in session:
-            return redirect(url_for('auth.login'))
-        return f(*args, **kwargs)
-    return decorated_function
+from flask import render_template, request, jsonify, current_app
+from .common import login_required
 
 
 @newsletter_blueprint.route('/en')
@@ -48,4 +39,3 @@ def set_news():
     dest = os.path.join(current_app.root_path, 'templates', f'news_{lang}.html')
     shutil.copy2(source, dest)
     return jsonify({'success': True})
-

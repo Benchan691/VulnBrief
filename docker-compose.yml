@@ -1,0 +1,22 @@
+services:
+  web:
+    build: .
+    container_name: webserver-web
+    restart: unless-stopped
+    ports:
+      - "6767:6767"
+    environment:
+      MONGO_URI: mongodb://host.docker.internal:27017/
+    volumes:
+      - ./config/config.json:/app/config/config.json:ro
+      - ./newsletters:/app/newsletters
+
+  preprocessor:
+    build: .
+    container_name: webserver-preprocessor
+    restart: unless-stopped
+    command: ["python", "company_ai_preprocessor.py"]
+    environment:
+      MONGO_URI: mongodb://host.docker.internal:27017/
+    volumes:
+      - ./config/config.json:/app/config/config.json:ro

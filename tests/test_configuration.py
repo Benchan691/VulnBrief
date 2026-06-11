@@ -1,0 +1,117 @@
+import json
+
+from configuration import load_application_config
+
+
+def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    config = {
+        'mongo_uri': 'mongodb://example/',
+        'web_database': 'web',
+        'vulnerabilities_database': 'vulnerabilities',
+        'review_view_suffix': '_review',
+        'flask_secret_key': 'secret',
+        'company_ai': {
+            'base_url': 'https://company.example',
+            'username': 'owner',
+            'password': 'password',
+            'start_prompt': 'initial',
+            'summary_prompt': 'Summary in ${language}.',
+            'public_key_b64': 'public-key',
+            'sign_secret': 'sign-secret',
+            'api_timezone': 'Asia/Shanghai',
+            'sse_connection_delay_seconds': 1.5,
+            'model': 'company-model',
+            'owner_account': 'owner',
+            'platform_id': 6,
+            'qa_type': 1,
+            'from_source': 'report',
+            'use_think': False,
+            'user_prompt': 'prompt',
+            'dataset_ids': ['dataset'],
+            'file_ids': ['file'],
+            'context_limit': 22000,
+            'max_output_tokens': 2200,
+            'timeout_seconds': 90,
+            'retries': 3,
+            'parallel_chats': 6,
+        },
+        'rabbitmq': {
+            'url': 'amqp://rabbit.example/',
+            'queue_name': 'summaries',
+            'max_priority': 8,
+            'background_priority': 2,
+            'report_priority': 8,
+        },
+        'company_ai_preprocessing': {
+            'scan_interval_seconds': 30,
+            'stale_processing_seconds': 600,
+            'report_wait_timeout_seconds': 45,
+        },
+        'report_processing': {
+            'item_json_retries': 4,
+            'final_json_retries': 5,
+            'json_error_message': 'Configured JSON error: ${error}',
+            'deny_keys': ['raw'],
+            'deny_prefixes': ['raw_'],
+            'max_depth': 7,
+            'max_list_items': 8,
+            'max_string_chars': 900,
+            'preview_after_each_item': False,
+        },
+    }
+    (config_dir / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+
+    loaded = load_application_config(str(tmp_path))
+    assert loaded['COMPANY_AI_BASE_URL'] == 'https://company.example'
+    assert loaded['COMPANY_AI_USERNAME'] == 'owner'
+    assert loaded['COMPANY_AI_PASSWORD'] == 'password'
+    assert loaded['COMPANY_AI_START_PROMPT'] == 'initial'
+    assert loaded['COMPANY_AI_SUMMARY_PROMPT'] == 'Summary in ${language}.'
+    assert loaded['COMPANY_AI_PUBLIC_KEY_B64'] == 'public-key'
+    assert loaded['COMPANY_AI_SIGN_SECRET'] == 'sign-secret'
+    assert loaded['COMPANY_AI_SSE_DELAY_SECONDS'] == 1.5
+    assert loaded['COMPANY_AI_MODEL'] == 'company-model'
+    assert loaded['COMPANY_AI_OWNER_ACCOUNT'] == 'owner'
+    assert loaded['COMPANY_AI_PLATFORM_ID'] == 6
+    assert loaded['COMPANY_AI_QA_TYPE'] == 1
+    assert loaded['COMPANY_AI_FROM_SOURCE'] == 'report'
+    assert loaded['COMPANY_AI_USE_THINK'] is False
+    assert loaded['COMPANY_AI_USER_PROMPT'] == 'prompt'
+    assert loaded['COMPANY_AI_DATASET_IDS'] == ['dataset']
+    assert loaded['COMPANY_AI_FILE_IDS'] == ['file']
+    assert loaded['COMPANY_AI_CONTEXT_LIMIT'] == 22000
+    assert loaded['COMPANY_AI_MAX_OUTPUT_TOKENS'] == 2200
+    assert loaded['COMPANY_AI_TIMEOUT_SECONDS'] == 90
+    assert loaded['COMPANY_AI_RETRIES'] == 3
+    assert loaded['COMPANY_AI_PARALLEL_CHATS'] == 6
+    assert loaded['RABBITMQ_URL'] == 'amqp://rabbit.example/'
+    assert loaded['RABBITMQ_QUEUE_NAME'] == 'summaries'
+    assert loaded['RABBITMQ_MAX_PRIORITY'] == 8
+    assert loaded['RABBITMQ_BACKGROUND_PRIORITY'] == 2
+    assert loaded['RABBITMQ_REPORT_PRIORITY'] == 8
+    assert loaded['COMPANY_AI_SCAN_INTERVAL_SECONDS'] == 30
+    assert loaded['COMPANY_AI_STALE_PROCESSING_SECONDS'] == 600
+    assert loaded['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'] == 45
+    assert loaded['REPORT_ITEM_JSON_RETRIES'] == 4
+    assert loaded['REPORT_FINAL_JSON_RETRIES'] == 5
+    assert loaded['REPORT_JSON_ERROR_MESSAGE'] == 'Configured JSON error: ${error}'
+    assert loaded['REPORT_DENY_KEYS'] == ['raw']
+    assert loaded['REPORT_PREVIEW_AFTER_EACH_ITEM'] is False
+
+    monkeypatch.setenv('COMPANY_AI_USE_THINK', 'true')
+    monkeypatch.setenv('COMPANY_AI_TIMEOUT_SECONDS', '120')
+    monkeypatch.setenv('COMPANY_AI_USERNAME', 'environment-user')
+    monkeypatch.setenv('COMPANY_AI_PASSWORD', 'environment-password')
+    monkeypatch.setenv('COMPANY_AI_PARALLEL_CHATS', '9')
+    monkeypatch.setenv('RABBITMQ_REPORT_PRIORITY', '7')
+    monkeypatch.setenv('REPORT_JSON_ERROR_MESSAGE', 'Environment JSON error: ${error}')
+    overridden = load_application_config(str(tmp_path))
+    assert overridden['COMPANY_AI_USE_THINK'] is True
+    assert overridden['COMPANY_AI_TIMEOUT_SECONDS'] == 120
+    assert overridden['COMPANY_AI_USERNAME'] == 'environment-user'
+    assert overridden['COMPANY_AI_PASSWORD'] == 'environment-password'
+    assert overridden['COMPANY_AI_PARALLEL_CHATS'] == 9
+    assert overridden['RABBITMQ_REPORT_PRIORITY'] == 7
+    assert overridden['REPORT_JSON_ERROR_MESSAGE'] == 'Environment JSON error: ${error}'

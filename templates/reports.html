@@ -1,0 +1,215 @@
+{% extends 'base.html' %}
+{% block title %}Reports{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="mb-4">
+        <h2 class="mb-1"><i class="bi bi-file-earmark-text me-2"></i>Reports</h2>
+        <p class="text-muted mb-0">Generate reports with Company AI or an English deterministic fixed template.</p>
+    </div>
+
+    <div id="message" class="alert d-none" role="alert"></div>
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-body">
+            <h5 class="card-title">Generate Report</h5>
+            <form id="generate-form">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <label for="generation-mode" class="form-label">Generation Mode</label>
+                        <select id="generation-mode" class="form-select">
+                            <option value="company_ai" selected>Company AI</option>
+                            <option value="template">Fixed Template</option>
+                        </select>
+                    </div>
+                    <div id="language-field" class="col-md-3">
+                        <label for="report-language" class="form-label">Report Language</label>
+                        <select id="report-language" class="form-select">
+                            <option value="en">English</option>
+                            <option value="zh">Traditional Chinese (zh)</option>
+                            <option value="ch">Simplified Chinese (ch)</option>
+                        </select>
+                        <div class="form-text">Available for Company AI reports.</div>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="json-file" class="form-label">Optional exported JSON array</label>
+                        <input id="json-file" type="file" class="form-control" accept=".json,application/json">
+                        <div class="form-text">Leave empty to use current Vulnerability Reviews selections.</div>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-3">
+                    <span id="selection-count" class="text-muted small">0 review selections available</span>
+                    <button id="generate-btn" class="btn btn-primary" type="submit">
+                        <i class="bi bi-stars me-1"></i>Generate HTML
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <h5>Report History</h5>
+    <div class="card shadow-sm border-0 overflow-hidden">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-dark">
+                    <tr><th>Created</th><th>Language</th><th>Sources</th><th>Generator</th><th>Status</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="job-rows"></tbody>
+            </table>
+        </div>
+        <div id="empty" class="text-center text-muted py-5 d-none">No report jobs yet.</div>
+    </div>
+</div>
+
+<div class="modal fade" id="preview-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">Report Preview</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body p-0"><iframe id="preview-frame" title="Report preview" style="width:100%;height:70vh;border:0"></iframe></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+(function () {
+    const jobsUrl = {{ url_for('report.get_report_jobs')|tojson }};
+    const selectionStorageKey = 'vulnerabilityReviewSelections';
+    const rows = document.getElementById('job-rows');
+    const empty = document.getElementById('empty');
+    const message = document.getElementById('message');
+    const previewModal = new bootstrap.Modal(document.getElementById('preview-modal'));
+    const generationMode = document.getElementById('generation-mode');
+    const reportLanguage = document.getElementById('report-language');
+    const languageField = document.getElementById('language-field');
+    let pollTimer = null;
+
+    function selections() {
+        try { const value = JSON.parse(localStorage.getItem(selectionStorageKey) || '[]'); return Array.isArray(value) ? value : []; }
+        catch (error) { return []; }
+    }
+    function updateSelectionCount() {
+        const count = selections().length;
+        document.getElementById('selection-count').textContent = count + ' review selection' + (count === 1 ? '' : 's') + ' available';
+    }
+    function showMessage(text, kind) {
+        message.textContent = text;
+        message.className = 'alert alert-' + kind;
+    }
+    function updateLanguageField() {
+        const isTemplate = generationMode.value === 'template';
+        languageField.classList.toggle('d-none', isTemplate);
+        reportLanguage.disabled = isTemplate;
+        if (isTemplate) reportLanguage.value = 'en';
+    }
+    function languageName(code) {
+        return { en: 'English', zh: 'Traditional Chinese', ch: 'Simplified Chinese' }[code] || code;
+    }
+    function requestJson(url, options) {
+        return fetch(url, options).then(function (response) {
+            return response.json().then(function (body) {
+                if (!response.ok) throw new Error(body.error || 'Request failed.');
+                return body;
+            });
+        });
+    }
+    function renderJobs(jobs) {
+        rows.replaceChildren();
+        empty.classList.toggle('d-none', jobs.length !== 0);
+        let active = false;
+        jobs.forEach(function (job) {
+            active = active || job.status === 'queued' || job.status === 'running';
+            const row = document.createElement('tr');
+            const created = job.created_at && job.created_at.$date ? job.created_at.$date : job.created_at;
+            const requested = job.generation_mode === 'ai' ? 'company_ai' : (job.generation_mode || 'company_ai');
+            const effective = job.effective_generation_mode === 'ai' ? 'company_ai' : (job.effective_generation_mode || requested);
+            let generator = requested === 'template' ? 'Fixed Template' : 'Company AI';
+            if (requested === 'company_ai' && effective === 'template') generator = 'Company AI \u2192 Fixed Template';
+            const requestedLanguage = job.report_language || 'en';
+            const effectiveLanguage = job.effective_report_language || requestedLanguage;
+            let language = languageName(requestedLanguage);
+            if (requestedLanguage !== effectiveLanguage) language += ' \u2192 ' + languageName(effectiveLanguage);
+            [new Date(created).toLocaleString(), language, job.source_count].forEach(function (value) {
+                const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
+            });
+            const generatorCell = document.createElement('td');
+            generatorCell.textContent = generator;
+            if (job.fallback_reason) {
+                const reason = document.createElement('div');
+                reason.className = 'text-warning-emphasis small';
+                reason.textContent = 'Fallback: ' + job.fallback_reason;
+                generatorCell.append(reason);
+            }
+            row.append(generatorCell);
+            const status = document.createElement('td');
+            status.textContent = job.status;
+            if (job.status === 'running') {
+                status.textContent += ' (' + (job.processed_count || 0) + '/' + job.source_count + ')';
+            }
+            row.append(status);
+            const action = document.createElement('td');
+            if (job.status === 'completed') {
+                action.innerHTML = '<button class="btn btn-outline-primary btn-sm me-1 preview-btn">Preview</button>' +
+                    '<a class="btn btn-outline-success btn-sm" href="/reports/' + job.id + '/download">Download</a>';
+                action.querySelector('.preview-btn').addEventListener('click', function () {
+                    document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
+                    previewModal.show();
+                });
+            } else if (job.status === 'failed') {
+                action.textContent = job.error || 'Generation failed.';
+                action.className = 'text-danger small';
+            } else {
+                if (job.html_path) {
+                    action.innerHTML = '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Progress</button>';
+                    action.querySelector('.preview-btn').addEventListener('click', function () {
+                        document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
+                        previewModal.show();
+                    });
+                } else {
+                    action.textContent = 'Waiting for worker...';
+                    action.className = 'text-muted small';
+                }
+            }
+            row.append(action); rows.append(row);
+        });
+        if (active && !pollTimer) pollTimer = setTimeout(function () { pollTimer = null; loadJobs(); }, 2000);
+    }
+    function loadJobs() {
+        requestJson(jobsUrl).then(function (body) { renderJobs(body.data); })
+            .catch(function (reason) { showMessage(reason.message, 'danger'); });
+    }
+    document.getElementById('generate-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        const file = document.getElementById('json-file').files[0];
+        const button = document.getElementById('generate-btn');
+        button.disabled = true;
+        let options;
+        if (file) {
+            const form = new FormData();
+            form.append('generation_mode', document.getElementById('generation-mode').value);
+            form.append('report_language', reportLanguage.value);
+            form.append('json_file', file);
+            options = { method: 'POST', body: form };
+        } else {
+            options = {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    generation_mode: document.getElementById('generation-mode').value,
+                    report_language: reportLanguage.value,
+                    selections: selections()
+                })
+            };
+        }
+        requestJson(jobsUrl, options)
+            .then(function () { showMessage('Report job queued.', 'success'); loadJobs(); })
+            .catch(function (reason) { showMessage(reason.message, 'danger'); })
+            .finally(function () { button.disabled = false; });
+    });
+    generationMode.addEventListener('change', updateLanguageField);
+    updateLanguageField();
+    updateSelectionCount();
+    loadJobs();
+})();
+</script>
+{% endblock %}

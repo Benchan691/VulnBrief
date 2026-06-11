@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.venv/
+config/config.json
+cert.pem
+key.pem

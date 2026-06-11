@@ -1,0 +1,495 @@
+{% extends 'base.html' %}
+{% block title %}Vulnerability Reviews{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+            <h2 class="mb-1"><i class="bi bi-shield-check me-2"></i>Vulnerability Reviews</h2>
+            <p class="text-muted mb-0">Read-only MongoDB review views</p>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <span id="selected-count" class="badge text-bg-primary">0 selected</span>
+            <button id="clear-selection-btn" class="btn btn-outline-danger btn-sm" disabled>
+                <i class="bi bi-x-circle me-1"></i>Clear Selection
+            </button>
+            <button id="export-btn" class="btn btn-success btn-sm" disabled>
+                <i class="bi bi-download me-1"></i>Export JSON
+            </button>
+            <a id="generate-report-btn" class="btn btn-primary btn-sm disabled" aria-disabled="true" href="{{ url_for('report.reports') }}">
+                <i class="bi bi-stars me-1"></i>Generate HTML
+            </a>
+            <button id="refresh-btn" class="btn btn-outline-secondary btn-sm">
+                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+            </button>
+        </div>
+    </div>
+
+    <form id="global-filter-form" class="card shadow-sm border-0 mb-4">
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-12 col-lg-4">
+                    <label for="filter-search" class="form-label">Global search</label>
+                    <input id="filter-search" name="search" class="form-control" placeholder="Search summary fields">
+                </div>
+                <div class="col-12 col-md-6 col-lg-2">
+                    <label for="filter-code" class="form-label">Code / CVE</label>
+                    <input id="filter-code" name="code" class="form-control">
+                </div>
+                <div class="col-12 col-md-6 col-lg-3">
+                    <label for="filter-title" class="form-label">Title</label>
+                    <input id="filter-title" name="title" class="form-control">
+                </div>
+                <div class="col-12 col-md-6 col-lg-3">
+                    <label for="filter-impact" class="form-label">Impact</label>
+                    <input id="filter-impact" name="impact" class="form-control">
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <label for="filter-affected" class="form-label">Affected product / system</label>
+                    <input id="filter-affected" name="affected" class="form-control">
+                </div>
+                <div class="col-12 col-md-6 col-lg-4">
+                    <label for="filter-collection" class="form-label">Review collection</label>
+                    <select id="filter-collection" name="collection" class="form-select">
+                        <option value="">All review collections</option>
+                    </select>
+                </div>
+                <div class="col-12 col-md-6 col-lg-4 d-flex align-items-end gap-2">
+                    <button class="btn btn-primary flex-grow-1" type="submit">
+                        <i class="bi bi-search me-1"></i>Apply Filter
+                    </button>
+                    <button id="clear-filter-btn" class="btn btn-outline-secondary" type="button">Clear Filter</button>
+                </div>
+            </div>
+        </div>
+    </form>
+
+    <div id="error-alert" class="alert alert-danger d-none" role="alert"></div>
+    <div id="collection-overview">
+        <div id="loading" class="text-center text-muted py-5">
+            <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading review collections...
+        </div>
+        <div id="empty-state" class="card shadow-sm border-0 d-none">
+            <div class="card-body text-center py-5 text-muted">
+                <i class="bi bi-database-x display-4 d-block mb-2"></i>
+                No review views were found.
+            </div>
+        </div>
+        <div id="collection-grid" class="row g-3"></div>
+    </div>
+
+    <div id="search-results" class="card shadow-sm border-0 d-none">
+        <div class="card-body">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                <h5 class="mb-0">Combined Results</h5>
+                <div class="d-flex align-items-center gap-2">
+                    <span id="results-count" class="text-muted small"></span>
+                    <select id="page-size" class="form-select form-select-sm" aria-label="Results per page">
+                        <option value="25">25 per page</option>
+                        <option value="50">50 per page</option>
+                        <option value="100">100 per page</option>
+                    </select>
+                </div>
+            </div>
+            <div id="results-loading" class="text-center text-muted py-5 d-none">
+                <div class="spinner-border spinner-border-sm me-2" role="status"></div>Searching review collections...
+            </div>
+            <div id="results-empty" class="text-center text-muted py-5 d-none">No matching review documents.</div>
+            <div id="results-table-wrap" class="table-responsive d-none">
+                <table class="table table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th scope="col">Select</th>
+                            <th scope="col">Collection</th>
+                            <th scope="col">Code / CVE</th>
+                            <th scope="col">Title</th>
+                            <th scope="col">Impact</th>
+                            <th scope="col">Affected</th>
+                            <th scope="col">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="results-body"></tbody>
+                </table>
+            </div>
+            <div id="pagination" class="d-flex justify-content-between align-items-center d-none">
+                <button id="previous-page" class="btn btn-outline-secondary btn-sm" type="button">Previous</button>
+                <span id="page-label" class="text-muted small"></span>
+                <button id="next-page" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="document-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 id="document-modal-title" class="modal-title">Review Document</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body"><pre id="document-json" class="mb-0"></pre></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block script %}
+<script>
+(function () {
+    const grid = document.getElementById('collection-grid');
+    const overview = document.getElementById('collection-overview');
+    const loading = document.getElementById('loading');
+    const empty = document.getElementById('empty-state');
+    const error = document.getElementById('error-alert');
+    const refresh = document.getElementById('refresh-btn');
+    const filterForm = document.getElementById('global-filter-form');
+    const clearFilter = document.getElementById('clear-filter-btn');
+    const collectionFilter = document.getElementById('filter-collection');
+    const searchResults = document.getElementById('search-results');
+    const resultsLoading = document.getElementById('results-loading');
+    const resultsEmpty = document.getElementById('results-empty');
+    const resultsTableWrap = document.getElementById('results-table-wrap');
+    const resultsBody = document.getElementById('results-body');
+    const resultsCount = document.getElementById('results-count');
+    const pagination = document.getElementById('pagination');
+    const previousPage = document.getElementById('previous-page');
+    const nextPage = document.getElementById('next-page');
+    const pageLabel = document.getElementById('page-label');
+    const pageSize = document.getElementById('page-size');
+    const exportButton = document.getElementById('export-btn');
+    const clearSelection = document.getElementById('clear-selection-btn');
+    const selectedCount = document.getElementById('selected-count');
+    const generateReportButton = document.getElementById('generate-report-btn');
+    const documentModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('document-modal'));
+    const documentModalTitle = document.getElementById('document-modal-title');
+    const documentJson = document.getElementById('document-json');
+    const selectionStorageKey = 'vulnerabilityReviewSelections';
+    const detailUrl = {{ url_for('review.review_collection', collection_name='__collection__')|tojson }};
+    const exportUrl = {{ url_for('review.export_review_documents')|tojson }};
+    const searchUrl = {{ url_for('review.search_review_documents')|tojson }};
+    let collections = [];
+    let activeFilters = null;
+    let currentPage = 1;
+    let totalPages = 1;
+
+    function getSelections() {
+        try {
+            const selections = JSON.parse(localStorage.getItem(selectionStorageKey) || '[]');
+            return Array.isArray(selections) ? selections : [];
+        } catch (error) {
+            return [];
+        }
+    }
+
+    function setSelections(selections) {
+        localStorage.setItem(selectionStorageKey, JSON.stringify(selections));
+    }
+
+    function selectionKey(collection, selectionId) {
+        return collection + '\u0000' + selectionId;
+    }
+
+    function selectedKeys() {
+        return new Set(getSelections().map(function (selection) {
+            return selectionKey(selection.collection, selection.selection_id);
+        }));
+    }
+
+    function selectedCountsByCollection() {
+        return getSelections().reduce(function (counts, selection) {
+            counts[selection.collection] = (counts[selection.collection] || 0) + 1;
+            return counts;
+        }, {});
+    }
+
+    function updateSelectedCount() {
+        const count = getSelections().length;
+        selectedCount.textContent = count + ' selected';
+        clearSelection.disabled = count === 0;
+        exportButton.disabled = count === 0;
+        generateReportButton.classList.toggle('disabled', count === 0);
+        generateReportButton.setAttribute('aria-disabled', count === 0 ? 'true' : 'false');
+        if (collections.length) renderCollections();
+    }
+
+    function showError(message) {
+        error.textContent = message;
+        error.classList.remove('d-none');
+    }
+
+    function summaryValue(value) {
+        if (value === null || value === undefined || value === '') return '';
+        if (Array.isArray(value)) return value.map(summaryValue).filter(Boolean).join(', ');
+        if (typeof value === 'object') return Object.values(value).map(summaryValue).filter(Boolean).join(', ');
+        return String(value);
+    }
+
+    function firstValue(document, fields) {
+        for (const field of fields) {
+            const value = summaryValue(document[field]);
+            if (value) return value;
+        }
+        return '';
+    }
+
+    function renderCollections() {
+        grid.replaceChildren();
+        const selectedCounts = selectedCountsByCollection();
+
+        collections.forEach(function (collection) {
+            const column = document.createElement('div');
+            column.className = 'col-12 col-md-6 col-lg-4';
+
+            const card = document.createElement('a');
+            card.className = 'card h-100 shadow-sm border-0 text-decoration-none text-body';
+            card.href = detailUrl.replace('__collection__', encodeURIComponent(collection.name));
+
+            const cardBody = document.createElement('div');
+            cardBody.className = 'card-body d-flex align-items-center gap-3';
+            const icon = document.createElement('i');
+            icon.className = 'bi bi-database-check fs-2 text-primary';
+            const text = document.createElement('div');
+            text.className = 'flex-grow-1';
+            const title = document.createElement('h5');
+            title.className = 'mb-1';
+            title.textContent = collection.name;
+            const meta = document.createElement('div');
+            meta.className = 'text-muted small';
+            meta.textContent = collection.count + ' document' + (collection.count === 1 ? '' : 's');
+            const selected = document.createElement('span');
+            selected.className = 'badge text-bg-primary ms-auto';
+            selected.textContent = (selectedCounts[collection.name] || 0) + ' selected';
+
+            text.append(title, meta);
+            cardBody.append(icon, text, selected);
+            card.append(cardBody);
+            column.append(card);
+            grid.append(column);
+        });
+    }
+
+    function populateCollectionFilter() {
+        const selected = collectionFilter.value;
+        collectionFilter.replaceChildren(new Option('All review collections', ''));
+        collections.forEach(function (collection) {
+            collectionFilter.append(new Option(collection.name, collection.name));
+        });
+        collectionFilter.value = selected;
+    }
+
+    function loadCollections() {
+        loading.classList.remove('d-none');
+        empty.classList.add('d-none');
+        error.classList.add('d-none');
+        grid.replaceChildren();
+        refresh.disabled = true;
+
+        fetch({{ url_for('review.get_review_collections')|tojson }})
+            .then(function (response) {
+                return response.json().then(function (body) {
+                    if (!response.ok) throw new Error(body.error || 'Unable to load review collections.');
+                    return body;
+                });
+            })
+            .then(function (body) {
+                collections = body.data;
+                populateCollectionFilter();
+                if (!body.data.length) {
+                    empty.classList.remove('d-none');
+                    return;
+                }
+
+                renderCollections();
+            })
+            .catch(function (reason) {
+                error.textContent = reason.message;
+                error.classList.remove('d-none');
+            })
+            .finally(function () {
+                loading.classList.add('d-none');
+                refresh.disabled = false;
+            });
+    }
+
+    function updateSelection(collection, selectionId, checked) {
+        const key = selectionKey(collection, selectionId);
+        let selections = getSelections().filter(function (selection) {
+            return selectionKey(selection.collection, selection.selection_id) !== key;
+        });
+        if (checked) selections.push({ collection: collection, selection_id: selectionId });
+        setSelections(selections);
+        updateSelectedCount();
+    }
+
+    function addCell(row, value) {
+        const cell = document.createElement('td');
+        cell.textContent = value || '—';
+        row.append(cell);
+    }
+
+    function renderResults(body) {
+        resultsBody.replaceChildren();
+        const keys = selectedKeys();
+
+        body.data.forEach(function (item) {
+            const projectedDocument = item.document;
+            const row = document.createElement('tr');
+            const selectCell = document.createElement('td');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'form-check-input';
+            checkbox.checked = keys.has(selectionKey(item.collection, item.selection_id));
+            checkbox.setAttribute('aria-label', 'Select review document');
+            checkbox.addEventListener('change', function () {
+                updateSelection(item.collection, item.selection_id, checkbox.checked);
+            });
+            selectCell.append(checkbox);
+            row.append(selectCell);
+            addCell(row, item.collection);
+            addCell(row, firstValue(projectedDocument, ['code', 'cve']));
+            addCell(row, firstValue(projectedDocument, ['title']));
+            addCell(row, firstValue(projectedDocument, ['impacts']));
+            addCell(row, firstValue(projectedDocument, ['affected', 'affected_products']));
+
+            const actionCell = document.createElement('td');
+            const viewButton = document.createElement('button');
+            viewButton.type = 'button';
+            viewButton.className = 'btn btn-outline-primary btn-sm';
+            viewButton.textContent = 'View';
+            viewButton.addEventListener('click', function () {
+                documentModalTitle.textContent = item.collection + ' Document';
+                documentJson.textContent = JSON.stringify(projectedDocument, null, 2);
+                documentModal.show();
+            });
+            actionCell.append(viewButton);
+            row.append(actionCell);
+            resultsBody.append(row);
+        });
+
+        resultsCount.textContent = body.total + ' matching document' + (body.total === 1 ? '' : 's');
+        resultsEmpty.classList.toggle('d-none', body.data.length !== 0);
+        resultsTableWrap.classList.toggle('d-none', body.data.length === 0);
+        pagination.classList.toggle('d-none', body.total === 0);
+        currentPage = body.page;
+        totalPages = body.pages;
+        pageLabel.textContent = 'Page ' + currentPage + ' of ' + totalPages;
+        previousPage.disabled = currentPage <= 1;
+        nextPage.disabled = currentPage >= totalPages;
+    }
+
+    function runSearch(page) {
+        if (!activeFilters) return;
+        overview.classList.add('d-none');
+        searchResults.classList.remove('d-none');
+        resultsLoading.classList.remove('d-none');
+        resultsEmpty.classList.add('d-none');
+        resultsTableWrap.classList.add('d-none');
+        pagination.classList.add('d-none');
+        error.classList.add('d-none');
+
+        const params = new URLSearchParams(activeFilters);
+        params.set('page', page);
+        params.set('page_size', pageSize.value);
+        fetch(searchUrl + '?' + params.toString())
+            .then(function (response) {
+                return response.json().then(function (body) {
+                    if (!response.ok) throw new Error(body.error || 'Unable to search review documents.');
+                    return body;
+                });
+            })
+            .then(renderResults)
+            .catch(function (reason) {
+                showError(reason.message);
+            })
+            .finally(function () {
+                resultsLoading.classList.add('d-none');
+            });
+    }
+
+    function showCollectionOverview() {
+        activeFilters = null;
+        filterForm.reset();
+        searchResults.classList.add('d-none');
+        overview.classList.remove('d-none');
+        error.classList.add('d-none');
+    }
+
+    filterForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        const params = new URLSearchParams();
+        new FormData(filterForm).forEach(function (value, key) {
+            value = value.trim();
+            if (value) params.set(key, value);
+        });
+        if (!Array.from(params.keys()).length) {
+            showCollectionOverview();
+            return;
+        }
+        activeFilters = params;
+        runSearch(1);
+    });
+
+    clearFilter.addEventListener('click', showCollectionOverview);
+    previousPage.addEventListener('click', function () { runSearch(currentPage - 1); });
+    nextPage.addEventListener('click', function () { runSearch(currentPage + 1); });
+    pageSize.addEventListener('change', function () { runSearch(1); });
+
+    clearSelection.addEventListener('click', function () {
+        localStorage.removeItem(selectionStorageKey);
+        updateSelectedCount();
+        if (activeFilters) runSearch(currentPage);
+    });
+
+    exportButton.addEventListener('click', function () {
+        const selections = getSelections();
+        if (!selections.length) return;
+
+        error.classList.add('d-none');
+        exportButton.disabled = true;
+        exportButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Exporting...';
+
+        fetch(exportUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selections: selections })
+        })
+            .then(function (response) {
+                if (!response.ok) {
+                    return response.json().then(function (body) {
+                        throw new Error(body.error || 'Unable to export documents.');
+                    });
+                }
+                const disposition = response.headers.get('Content-Disposition') || '';
+                const match = disposition.match(/filename="([^"]+)"/);
+                return response.blob().then(function (blob) {
+                    return { blob: blob, filename: match ? match[1] : 'vulnerability-export.json' };
+                });
+            })
+            .then(function (download) {
+                const link = document.createElement('a');
+                const url = URL.createObjectURL(download.blob);
+                link.href = url;
+                link.download = download.filename;
+                document.body.append(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+                localStorage.removeItem(selectionStorageKey);
+                updateSelectedCount();
+                if (activeFilters) runSearch(currentPage);
+            })
+            .catch(function (reason) {
+                showError(reason.message);
+            })
+            .finally(function () {
+                exportButton.innerHTML = '<i class="bi bi-download me-1"></i>Export JSON';
+                updateSelectedCount();
+            });
+    });
+
+    refresh.addEventListener('click', loadCollections);
+    updateSelectedCount();
+    loadCollections();
+})();
+</script>
+{% endblock %}

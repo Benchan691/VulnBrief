@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="{{ html_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ report.title }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1100px; margin: 0 auto; padding: 32px; color: #20242a; line-height: 1.55; }
+        h1 { border-bottom: 3px solid #6f42c1; padding-bottom: 12px; }
+        h2 { margin-top: 28px; color: #45237b; }
+        article { border-left: 4px solid #6f42c1; background: #faf8ff; padding: 16px 20px; margin: 16px 0; }
+        .meta { color: #667085; font-size: 0.9rem; }
+        li { margin-bottom: 6px; }
+    </style>
+</head>
+<body>
+    <h1>{{ report.title }}</h1>
+    <p class="meta">{{ labels.generated.format(date=generated_at.strftime('%Y-%m-%d %H:%M UTC'), count=source_count) }}</p>
+    <h2>{{ labels.executive_summary }}</h2>
+    <p>{{ report.executive_summary }}</p>
+    <h2>{{ labels.trends }}</h2>
+    <ul>{% for trend in report.trends or [] %}<li>{{ trend }}</li>{% endfor %}</ul>
+    <h2>{{ labels.high_priority_vulnerabilities }}</h2>
+    {% for item in report.highlights %}
+    <article>
+        <h3>{{ item.title }}</h3>
+        <p class="meta">{{ item.code or '' }}{% if item.severity %} | {{ item.severity }}{% endif %}</p>
+        <p>{{ item.summary }}</p>
+        {% if item.affected %}<p><strong>{{ labels.affected }}:</strong> {{ item.affected|join(', ') }}</p>{% endif %}
+        {% if item.references %}
+        <p><strong>{{ labels.references }}:</strong></p>
+        <ul>{% for reference in item.references %}<li>{{ reference }}</li>{% endfor %}</ul>
+        {% endif %}
+    </article>
+    {% endfor %}
+    <h2>{{ labels.strategic_recommendations }}</h2>
+    <ol>{% for recommendation in report.recommendations %}<li>{{ recommendation }}</li>{% endfor %}</ol>
+</body>
+</html>
