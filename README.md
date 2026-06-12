@@ -4,22 +4,31 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 
 ## Features
 
-- **Newsletters** — browse and publish newsletter HTML under `newsletters/`
-- **Subscriptions** — manage subscriber records and run recent vulnerability selections (daily, weekly, or custom Asia/Hong_Kong window)
+- **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from Atlas records
+- **Subscriptions** — manage independent newsletter and report profiles with shared collection, severity/status, text, source, affected-system, and time filters
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
-- **Reports** — generate HTML reports with **Company AI** (cached per-item JSON + live executive summary) or a **Fixed Template** (deterministic, English only)
+- **Reports** — generate structured reports with **Company AI** or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB.
 
-Background workers pre-generate per-item Company AI JSON via RabbitMQ and store results on vulnerability documents (`html_json.en`, `html_json.zh`, `html_json.ch`).
+Background workers pre-generate per-item AI JSON via routed RabbitMQ queues and
+store results on vulnerability documents (`html_json.en`, `html_json.zh`,
+`html_json.ch`). The optional standalone [`GPU_server`](GPU_server/README.md)
+uses local GPUs for Atlas source tasks.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   Browser --> Web["Flask web :6767"]
-  Web --> MongoDB
+  Web --> Atlas["Atlas vulnerability MongoDB"]
+  Web --> LocalMongo["Local application MongoDB"]
   Web --> CloudAMQP
-  Preprocessor["company_ai_preprocessor.py"] --> CloudAMQP
-  Preprocessor --> MongoDB
+  Scheduler["scheduler.py"] --> Atlas
+  Scheduler --> LocalMongo
+  Preprocessor["Company AI preprocessor + router"] --> CloudAMQP
+  GPU["GPU_server worker"] --> CloudAMQP
+  GPU --> Atlas
+  Preprocessor --> Atlas
+  Preprocessor --> LocalMongo
   Preprocessor --> CompanyAI["Company AI API"]
   Web --> CompanyAI
 ```
@@ -28,13 +37,17 @@ flowchart LR
 |---------|------|
 | `web` | Flask UI, report job orchestration |
 | `preprocessor` | RabbitMQ consumer; scans MongoDB and generates item summaries |
-| MongoDB | Vulnerability data, `web.*` job/subscription collections |
-| CloudAMQP | Queue `company_ai_preprocessing` (priority-backed) |
+| `GPU_server` | Optional standalone local-model worker for Atlas source items |
+| `scheduler` | Claims cron schedules, generates scheduled reports, and synchronizes newsletter feed metadata |
+| Atlas MongoDB | Vulnerability source data and review views |
+| Local MongoDB | Auth, subscriptions, newsletter metadata, structured report jobs/results, schedules, and locks |
+| CloudAMQP | Priority-backed intake, GPU, and Company AI queues |
 
 ## Prerequisites
 
 - Python 3.11+
-- MongoDB (local or remote)
+- Atlas/web MongoDB containing vulnerability source collections and review views
+- Local MongoDB for application-owned data
 - [CloudAMQP](https://www.cloudamqp.com/) instance (or compatible AMQP broker)
 - Company AI credentials (for AI report mode and preprocessor)
 
@@ -46,20 +59,30 @@ Minimum sections:
 
 ```json
 {
-  "mongo_uri": "mongodb://localhost:27017/",
-  "web_database": "web",
+  "atlas_mongo_uri": "mongodb+srv://user:password@atlas.example/",
+  "local_mongo_uri": "mongodb://localhost:27017/",
+  "local_database": "web",
   "vulnerabilities_database": "vulnerabilities",
   "flask_secret_key": "change-me",
   "newsletter_root": "newsletters",
   "rabbitmq": {
     "url": "amqps://user:password@host.lmq.cloudamqp.com/vhost",
-    "queue_name": "company_ai_preprocessing",
+    "intake_queue": "company_ai_preprocessing",
+    "gpu_queue": "gpu_preprocessing",
+    "company_queue": "company_ai_processing",
     "max_priority": 10,
     "background_priority": 1,
     "report_priority": 10
   },
-  "company_ai": { "...": "..." },
+  "company_ai": {
+    "enabled": true,
+    "...": "..."
+  },
   "company_ai_preprocessing": { "...": "..." },
+  "gpu_preprocessing": {
+    "enabled": false,
+    "...": "..."
+  },
   "report_processing": { "...": "..." }
 }
 ```
@@ -72,13 +95,14 @@ TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them lo
 
 ```sh
 # 1. Create config/config.json (see above)
-# 2. Ensure MongoDB is reachable from containers (Docker Desktop: host.docker.internal)
+# 2. Export ATLAS_MONGO_URI. Docker Compose starts the local MongoDB service.
 
+export ATLAS_MONGO_URI='mongodb+srv://...'
 docker compose up -d --build
 ```
 
 - Web UI: http://localhost:6767
-- Services: `webserver-web`, `webserver-preprocessor`
+- Services: `webserver-web`, `webserver-preprocessor`, `webserver-scheduler`, `webserver-local-mongo`
 
 ## Quick start (local Python)
 
@@ -91,6 +115,9 @@ python3 -m venv .venv
 
 # Terminal 2 — web server
 .venv/bin/python app.py
+
+# Terminal 3 — report/newsletter scheduler
+.venv/bin/python scheduler.py
 ```
 
 Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`).
@@ -107,11 +134,14 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 |------|-------------|
 | `app.py` | Flask application entry |
 | `company_ai_preprocessor.py` | RabbitMQ worker |
+| `scheduler.py` | Scheduled report and newsletter synchronization worker |
+| `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and feed metadata synchronization |
 | `report_harness.py` | Report generation pipeline |
 | `routes/` | HTTP blueprints (auth, newsletter, subscription, review, report) |
 | `templates/` | Jinja HTML templates |
 | `tests/` | Pytest suite |
 | `AI_HARNESS.md` | Detailed report/preprocessor behavior and prompts |
+| `GPU_server/` | Independent Ubuntu GPU preprocessing deployment |
 
 ## Security notes
 

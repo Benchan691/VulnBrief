@@ -67,10 +67,7 @@ def summary_content_hash(details, language, config):
     identity = {
         'details': details,
         'language': language,
-        'model': config['COMPANY_AI_MODEL'],
-        'start_prompt': config['COMPANY_AI_START_PROMPT'],
-        'user_prompt': config['COMPANY_AI_USER_PROMPT'],
-        'use_think': config['COMPANY_AI_USE_THINK'],
+        'cache_version': config['PREPROCESSING_CACHE_VERSION'],
     }
     payload = json.dumps(identity, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
@@ -78,10 +75,56 @@ def summary_content_hash(details, language, config):
 
 def _queue_declare(channel, config):
     return channel.queue_declare(
-        queue=config['RABBITMQ_QUEUE_NAME'],
+        queue=config['RABBITMQ_INTAKE_QUEUE'],
         durable=True,
         arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
     )
+
+
+def _company_queue_declare(channel, config):
+    channel.queue_declare(
+        queue=config['RABBITMQ_COMPANY_QUEUE'],
+        durable=True,
+        arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+    )
+
+
+def _gpu_queue_declare(channel, config):
+    return channel.queue_declare(
+        queue=config['RABBITMQ_GPU_QUEUE'],
+        durable=True,
+        arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+    )
+
+
+def _routed_queue_declare(channel, config):
+    _company_queue_declare(channel, config)
+    _gpu_queue_declare(channel, config)
+
+
+def _clear_queues(config, queue_names=None):
+    connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
+    try:
+        channel = connection.channel()
+        _queue_declare(channel, config)
+        _routed_queue_declare(channel, config)
+        for queue_name in queue_names or (
+            config['RABBITMQ_INTAKE_QUEUE'],
+            config['RABBITMQ_GPU_QUEUE'],
+            config['RABBITMQ_COMPANY_QUEUE'],
+        ):
+            channel.queue_purge(queue=queue_name)
+    finally:
+        connection.close()
+
+
+def _try_clear_queues(config, queue_names=None):
+    try:
+        _clear_queues(config, queue_names)
+        return True
+    except pika.exceptions.AMQPError as exc:
+        print(f'Unable to clear preprocessing queues: {exc}', flush=True)
+        return False
 
 
 def _publisher_channel(connection, config):
@@ -92,14 +135,27 @@ def _publisher_channel(connection, config):
 
 
 def _publish(task, priority, config, channel=None):
+    return _publish_to_queue(task, priority, config, config['RABBITMQ_INTAKE_QUEUE'], channel)
+
+
+def _publish_to_queue(task, priority, config, queue_name, channel=None):
     connection = None
     if channel is None:
         connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
-        channel = _publisher_channel(connection, config)
+        channel = connection.channel()
+        if queue_name == config['RABBITMQ_INTAKE_QUEUE']:
+            _queue_declare(channel, config)
+        elif queue_name == config['RABBITMQ_COMPANY_QUEUE']:
+            _company_queue_declare(channel, config)
+        elif queue_name == config['RABBITMQ_GPU_QUEUE']:
+            _gpu_queue_declare(channel, config)
+        else:
+            _company_queue_declare(channel, config)
+        channel.confirm_delivery()
     try:
         channel.basic_publish(
             exchange='',
-            routing_key=config['RABBITMQ_QUEUE_NAME'],
+            routing_key=queue_name,
             body=json_util.dumps(task).encode('utf-8'),
             properties=pika.BasicProperties(
                 delivery_mode=2,
@@ -149,23 +205,20 @@ def enqueue_summary(
             'language': language,
             'content_hash': content_hash,
         }
-    if existing and existing.get('status') == 'completed' and existing.get('content_hash') == content_hash:
-        return reference, False
-    if (
-        existing
-        and existing.get('content_hash') == content_hash
-        and existing.get('status') in {'pending', 'processing'}
-    ):
-        task = {
-            **reference,
-            'content_hash': content_hash,
-            'source_collection': source_collection,
-            'source_id': source_id,
-            'details': compacted if source_collection is None else None,
-            'language': language,
-        }
-        _publish(task, priority, config, channel)
-        return reference, True
+    if existing and existing.get('content_hash') == content_hash:
+        if existing.get('status') in {'completed', 'processing'}:
+            return reference, False
+        if existing.get('status') in {'pending', 'failed'}:
+            task = {
+                **reference,
+                'content_hash': content_hash,
+                'source_collection': source_collection,
+                'source_id': source_id,
+                'details': compacted if source_collection is None else None,
+                'language': language,
+            }
+            _publish(task, priority, config, channel)
+            return reference, True
 
     now = _now()
     entry = {
@@ -341,12 +394,13 @@ def _claim_task(task, owner, config):
     )
 
 
-def _complete_task(task, owner, result):
+def _complete_task(task, owner, result, provider='company_ai'):
     values = {
         'status': 'completed',
         'result': result,
         'completed_at': _now(),
         'updated_at': _now(),
+        'provider': provider,
     }
     _update_task_entry(task, owner, values, ['processing_owner', 'processing_started_at', 'error'])
 
@@ -421,15 +475,14 @@ def _requeue_task(task, owner, error, config, channel, claimed):
         {'status': 'pending', 'error': str(error), 'updated_at': _now()},
         ['processing_owner', 'processing_started_at'],
     )
-    _publish(task, config['RABBITMQ_BACKGROUND_PRIORITY'], config, channel)
-
-
-def _refresh_provider_room(provider):
-    try:
-        provider.delete_room()
-    except Exception:
-        pass
-    provider.create_room()
+    if config['COMPANY_AI_ENABLED']:
+        _publish_to_queue(
+            task,
+            config['RABBITMQ_BACKGROUND_PRIORITY'],
+            config,
+            config['RABBITMQ_COMPANY_QUEUE'],
+            channel,
+        )
 
 
 def _update_task_entry(task, owner, values, unset_fields):
@@ -477,6 +530,31 @@ def _reset_processing_for_owner(owner):
     )
 
 
+def _reset_all_processing():
+    now = _now()
+    database = get_vulnerabilities_database()
+    for metadata in database.list_collections(filter={'type': 'collection'}):
+        collection_name = metadata['name']
+        if collection_name.startswith('system.'):
+            continue
+        for language in REPORT_LANGUAGES:
+            path = _language_path(language)
+            database[collection_name].update_many(
+                {f'{path}.status': 'processing'},
+                {
+                    '$set': {f'{path}.status': 'pending', f'{path}.updated_at': now},
+                    '$unset': {f'{path}.processing_owner': '', f'{path}.processing_started_at': ''},
+                },
+            )
+    _upload_cache_collection().update_many(
+        {'status': 'processing'},
+        {
+            '$set': {'status': 'pending', 'updated_at': now},
+            '$unset': {'processing_owner': '', 'processing_started_at': ''},
+        },
+    )
+
+
 def _release_processing_task(task, owner, config=None, channel=None):
     _update_task_entry(
         task,
@@ -485,7 +563,15 @@ def _release_processing_task(task, owner, config=None, channel=None):
         ['processing_owner', 'processing_started_at', 'error'],
     )
     if config is not None:
-        _publish(task, config['RABBITMQ_BACKGROUND_PRIORITY'], config, channel)
+        queue_name = _route_destination(task, config, channel)
+        if queue_name:
+            _publish_to_queue(
+                task,
+                config['RABBITMQ_BACKGROUND_PRIORITY'],
+                config,
+                queue_name,
+                channel,
+            )
 
 
 def _shutdown_worker(owner, provider, config, channel, active_task=None, active_method=None):
@@ -507,23 +593,61 @@ def _shutdown_worker(owner, provider, config, channel, active_task=None, active_
             pass
 
 
+def _process_company_task(task, claimed, owner, config):
+    provider = CompanyAIProvider(config)
+    try:
+        provider.create_room()
+        details = _task_details(task, config)
+        if summary_content_hash(details, task['language'], config) != task['content_hash']:
+            raise ValueError('Source details changed while the task was queued.')
+        result, _ = generate_item_data(
+            provider,
+            details,
+            claimed['source_key'],
+            task['language'],
+            config['REPORT_ITEM_JSON_RETRIES'],
+        )
+        _complete_task(task, owner, result, provider='company_ai')
+        highlight = (result or {}).get('highlight') or {}
+        _debug_log(
+            'H3',
+            'company_ai_preprocessor._process_company_task',
+            'item_completed',
+            {
+                'language': task.get('language'),
+                'title': (highlight.get('title') or '')[:80],
+                'severity': (highlight.get('severity') or '')[:40],
+                'title_mojibake': _looks_like_utf8_mojibake(highlight.get('title') or ''),
+                'has_cjk': bool(
+                    re.search(
+                        r'[\u4e00-\u9fff]',
+                        (highlight.get('title') or '') + (highlight.get('summary') or ''),
+                    )
+                ),
+            },
+        )
+        return result
+    finally:
+        try:
+            provider.delete_room()
+        except Exception:
+            pass
+
+
 def _consume(config, worker_number):
     owner = f'{uuid.uuid4()}:{worker_number}'
     while not STOP_EVENT.is_set():
         connection = None
-        provider = None
         channel = None
         active_task = None
         active_method = None
         try:
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
-            _queue_declare(channel, config)
+            _company_queue_declare(channel, config)
             channel.basic_qos(prefetch_count=1)
-            provider = CompanyAIProvider(config)
-            provider.create_room()
             for method, _, body in channel.consume(
-                config['RABBITMQ_QUEUE_NAME'],
+                config['RABBITMQ_COMPANY_QUEUE'],
                 inactivity_timeout=1,
             ):
                 if STOP_EVENT.is_set():
@@ -540,38 +664,7 @@ def _consume(config, worker_number):
                 if STOP_EVENT.is_set():
                     break
                 try:
-                    details = _task_details(task, config)
-                    if summary_content_hash(details, task['language'], config) != task['content_hash']:
-                        raise ValueError('Source details changed while the task was queued.')
-                    result, _ = generate_item_data(
-                        provider,
-                        details,
-                        claimed['source_key'],
-                        task['language'],
-                        config['REPORT_ITEM_JSON_RETRIES'],
-                    )
-                    _complete_task(task, owner, result)
-                    # region agent log
-                    highlight = (result or {}).get('highlight') or {}
-                    _debug_log(
-                        'H3',
-                        'company_ai_preprocessor._consume',
-                        'item_completed',
-                        {
-                            'language': task.get('language'),
-                            'title': (highlight.get('title') or '')[:80],
-                            'severity': (highlight.get('severity') or '')[:40],
-                            'title_mojibake': _looks_like_utf8_mojibake(highlight.get('title') or ''),
-                            'has_cjk': bool(
-                                re.search(
-                                    r'[\u4e00-\u9fff]',
-                                    (highlight.get('title') or '') + (highlight.get('summary') or ''),
-                                )
-                            ),
-                        },
-                    )
-                    # endregion
-                    _refresh_provider_room(provider)
+                    _process_company_task(task, claimed, owner, config)
                 except Exception as exc:
                     _requeue_task(task, owner, exc, config, channel, claimed)
                 active_task = None
@@ -581,34 +674,105 @@ def _consume(config, worker_number):
             print(f'Company AI worker {worker_number} reconnecting after error: {exc}', flush=True)
             STOP_EVENT.wait(5)
         finally:
-            _shutdown_worker(owner, provider, config, channel, active_task, active_method)
+            _shutdown_worker(owner, None, config, channel, active_task, active_method)
             if connection is not None and connection.is_open:
                 connection.close()
 
 
 def _scan_loop(config):
     while not STOP_EVENT.is_set():
+        if not config['COMPANY_AI_ENABLED'] and not config['GPU_ENABLED']:
+            STOP_EVENT.wait(config['COMPANY_AI_SCAN_INTERVAL_SECONDS'])
+            continue
         try:
             queued = scan_unprocessed(config)
-            print(f'Company AI scan queued {queued} summaries.', flush=True)
+            if queued:
+                print(f'Company AI scan queued {queued} summaries.', flush=True)
         except (PyMongoError, pika.exceptions.AMQPError, ValueError) as exc:
             print(f'Company AI scan failed: {exc}', flush=True)
         STOP_EVENT.wait(config['COMPANY_AI_SCAN_INTERVAL_SECONDS'])
 
 
+def _route_destination(task, config, channel):
+    company_enabled = config['COMPANY_AI_ENABLED']
+    gpu_enabled = config['GPU_ENABLED'] and task.get('storage') == 'source'
+    if gpu_enabled:
+        status = _gpu_queue_declare(channel, config)
+        if not company_enabled or status.method.message_count < config['GPU_QUEUE_BACKLOG_LIMIT']:
+            return config['RABBITMQ_GPU_QUEUE']
+    if company_enabled:
+        return config['RABBITMQ_COMPANY_QUEUE']
+    return None
+
+
+def _route_task(task, priority, config, channel):
+    queue_name = _route_destination(task, config, channel)
+    if queue_name is None:
+        return None
+    _publish_to_queue(task, priority, config, queue_name, channel)
+    return queue_name
+
+
+def _route_loop(config):
+    while not STOP_EVENT.is_set():
+        connection = None
+        try:
+            connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
+            channel = connection.channel()
+            _queue_declare(channel, config)
+            _company_queue_declare(channel, config)
+            channel.confirm_delivery()
+            channel.basic_qos(prefetch_count=1)
+            for method, properties, body in channel.consume(
+                config['RABBITMQ_INTAKE_QUEUE'],
+                inactivity_timeout=1,
+            ):
+                if STOP_EVENT.is_set():
+                    break
+                if method is None:
+                    continue
+                task = json_util.loads(body.decode('utf-8'))
+                priority = getattr(properties, 'priority', None)
+                if priority is None:
+                    priority = config['RABBITMQ_BACKGROUND_PRIORITY']
+                _route_task(task, priority, config, channel)
+                channel.basic_ack(method.delivery_tag)
+        except Exception as exc:
+            print(f'Preprocessing router reconnecting after error: {exc}', flush=True)
+            STOP_EVENT.wait(5)
+        finally:
+            if connection is not None and connection.is_open:
+                connection.close()
+
+
 def run_worker(config):
     ensure_cache_indexes()
-    threads = [threading.Thread(target=_scan_loop, args=(config,), daemon=True)]
-    threads.extend(
-        threading.Thread(target=_consume, args=(config, number), daemon=True)
-        for number in range(config['COMPANY_AI_PARALLEL_CHATS'])
-    )
-    for thread in threads:
-        thread.start()
-    while not STOP_EVENT.wait(1):
-        pass
-    for thread in threads:
-        thread.join(timeout=10)
+    STOP_EVENT.clear()
+    _reset_all_processing()
+    _try_clear_queues(config)
+    threads = []
+    if config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']:
+        threads.extend([
+            threading.Thread(target=_scan_loop, args=(config,), daemon=True),
+            threading.Thread(target=_route_loop, args=(config,), daemon=True),
+        ])
+    if config['COMPANY_AI_ENABLED']:
+        threads.extend(
+            threading.Thread(target=_consume, args=(config, number), daemon=True)
+            for number in range(config['COMPANY_AI_PARALLEL_CHATS'])
+        )
+    if not threads:
+        print('All preprocessing providers are disabled; waiting for shutdown.', flush=True)
+    try:
+        for thread in threads:
+            thread.start()
+        while not STOP_EVENT.wait(1):
+            pass
+        for thread in threads:
+            thread.join()
+    finally:
+        _reset_all_processing()
+        _try_clear_queues(config)
 
 
 def main():

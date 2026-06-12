@@ -11,6 +11,10 @@
         article { border-left: 4px solid #6f42c1; background: #faf8ff; padding: 16px 20px; margin: 16px 0; }
         .meta { color: #667085; font-size: 0.9rem; }
         li { margin-bottom: 6px; }
+        .item-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.95rem; }
+        .item-table caption { caption-side: top; text-align: left; font-weight: 600; margin-bottom: 8px; color: #45237b; }
+        .item-table th, .item-table td { border: 1px solid #d0d5dd; padding: 8px 10px; text-align: left; vertical-align: top; }
+        .item-table th { background: #f4f0ff; }
     </style>
 </head>
 <body>
@@ -26,6 +30,19 @@
         <h3>{{ item.title }}</h3>
         <p class="meta">{{ item.code or '' }}{% if item.severity %} | {{ item.severity }}{% endif %}</p>
         <p>{{ item.summary }}</p>
+        {% if item.table and item.table.headers %}
+        <table class="item-table">
+            {% if item.table.caption %}<caption>{{ item.table.caption }}</caption>{% endif %}
+            <thead>
+                <tr>{% for header in item.table.headers %}<th>{{ header }}</th>{% endfor %}</tr>
+            </thead>
+            <tbody>
+                {% for row in item.table.rows or [] %}
+                <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
         {% if item.affected %}<p><strong>{{ labels.affected }}:</strong> {{ item.affected|join(', ') }}</p>{% endif %}
         {% if item.references %}
         <p><strong>{{ labels.references }}:</strong></p>

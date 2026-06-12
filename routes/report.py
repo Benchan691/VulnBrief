@@ -1,12 +1,17 @@
 import json
-import os
-
 from bson import ObjectId, json_util
-from flask import current_app, jsonify, render_template, request, send_from_directory
+from flask import Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from mongo import get_web_database
-from report_harness import create_job, resolve_review_selections, start_job
+from report_harness import (
+    _assemble_report,
+    _deterministic_final,
+    _render_job_html,
+    create_job,
+    resolve_review_selections,
+    start_job,
+)
 from . import report_blueprint
 from .common import login_required
 
@@ -17,6 +22,12 @@ def _jobs():
 
 def _serialize_job(job):
     job = dict(job)
+    legacy_fields = ('html', 'html_updated_at', 'html_path')
+    if job.get('_id') is not None and any(field in job for field in legacy_fields):
+        _jobs().update_one(
+            {'_id': job['_id']},
+            {'$unset': {field: '' for field in legacy_fields}},
+        )
     job['id'] = str(job.pop('_id'))
     job.setdefault('generation_mode', 'company_ai')
     job.setdefault('effective_generation_mode', job['generation_mode'])
@@ -24,6 +35,10 @@ def _serialize_job(job):
     job.setdefault('effective_report_language', job['report_language'])
     job.pop('records', None)
     job.pop('company_ai_conversation_id', None)
+    job.pop('html', None)
+    job.pop('html_updated_at', None)
+    job.pop('html_path', None)
+    job.pop('report', None)
     return json_util.loads(json_util.dumps(job))
 
 
@@ -97,18 +112,43 @@ def get_report_job(job_id):
 
 def _send_job_html(job_id, as_attachment):
     job = _get_job(job_id)
-    if job is None or not job.get('html_path') or (as_attachment and job.get('status') != 'completed'):
+    if job is None or (as_attachment and job.get('status') != 'completed'):
+        return jsonify({'error': 'Completed report not found.'}), 404
+    _jobs().update_one(
+        {'_id': job['_id']},
+        {'$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
+    )
+    report = job.get('report')
+    if report is None and job.get('status') == 'running':
+        stored_results = list(
+            get_web_database()['report_job_results']
+            .find({'job_id': job['_id']})
+            .sort('position', 1)
+        )
+        item_results = [
+            {
+                'highlight': item.get('highlight') or {},
+                'recommendations': item.get('recommendations') or [],
+            }
+            for item in stored_results
+        ]
+        if item_results:
+            language = job.get('effective_report_language', job.get('report_language', 'en'))
+            report = _assemble_report(
+                _deterministic_final(item_results, language),
+                item_results,
+                language,
+            )
+    if report is None:
         return jsonify({'error': 'Completed report not found.'}), 404
 
-    base = os.path.realpath(current_app.config['NEWSLETTER_ROOT'])
-    path = os.path.realpath(os.path.join(base, job['html_path']))
-    if not path.startswith(base + os.sep):
-        return jsonify({'error': 'Invalid report path.'}), 403
-    return send_from_directory(
-        os.path.dirname(path),
-        os.path.basename(path),
-        as_attachment=as_attachment,
-    )
+    job.setdefault('source_count', len(report.get('highlights') or []))
+    job.setdefault('effective_report_language', job.get('report_language', 'en'))
+    rendered = _render_job_html(job, report)
+    headers = {}
+    if as_attachment:
+        headers['Content-Disposition'] = f'attachment; filename="report-{job_id}.html"'
+    return Response(rendered, content_type='text/html; charset=utf-8', headers=headers)
 
 
 @report_blueprint.route('/reports/<job_id>/preview')

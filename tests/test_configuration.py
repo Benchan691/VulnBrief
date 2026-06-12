@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from configuration import load_application_config
 
 
@@ -64,6 +66,9 @@ def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
     (config_dir / 'config.json').write_text(json.dumps(config), encoding='utf-8')
 
     loaded = load_application_config(str(tmp_path))
+    assert loaded['ATLAS_MONGO_URI'] == 'mongodb://example/'
+    assert loaded['LOCAL_MONGO_URI'] == 'mongodb://example/'
+    assert loaded['LOCAL_DATABASE'] == 'web'
     assert loaded['COMPANY_AI_BASE_URL'] == 'https://company.example'
     assert loaded['COMPANY_AI_USERNAME'] == 'owner'
     assert loaded['COMPANY_AI_PASSWORD'] == 'password'
@@ -86,14 +91,22 @@ def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
     assert loaded['COMPANY_AI_TIMEOUT_SECONDS'] == 90
     assert loaded['COMPANY_AI_RETRIES'] == 3
     assert loaded['COMPANY_AI_PARALLEL_CHATS'] == 6
+    assert loaded['COMPANY_AI_ENABLED'] is True
     assert loaded['RABBITMQ_URL'] == 'amqp://rabbit.example/'
     assert loaded['RABBITMQ_QUEUE_NAME'] == 'summaries'
+    assert loaded['RABBITMQ_INTAKE_QUEUE'] == 'summaries'
+    assert loaded['RABBITMQ_GPU_QUEUE'] == 'gpu_preprocessing'
+    assert loaded['RABBITMQ_COMPANY_QUEUE'] == 'company_ai_processing'
     assert loaded['RABBITMQ_MAX_PRIORITY'] == 8
     assert loaded['RABBITMQ_BACKGROUND_PRIORITY'] == 2
     assert loaded['RABBITMQ_REPORT_PRIORITY'] == 8
     assert loaded['COMPANY_AI_SCAN_INTERVAL_SECONDS'] == 30
     assert loaded['COMPANY_AI_STALE_PROCESSING_SECONDS'] == 600
     assert loaded['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'] == 45
+    assert loaded['GPU_QUEUE_BACKLOG_LIMIT'] == 20
+    assert loaded['GPU_ENABLED'] is False
+    assert loaded['GPU_START_PROMPT'] == 'initial'
+    assert loaded['PREPROCESSING_CACHE_VERSION'] == '1'
     assert loaded['REPORT_ITEM_JSON_RETRIES'] == 4
     assert loaded['REPORT_FINAL_JSON_RETRIES'] == 5
     assert loaded['REPORT_JSON_ERROR_MESSAGE'] == 'Configured JSON error: ${error}'
@@ -115,6 +128,45 @@ def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
     assert overridden['COMPANY_AI_PARALLEL_CHATS'] == 9
     assert overridden['RABBITMQ_REPORT_PRIORITY'] == 7
     assert overridden['REPORT_JSON_ERROR_MESSAGE'] == 'Environment JSON error: ${error}'
+
+    monkeypatch.delenv('RABBITMQ_INTAKE_QUEUE', raising=False)
+    monkeypatch.setenv('RABBITMQ_QUEUE_NAME', 'legacy-environment-intake')
+    legacy_queue = load_application_config(str(tmp_path))
+    assert legacy_queue['RABBITMQ_INTAKE_QUEUE'] == 'legacy-environment-intake'
+
+
+def test_separate_mongo_connections_override_legacy_uri(tmp_path, monkeypatch):
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.json').write_text(json.dumps({
+        'atlas_mongo_uri': 'mongodb+srv://atlas.example/',
+        'local_mongo_uri': 'mongodb://local.example/',
+        'local_database': 'local_app',
+        'vulnerabilities_database': 'vulnerabilities',
+        'flask_secret_key': 'secret',
+    }), encoding='utf-8')
+
+    loaded = load_application_config(str(tmp_path))
+    assert loaded['ATLAS_MONGO_URI'] == 'mongodb+srv://atlas.example/'
+    assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
+    assert loaded['LOCAL_DATABASE'] == 'local_app'
+
+    monkeypatch.setenv('LOCAL_MONGO_URI', 'mongodb://environment-local/')
+    assert load_application_config(str(tmp_path))['LOCAL_MONGO_URI'] == (
+        'mongodb://environment-local/'
+    )
+
+
+def test_mongo_connections_are_required(tmp_path):
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.json').write_text(json.dumps({
+        'vulnerabilities_database': 'vulnerabilities',
+        'flask_secret_key': 'secret',
+    }), encoding='utf-8')
+
+    with pytest.raises(ValueError, match='atlas_mongo_uri and local_mongo_uri'):
+        load_application_config(str(tmp_path))
 
 
 def test_file_only_settings_can_be_overridden_by_environment(tmp_path, monkeypatch):

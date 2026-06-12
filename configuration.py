@@ -50,17 +50,45 @@ def load_application_config(base_dir):
     company_ai_config = file_config.get('company_ai', {})
     rabbitmq_config = file_config.get('rabbitmq', {})
     preprocessing_config = file_config.get('company_ai_preprocessing', {})
+    gpu_config = file_config.get('gpu_preprocessing', {})
     report_config = file_config.get('report_processing', {})
+    web_auth_config = file_config.get('web_auth', {})
+    legacy_queue_name = _env_str(
+        'RABBITMQ_QUEUE_NAME',
+        rabbitmq_config.get('intake_queue', rabbitmq_config.get(
+            'queue_name',
+            'company_ai_preprocessing',
+        )),
+    )
+    intake_queue = _env_str('RABBITMQ_INTAKE_QUEUE', legacy_queue_name)
     newsletter_root = file_config.get('newsletter_root', 'newsletters')
     sources_config = file_config.get('sources_config', os.path.join('config', 'sources.json'))
     if not os.path.isabs(newsletter_root):
         newsletter_root = os.path.join(base_dir, newsletter_root)
     if not os.path.isabs(sources_config):
         sources_config = os.path.join(base_dir, sources_config)
+    atlas_mongo_uri = _env_str(
+        'ATLAS_MONGO_URI',
+        file_config.get('atlas_mongo_uri', file_config.get('mongo_uri', '')),
+    )
+    local_mongo_uri = _env_str(
+        'LOCAL_MONGO_URI',
+        file_config.get('local_mongo_uri', file_config.get('mongo_uri', '')),
+    )
+    if not atlas_mongo_uri or not local_mongo_uri:
+        raise ValueError('Both atlas_mongo_uri and local_mongo_uri must be configured.')
 
     return {
-        'MONGO_URI': _env_str('MONGO_URI', file_config['mongo_uri']),
-        'WEB_DATABASE': _env_str('WEB_DATABASE', file_config['web_database']),
+        'ATLAS_MONGO_URI': atlas_mongo_uri,
+        'LOCAL_MONGO_URI': local_mongo_uri,
+        'LOCAL_DATABASE': _env_str(
+            'LOCAL_DATABASE',
+            file_config.get('local_database', file_config.get('web_database', 'web')),
+        ),
+        'WEB_DATABASE': _env_str(
+            'WEB_DATABASE',
+            file_config.get('local_database', file_config.get('web_database', 'web')),
+        ),
         'VULNERABILITIES_DATABASE': _env_str(
             'VULNERABILITIES_DATABASE',
             file_config['vulnerabilities_database'],
@@ -70,6 +98,14 @@ def load_application_config(base_dir):
             file_config.get('review_view_suffix', '_review'),
         ),
         'SECRET_KEY': _env_str('FLASK_SECRET_KEY', file_config['flask_secret_key']),
+        'WEB_AUTH_BOOTSTRAP_USERNAME': _env_str(
+            'WEB_AUTH_BOOTSTRAP_USERNAME',
+            web_auth_config.get('bootstrap_username', 'admin'),
+        ),
+        'WEB_AUTH_BOOTSTRAP_PASSWORD': _env_str(
+            'WEB_AUTH_BOOTSTRAP_PASSWORD',
+            web_auth_config.get('bootstrap_password', 'changeme'),
+        ),
         'NEWSLETTER_ROOT': _env_str('NEWSLETTER_ROOT', newsletter_root),
         'SOURCES_CONFIG': _env_str('SOURCES_CONFIG', sources_config),
         'COMPANY_AI_BASE_URL': _env_str(
@@ -164,13 +200,29 @@ def load_application_config(base_dir):
             'COMPANY_AI_PARALLEL_CHATS',
             company_ai_config.get('parallel_chats', 4),
         ),
+        'COMPANY_AI_ENABLED': _env_bool(
+            'COMPANY_AI_ENABLED',
+            company_ai_config.get('enabled', True),
+        ),
         'RABBITMQ_URL': _env_str(
             'RABBITMQ_URL',
             rabbitmq_config.get('url', 'amqp://guest:guest@localhost:5672/%2F'),
         ),
+        'RABBITMQ_INTAKE_QUEUE': _env_str(
+            'RABBITMQ_INTAKE_QUEUE',
+            intake_queue,
+        ),
         'RABBITMQ_QUEUE_NAME': _env_str(
             'RABBITMQ_QUEUE_NAME',
-            rabbitmq_config.get('queue_name', 'company_ai_preprocessing'),
+            intake_queue,
+        ),
+        'RABBITMQ_GPU_QUEUE': _env_str(
+            'RABBITMQ_GPU_QUEUE',
+            rabbitmq_config.get('gpu_queue', 'gpu_preprocessing'),
+        ),
+        'RABBITMQ_COMPANY_QUEUE': _env_str(
+            'RABBITMQ_COMPANY_QUEUE',
+            rabbitmq_config.get('company_queue', 'company_ai_processing'),
         ),
         'RABBITMQ_MAX_PRIORITY': min(255, _env_int(
             'RABBITMQ_MAX_PRIORITY',
@@ -199,6 +251,50 @@ def load_application_config(base_dir):
         'COMPANY_AI_MAX_TASK_ATTEMPTS': _env_int(
             'COMPANY_AI_MAX_TASK_ATTEMPTS',
             preprocessing_config.get('max_task_attempts', 10),
+        ),
+        'GPU_QUEUE_BACKLOG_LIMIT': _env_int(
+            'GPU_QUEUE_BACKLOG_LIMIT',
+            gpu_config.get('queue_backlog_limit', 20),
+        ),
+        'GPU_ENABLED': _env_bool(
+            'GPU_ENABLED',
+            gpu_config.get('enabled', False),
+        ),
+        'PREPROCESSING_CACHE_VERSION': _env_str(
+            'PREPROCESSING_CACHE_VERSION',
+            preprocessing_config.get('cache_version', '1'),
+        ),
+        'GPU_WORKER_CONCURRENCY': _env_int(
+            'GPU_WORKER_CONCURRENCY',
+            gpu_config.get('worker_concurrency', 1),
+        ),
+        'GPU_MAX_TASK_ATTEMPTS': _env_int(
+            'GPU_MAX_TASK_ATTEMPTS',
+            gpu_config.get('max_task_attempts', 2),
+        ),
+        'GPU_MODEL_PATH': _env_str(
+            'GPU_MODEL_PATH',
+            gpu_config.get('model_path', '/models/qwen-14b-q4.gguf'),
+        ),
+        'GPU_MODEL_NAME': _env_str(
+            'GPU_MODEL_NAME',
+            gpu_config.get('model_name', 'qwen-local'),
+        ),
+        'GPU_CONTEXT_SIZE': _env_int(
+            'GPU_CONTEXT_SIZE',
+            gpu_config.get('context_size', 16384),
+        ),
+        'GPU_TENSOR_SPLIT': _env_str(
+            'GPU_TENSOR_SPLIT',
+            gpu_config.get('tensor_split', '1,1,1'),
+        ),
+        'GPU_INFERENCE_BASE_URL': _env_str(
+            'GPU_INFERENCE_BASE_URL',
+            gpu_config.get('inference_base_url', 'http://llama-server:8080/v1'),
+        ),
+        'GPU_START_PROMPT': _env_str(
+            'GPU_START_PROMPT',
+            gpu_config.get('start_prompt', company_ai_config.get('start_prompt', '')),
         ),
         'REPORT_ITEM_JSON_RETRIES': _env_int(
             'REPORT_ITEM_JSON_RETRIES',
@@ -244,5 +340,9 @@ def load_application_config(base_dir):
         'REPORT_PREVIEW_AFTER_EACH_ITEM': _env_bool(
             'REPORT_PREVIEW_AFTER_EACH_ITEM',
             report_config.get('preview_after_each_item', True),
+        ),
+        'SCHEDULER_SCAN_INTERVAL_SECONDS': _env_int(
+            'SCHEDULER_SCAN_INTERVAL_SECONDS',
+            file_config.get('scheduler', {}).get('scan_interval_seconds', 60),
         ),
     }

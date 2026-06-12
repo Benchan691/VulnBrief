@@ -10,7 +10,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from string import Template
 from zoneinfo import ZoneInfo
 
@@ -34,8 +33,6 @@ from review_data import (
 
 WORKER_LOCK = threading.Lock()
 DEBUG_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cursor', 'debug-7a435c.log')
-
-
 def _debug_log(hypothesis_id, location, message, data=None, run_id='pre-fix'):
     # region agent log
     try:
@@ -84,6 +81,7 @@ REPORT_LANGUAGES = {
 HTML_LANGUAGE_CODES = {'en': 'en', 'zh': 'zh-Hant', 'ch': 'zh-Hans'}
 REPORT_LABELS = {
     'en': {
+        'report_title': 'Cybersecurity Report',
         'generated': 'Generated {date} from {count} source records.',
         'executive_summary': 'Executive Summary',
         'important_vulnerabilities': 'Important Vulnerabilities',
@@ -95,6 +93,7 @@ REPORT_LABELS = {
         'strategic_recommendations': 'Strategic Recommendations',
     },
     'zh': {
+        'report_title': '網絡安全報告',
         'generated': '於 {date} 根據 {count} 筆來源記錄產生。',
         'executive_summary': '執行摘要',
         'important_vulnerabilities': '重要漏洞',
@@ -106,6 +105,7 @@ REPORT_LABELS = {
         'strategic_recommendations': '策略建議',
     },
     'ch': {
+        'report_title': '网络安全报告',
         'generated': '于 {date} 根据 {count} 条来源记录生成。',
         'executive_summary': '执行摘要',
         'important_vulnerabilities': '重要漏洞',
@@ -117,6 +117,46 @@ REPORT_LABELS = {
         'strategic_recommendations': '战略建议',
     },
 }
+HIGHLIGHT_TABLE_SCHEMA = {
+    'type': 'object',
+    'required': ['headers', 'rows'],
+    'properties': {
+        'caption': {'type': 'string'},
+        'headers': {
+            'type': 'array',
+            'items': {'type': 'string'},
+            'minItems': 1,
+            'maxItems': 12,
+        },
+        'rows': {
+            'type': 'array',
+            'maxItems': 50,
+            'items': {
+                'type': 'array',
+                'items': {'type': 'string'},
+            },
+        },
+    },
+}
+HIGHLIGHT_PROPERTIES = {
+    'title': {'type': 'string'},
+    'code': {'type': 'string'},
+    'severity': {'type': 'string'},
+    'summary': {'type': 'string'},
+    'affected': {'type': 'array', 'items': {'type': 'string'}},
+    'references': {'type': 'array', 'items': {'type': 'string'}},
+    'table': HIGHLIGHT_TABLE_SCHEMA,
+}
+AI_HIGHLIGHT_SCHEMA = {
+    'type': 'object',
+    'required': ['summary'],
+    'properties': HIGHLIGHT_PROPERTIES,
+}
+REPORT_HIGHLIGHT_SCHEMA = {
+    'type': 'object',
+    'required': ['title', 'summary'],
+    'properties': HIGHLIGHT_PROPERTIES,
+}
 REPORT_SCHEMA = {
     'type': 'object',
     'required': ['title', 'executive_summary', 'highlights', 'trends', 'recommendations'],
@@ -125,18 +165,7 @@ REPORT_SCHEMA = {
         'executive_summary': {'type': 'string'},
         'highlights': {
             'type': 'array',
-            'items': {
-                'type': 'object',
-                'required': ['title', 'summary'],
-                'properties': {
-                    'title': {'type': 'string'},
-                    'code': {'type': 'string'},
-                    'severity': {'type': 'string'},
-                    'summary': {'type': 'string'},
-                    'affected': {'type': 'array', 'items': {'type': 'string'}},
-                    'references': {'type': 'array', 'items': {'type': 'string'}},
-                },
-            },
+            'items': REPORT_HIGHLIGHT_SCHEMA,
         },
         'trends': {'type': 'array', 'items': {'type': 'string'}},
         'recommendations': {'type': 'array', 'items': {'type': 'string'}},
@@ -146,13 +175,13 @@ ITEM_SCHEMA = {
     'type': 'object',
     'required': ['highlight', 'recommendations'],
     'properties': {
-        'highlight': REPORT_SCHEMA['properties']['highlights']['items'],
+        'highlight': AI_HIGHLIGHT_SCHEMA,
         'recommendations': {'type': 'array', 'items': {'type': 'string'}},
     },
 }
 FINAL_SCHEMA = {
     'type': 'object',
-    'required': ['title', 'executive_summary', 'trends', 'recommendations'],
+    'required': ['executive_summary', 'trends', 'recommendations'],
     'properties': {
         'title': {'type': 'string'},
         'executive_summary': {'type': 'string'},
@@ -160,6 +189,11 @@ FINAL_SCHEMA = {
         'recommendations': {'type': 'array', 'items': {'type': 'string'}},
     },
 }
+
+
+def _fixed_report_title(report_language):
+    labels = REPORT_LABELS.get(report_language, REPORT_LABELS['en'])
+    return labels['report_title']
 
 
 def _clean(value, depth=0):
@@ -304,6 +338,25 @@ def estimate_tokens(value):
 def json_error_prompt(provider, error):
     template = getattr(provider, 'json_error_message', DEFAULT_JSON_ERROR_MESSAGE)
     return Template(template).safe_substitute(error=str(error))
+
+
+def _item_schema_example(report_language):
+    language = REPORT_LANGUAGES[report_language]
+    return {
+        'highlight': {
+            'code': 'CVE identifier or source code',
+            'severity': 'Severity if known',
+            'summary': f'Evidence-based summary in {language}.',
+            'affected': [f'Affected product in {language}'],
+            'references': ['https://example.com'],
+            'table': {
+                'caption': f'Optional table caption in {language}',
+                'headers': ['Product', 'Version', 'Status'],
+                'rows': [['Example product', '1.0', 'Affected']],
+            },
+        },
+        'recommendations': [f'Prioritized defensive action in {language}.'],
+    }
 
 
 def _response_schema_example(report_language):
@@ -622,7 +675,12 @@ class CompanyAIProvider:
         )
         response.raise_for_status()
 
-    def _chat_once(self, content):
+    def _chat_once(self, content, *, wait_for_response=True):
+        if not wait_for_response:
+            time.sleep(self.sse_delay)
+            self._send_message(content)
+            return ''
+
         result = {'answer': '', 'error': None}
 
         def listen():
@@ -730,15 +788,16 @@ def generate_report_data(provider, records, context_limit, report_language='en')
     return result, usage
 
 
-def generate_item_data(provider, details, identifier, report_language, retries):
+def generate_item_data(provider, details, identifier, report_language, retries, position=1):
     language = REPORT_LANGUAGES[report_language]
-    schema_example = {
-        'highlight': _response_schema_example(report_language)['highlights'][0],
-        'recommendations': [f'Prioritized defensive action in {language}.'],
-    }
+    schema_example = _item_schema_example(report_language)
     system = (
         f'Write one cybersecurity vulnerability report item in {language}. '
         'Use only the provided JSON details. Do not invent facts. Preserve identifiers and URLs. '
+        'Do not return highlight.title; the system assigns titles from source metadata. '
+        'Include highlight.table only when structured comparison (products, versions, patches, '
+        'or CVE mapping) is clearer as a table than prose. Use caption, headers, and rows. '
+        'Omit table when unnecessary. '
         'Return valid JSON only using this exact shape: '
         + compact_json(schema_example)
     )
@@ -748,7 +807,7 @@ def generate_item_data(provider, details, identifier, report_language, retries):
         try:
             result, usage = provider.complete_json(system, prompt)
             validate(instance=result, schema=ITEM_SCHEMA)
-            return result, usage
+            return _finalize_item_result(result, details, identifier, position), usage
         except (ProviderError, ValidationError) as exc:
             error = exc
             if isinstance(exc, ValidationError) and hasattr(provider, 'prepare_json_correction'):
@@ -769,6 +828,7 @@ def generate_final_data(provider, item_results, report_language, retries, config
         try:
             result, usage = provider.complete_json(system, prompt)
             validate(instance=result, schema=FINAL_SCHEMA)
+            result['title'] = _fixed_report_title(report_language)
             return result, usage
         except (ProviderError, ValidationError) as exc:
             error = exc
@@ -840,6 +900,49 @@ def _template_all_values(record, details, *fields):
     return [_strip_html(value) for value in _all_values(record, details, *fields)]
 
 
+def _normalized_details_root(details):
+    if not isinstance(details, dict):
+        return {}
+    if len(details) == 1:
+        inner = next(iter(details.values()))
+        return inner if isinstance(inner, dict) else details
+    return details
+
+
+def _item_title_from_details(details, identifier, position, record=None):
+    record = record if isinstance(record, dict) else {}
+    normalized = _normalized_details_root(details)
+    title = _template_first_value(record, normalized, 'title')
+    code = _template_first_value(record, normalized, 'code', 'cve', 'cve_code')
+    return title or code or identifier or f'Vulnerability record {position}'
+
+
+def _finalize_item_result(result, details, identifier, position, record=None):
+    finalized = dict(result)
+    highlight = dict(finalized.get('highlight') or {})
+    highlight['title'] = _item_title_from_details(details, identifier, position, record)
+    finalized['highlight'] = highlight
+    return finalized
+
+
+def _source_record_for_item(item):
+    record = {}
+    if isinstance(item.get('source_record'), dict):
+        record.update(item['source_record'])
+    if item.get('source_collection') and item.get('selection_id'):
+        document = resolve_vulnerability_document(
+            get_vulnerabilities_database(),
+            item['source_collection'],
+            item['selection_id'],
+            {'title': 1, 'code': 1, 'cve': 1, 'cve_code': 1},
+        )
+        if document:
+            for field in ('title', 'code', 'cve', 'cve_code'):
+                if document.get(field):
+                    record.setdefault(field, document[field])
+    return record
+
+
 def generate_template_report_data(records):
     if not records:
         raise ValueError('At least one vulnerability record is required.')
@@ -900,7 +1003,7 @@ def generate_template_report_data(records):
         trends.append(f'Source-provided severity or status counts: {severity_summary}.')
 
     report = {
-        'title': 'Cybersecurity Report',
+        'title': _fixed_report_title('en'),
         'executive_summary': executive_summary,
         'highlights': highlights,
         'trends': trends,
@@ -976,10 +1079,17 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
         else:
             if not isinstance(item.get('details'), dict):
                 raise ValueError('Each uploaded document must contain a details object.')
+            source_record = {
+                key: item[key]
+                for key in ('title', 'code', 'cve', 'cve_code')
+                if item.get(key)
+            }
             queued = {
                 'details': item['details'],
                 'identifier': str(item.get('_id') or item.get('code') or item.get('title') or position + 1),
             }
+            if source_record:
+                queued['source_record'] = source_record
         queued_inputs.append({'position': position, **queued})
     now = datetime.now(timezone.utc)
     if generation_mode == 'company_ai':
@@ -1058,30 +1168,30 @@ def _deterministic_final(item_results, report_language='en'):
             'summary': item['highlight'].get('summary'),
             'affected': item['highlight'].get('affected'),
             'references': item['highlight'].get('references'),
+            'table': item['highlight'].get('table'),
             'recommendations': item.get('recommendations'),
         }
         for item in item_results
     ]
     report = generate_template_report_data(records)
     return {
-        'title': report['title'],
+        'title': _fixed_report_title(report_language),
         'executive_summary': report['executive_summary'],
         'trends': report['trends'],
         'recommendations': report['recommendations'],
     }
 
 
-def _assemble_report(final_data, item_results):
+def _assemble_report(final_data, item_results, report_language='en'):
     report = dict(final_data)
     report['highlights'] = [item['highlight'] for item in item_results]
+    report['title'] = _fixed_report_title(report_language)
     validate(instance=report, schema=REPORT_SCHEMA)
     return report
 
 
-def _render_job_html(job, report, relative_path):
-    output_path = Path(current_app.config['NEWSLETTER_ROOT']) / relative_path
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    rendered = render_template(
+def _render_job_html(job, report, relative_path=None):
+    return render_template(
         REPORT_TEMPLATE,
         report=report,
         generated_at=datetime.now(timezone.utc),
@@ -1090,9 +1200,6 @@ def _render_job_html(job, report, relative_path):
         html_language=HTML_LANGUAGE_CODES[job['effective_report_language']],
         labels=REPORT_LABELS[job['effective_report_language']],
     )
-    temporary = output_path.with_suffix(output_path.suffix + '.tmp')
-    temporary.write_text(rendered, encoding='utf-8')
-    os.replace(temporary, output_path)
 
 
 def _acquire_worker_lease(owner):
@@ -1139,17 +1246,13 @@ def run_job(app, job_id):
                 job_object_id = ObjectId(job_id)
                 now = datetime.now(timezone.utc)
                 job = collection.find_one({'_id': job_object_id})
-                filename = now.strftime('report-%Y%m%dT%H%M%SZ.html')
-                relative_path = os.path.join('reports', filename)
                 collection.update_one(
                     {'_id': job_object_id},
                     {'$set': {
                         'status': 'running',
                         'updated_at': now,
-                        'html_path': relative_path,
-                    }},
+                    }, '$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
                 )
-                job['html_path'] = relative_path
                 inputs = list(_input_collection().find({'job_id': job_object_id}).sort('position', 1))
                 generation_mode = LEGACY_GENERATION_MODES.get(
                     job.get('generation_mode', 'company_ai'),
@@ -1163,7 +1266,6 @@ def run_job(app, job_id):
                         normalized = next(iter(details.values()), details) if len(details) == 1 else details
                         records.append({'details': normalized})
                     report = generate_template_report_data(records)
-                    _render_job_html(job, report, relative_path)
                     collection.update_one({'_id': job_object_id}, {'$set': {
                         'status': 'completed',
                         'processed_count': len(inputs),
@@ -1238,6 +1340,13 @@ def run_job(app, job_id):
                     else:
                         result = _local_item(details)
                         fallback_reason = 'Unexpected generation mode for item processing.'
+                    result = _finalize_item_result(
+                        result,
+                        details,
+                        identifier,
+                        position,
+                        _source_record_for_item(item),
+                    )
                     if fallback_reason:
                         fallback_count += 1
                         item_errors.append({'position': position, 'identifier': identifier,
@@ -1264,13 +1373,6 @@ def run_job(app, job_id):
                         'updated_at': datetime.now(timezone.utc),
                     }
                     collection.update_one({'_id': job_object_id}, {'$set': progress})
-                    if current_app.config['REPORT_PREVIEW_AFTER_EACH_ITEM']:
-                        preview = _assemble_report(
-                            _deterministic_final(item_results),
-                            item_results,
-                        )
-                        _render_job_html(job, preview, relative_path)
-
                 final_fallback_reason = None
                 final_source = None
                 provider = None
@@ -1343,14 +1445,12 @@ def run_job(app, job_id):
                     },
                 )
                 # endregion
-                report = _assemble_report(final_data, item_results)
-                _render_job_html(job, report, relative_path)
+                report = _assemble_report(final_data, item_results, report_language)
                 completed = {
                     'status': 'completed',
                     'updated_at': datetime.now(timezone.utc),
                     'completed_at': datetime.now(timezone.utc),
                     'report': report,
-                    'html_path': relative_path,
                     'processed_count': len(item_results),
                     'current_position': len(item_results),
                     'item_fallback_count': fallback_count,

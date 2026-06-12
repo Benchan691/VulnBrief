@@ -159,7 +159,7 @@
                 action.textContent = job.error || 'Generation failed.';
                 action.className = 'text-danger small';
             } else {
-                if (job.html_path) {
+                if ((job.processed_count || 0) > 0) {
                     action.innerHTML = '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Progress</button>';
                     action.querySelector('.preview-btn').addEventListener('click', function () {
                         document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';

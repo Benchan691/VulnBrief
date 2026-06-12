@@ -1,4 +1,11 @@
 services:
+  local-mongo:
+    image: mongo:7
+    container_name: webserver-local-mongo
+    restart: unless-stopped
+    volumes:
+      - local-mongo-data:/data/db
+
   web:
     build: .
     container_name: webserver-web
@@ -6,7 +13,9 @@ services:
     ports:
       - "6767:6767"
     environment:
-      MONGO_URI: mongodb://host.docker.internal:27017/
+      LOCAL_MONGO_URI: mongodb://local-mongo:27017/
+    depends_on:
+      - local-mongo
     volumes:
       - ./config/config.json:/app/config/config.json:ro
       - ./newsletters:/app/newsletters
@@ -17,6 +26,23 @@ services:
     restart: unless-stopped
     command: ["python", "company_ai_preprocessor.py"]
     environment:
-      MONGO_URI: mongodb://host.docker.internal:27017/
+      LOCAL_MONGO_URI: mongodb://local-mongo:27017/
+    depends_on:
+      - local-mongo
     volumes:
       - ./config/config.json:/app/config/config.json:ro
+
+  scheduler:
+    build: .
+    container_name: webserver-scheduler
+    restart: unless-stopped
+    command: ["python", "scheduler.py"]
+    environment:
+      LOCAL_MONGO_URI: mongodb://local-mongo:27017/
+    volumes:
+      - ./config/config.json:/app/config/config.json:ro
+    depends_on:
+      - local-mongo
+
+volumes:
+  local-mongo-data:

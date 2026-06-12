@@ -4,8 +4,8 @@ The Reports page supports two explicit generation modes:
 
 - **Company AI** uses pre-generated item JSON from the background preprocessor when
   available, then generates the overall report summary live in a fresh SmartOA room.
-- **Fixed Template** copies source fields into the HTML report template and
-  generates only factual record and severity/status counts.
+- **Fixed Template** copies source fields into a structured report and generates
+  only factual record and severity/status counts.
   It does not require Company AI credentials or make provider requests.
 
 Company AI report jobs accept `report_language` values `en` (English), `zh`
@@ -18,9 +18,9 @@ on each source vulnerability document under `html_json.en`, `html_json.zh`, and
 reusable summaries are stored in `web.company_ai_upload_summaries`. Database jobs
 fetch only the current review's `details` object; uploaded JSON items must also
 contain a `details` object. Useless configured fields are removed recursively and
-JSON is minified before it is sent to AI. Each completed item is persisted and
-refreshes the running HTML preview. A final Company AI call creates the overall
-report summary. Malformed AI JSON receives corrective retries.
+JSON is minified before it is sent to AI. Each completed item is persisted so
+the running preview can be rendered live. A final Company AI call creates the
+overall report summary. Malformed AI JSON receives corrective retries.
 
 Company AI report jobs use this cascade:
 
@@ -28,7 +28,15 @@ Company AI report jobs use this cascade:
 - **Final summary:** live Company AI → deterministic final template
 
 Fixed-template output is report-only and is never written to `html_json` or the
-upload-summary cache. Only the background preprocessor writes those fields.
+upload-summary cache. Only background preprocessors write those fields. Entries
+identify their producer as `gpu_local` or `company_ai`.
+
+Report and item titles are assigned by the system, not Company AI. The report H1
+uses a fixed localized title (`Cybersecurity Report` / `網絡安全報告` /
+`网络安全报告`). Each vulnerability item title comes from source fields (`title`,
+then `code`/`cve`, then the selection identifier). Company AI returns summary,
+metadata, recommendations, and an optional `highlight.table` when tabular data is
+clearer than prose (`caption`, `headers`, `rows`). Omit `table` when unnecessary.
 
 When a background worker fails on an item, it resets the MongoDB entry to
 `pending`, keeps the error in metadata, and republishes the task to the back of
@@ -36,24 +44,32 @@ the queue at background priority instead of leaving it permanently failed.
 After `COMPANY_AI_MAX_TASK_ATTEMPTS` (default 10) attempts, the worker marks the
 entry failed.
 
-Subscriptions are managed at `/subscriptions`. Each record subscribes to review
-collections and can **Run Recent Selection** with a daily, weekly, or custom
-Asia/Hong_Kong time window. Successful runs replace the browser's Vulnerability
-Reviews selection list.
+Subscriptions are managed at `/subscriptions`. Each subscriber has independent
+newsletter and report profiles using the same validated curated filters.
+Newsletter profiles expose a local-MongoDB metadata feed with View and Copy HTML.
+Those actions resolve the latest Atlas source record and render HTML live.
+Report profile Run actions prepare the browser's Vulnerability Reviews selection
+list. Enabled five-field cron schedules are executed in `Asia/Hong_Kong` by the
+dedicated `scheduler.py` process and generate report jobs automatically.
 
 Company AI settings live in the `company_ai` section of `config/config.json`.
+`company_ai.enabled` / `COMPANY_AI_ENABLED` and
+`gpu_preprocessing.enabled` / `GPU_ENABLED` are the router's provider status
+flags. Set a provider false before stopping it; the router never publishes work
+to a disabled provider.
 `start_prompt` primes preprocessor rooms for per-item vulnerability JSON work.
 `summary_prompt` drives the report final executive summary. It supports
-`${language}` placeholders. Report jobs open a fresh chat
+`${language}` placeholders and must return `executive_summary`, `trends`, and
+`recommendations` only (no `title`). Report jobs open a fresh chat
 after per-item results are ready and send `summary_prompt` with the processed
 results. They do not send `start_prompt`.
-`parallel_chats` controls how many independent Company AI rooms the worker opens.
-Each worker closes its current room and opens a fresh one after every successfully
-preprocessed item so later items do not inherit prior conversation context.
-On shutdown (`SIGINT`/`SIGTERM` or `docker compose stop preprocessor`), each worker
-deletes its Company AI chat room, resets any in-flight `processing` entries it owns
-back to `pending`, republishes the interrupted task, and acknowledges the RabbitMQ
-message so work can resume after restart.
+`parallel_chats` controls how many Company AI tasks can run concurrently. Every
+task creates a fresh room, sends `start_prompt`, waits for and ignores that
+priming response, sends the compacted JSON, sends correction errors in the same
+room until valid JSON is produced or retry limits are reached, stores the result,
+and deletes the room. On startup and shutdown, the preprocessor clears all three
+queues and resets in-flight entries to `pending`; the scanner republishes them
+after restart.
 The password is RSA-encrypted for the signed `/api/sys/login` request, then
 `/api/sys/getBotToken` supplies the bot token. SmartBot requests use the bot
 token in `Authorization` and the login/system token in `x-authorization`.
@@ -76,16 +92,18 @@ the full correction prompt sent to Company AI when a JSON response needs
 correction. Use `${error}` where the parser or schema validation error should be
 inserted.
 
-Generated reports are saved below `newsletters/reports/`. Job metadata is
-stored in `web.report_jobs`; queued references/details live temporarily in
-`web.report_job_inputs`, while ordered processed items are persisted in
-`web.report_job_results`.
+Structured report data and job metadata are stored in the local MongoDB
+`report_jobs` collection. Queued references/details live temporarily in
+`report_job_inputs`, while ordered processed items are persisted in
+`report_job_results`. Preview/download routes render HTML live and gradually
+remove legacy stored HTML fields.
 
 ## Independent processes
 
-The web server and Company AI preprocessor are separate processes. They share
-`bootstrap.configure_application()` for config loading and MongoDB setup, but
-neither imports the other.
+The web server, Company AI preprocessor/router, optional standalone GPU
+preprocessor, and scheduler are separate processes.
+They share `bootstrap.configure_application()` for config loading and MongoDB
+setup.
 
 ## Local startup
 
@@ -106,6 +124,7 @@ Start the preprocessing worker and the web server in separate terminals:
 
 ```sh
 .venv/bin/python company_ai_preprocessor.py
+.venv/bin/python scheduler.py
 .venv/bin/python app.py
 ```
 
@@ -118,7 +137,10 @@ docker compose up -d preprocessor
 docker compose up -d web
 ```
 
-Use the CloudAMQP dashboard to monitor queue depth and connections. Background
-source records use low-priority messages. Missing items requested by a report
-are republished at the queue's highest priority. Reports wait for the configured
-timeout, then use the fixed factual template for any item that is still unavailable.
+Use the CloudAMQP dashboard to monitor the intake, GPU, and Company AI queues.
+`GPU_ENABLED` and `COMPANY_AI_ENABLED` are the source of truth for provider
+availability. The router never publishes to a disabled provider. With both
+enabled, Atlas source tasks use GPU capacity first and overflow goes to Company
+AI; uploads always require Company AI. Missing report items use the highest
+priority. Reports wait for the configured timeout, then use the fixed factual
+template for unavailable items.

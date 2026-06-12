@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pymongo.errors import ServerSelectionTimeoutError
@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from app import app
 from mongo import get_web_database
+from newsletter_store import _record_id, get_newsletter_collection
 
 
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')
@@ -17,10 +18,12 @@ def client():
     app.config.update(TESTING=True)
     with app.app_context():
         get_web_database()['subscriptions'].delete_many({'email': TEST_EMAIL})
+        get_newsletter_collection().delete_many({'subscription_emails': TEST_EMAIL})
     client = app.test_client()
     yield client
     with app.app_context():
         get_web_database()['subscriptions'].delete_many({'email': TEST_EMAIL})
+        get_newsletter_collection().delete_many({'subscription_emails': TEST_EMAIL})
 
 
 def authenticate(client):
@@ -47,7 +50,7 @@ def _mock_run_database(monkeypatch, documents_by_source):
         def __init__(self, documents):
             self.documents = documents
 
-        def find(self, mongo_filter, projection):
+        def aggregate(self, pipeline):
             return FakeCursor(self.documents)
 
     class WrappingDatabase:
@@ -90,11 +93,12 @@ def test_subscriptions_crud_validates_review_views(client):
 
     subscriptions = client.get('/api/subscriptions').get_json()['data']
     created_record = next(item for item in subscriptions if item['email'] == TEST_EMAIL)
-    assert created_record == {
-        'email': TEST_EMAIL,
-        'team': 'Test',
-        'subscriptions': ['avd_review', 'hkcert_review'],
-    }
+    assert created_record['email'] == TEST_EMAIL
+    assert created_record['team'] == 'Test'
+    assert created_record['newsletter_profile']['enabled'] is False
+    assert created_record['report_profile']['filters']['collections'] == [
+        'avd_review', 'hkcert_review',
+    ]
 
     updated = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={
         'subscriptions': ['cve_review'],
@@ -116,12 +120,6 @@ def test_subscriptions_run_daily_window_selects_matching_source_documents(client
         'avd': [{'_id': 'avd-1'}],
         'hkcert': [{'_id': 'hk-1'}],
     })
-    monkeypatch.setattr('routes.subscription._boundary_times', lambda: {
-        'yesterday_00': datetime(2026, 6, 5, 0, 0, tzinfo=HONG_KONG),
-        'today_00': datetime(2026, 6, 6, 0, 0, tzinfo=HONG_KONG),
-        'week_ago_00': datetime(2026, 5, 30, 0, 0, tzinfo=HONG_KONG),
-        'now': datetime(2026, 6, 6, 12, 0, tzinfo=HONG_KONG),
-    })
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/run', json={'window': 'daily'})
 
     assert response.status_code == 200
@@ -139,12 +137,6 @@ def test_subscriptions_run_week_window(client, monkeypatch):
     }).status_code == 201
 
     _mock_run_database(monkeypatch, {'avd': [{'_id': 'avd-week'}]})
-    monkeypatch.setattr('routes.subscription._boundary_times', lambda: {
-        'yesterday_00': datetime(2026, 6, 5, 0, 0, tzinfo=HONG_KONG),
-        'today_00': datetime(2026, 6, 6, 0, 0, tzinfo=HONG_KONG),
-        'week_ago_00': datetime(2026, 5, 30, 0, 0, tzinfo=HONG_KONG),
-        'now': datetime(2026, 6, 6, 12, 0, tzinfo=HONG_KONG),
-    })
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/run', json={'window': 'week'})
     assert response.status_code == 200
     assert response.get_json()['count'] > 0
@@ -189,3 +181,140 @@ def test_subscriptions_run_rejects_invalid_window_and_handles_database_failure(c
     monkeypatch.setattr('routes.subscription.get_vulnerabilities_database', unavailable_database)
     failed = client.post(f'/api/subscriptions/{TEST_EMAIL}/run', json={'window': 'daily'})
     assert failed.status_code == 503
+
+
+def test_disabled_report_profile_cannot_run(client):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'enabled': False, 'filters': {}},
+    }).status_code == 201
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/run', json={})
+    assert response.status_code == 400
+    assert response.get_json()['error'] == 'Report profile is disabled.'
+
+
+def test_subscription_rejects_invalid_severity_choice(client):
+    authenticate(client)
+    response = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {
+            'enabled': True,
+            'filters': {'status': 'Urgent'},
+        },
+    })
+    assert response.status_code == 400
+    assert response.get_json()['error'].startswith('Severity/status must be')
+
+
+def _seed_newsletter_feed():
+    now = datetime.now(timezone.utc)
+    get_newsletter_collection().insert_many([
+        {
+            '_id': _record_id('avd', 'avd-1'),
+            'source_collection': 'avd',
+            'selection_id': 'avd-1',
+            'subscription_emails': [TEST_EMAIL],
+            'title': 'Matched Advisory',
+            'template_key': 'generic',
+            'generated_at': now,
+            'html': '<p>matched</p>',
+        },
+        {
+            '_id': _record_id('hkcert', 'hk-1'),
+            'source_collection': 'hkcert',
+            'selection_id': 'hk-1',
+            'subscription_emails': [TEST_EMAIL],
+            'title': 'Other Advisory',
+            'template_key': 'hkcert',
+            'generated_at': now,
+            'html': '<p>other</p>',
+        },
+    ])
+
+
+def test_newsletter_feed_query_requires_authentication(client):
+    assert client.post(
+        f'/api/subscriptions/{TEST_EMAIL}/newsletters/query',
+        json={'filters': {}},
+    ).status_code == 401
+
+
+def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {'enabled': True, 'filters': {'collections': ['avd_review']}},
+    }).status_code == 201
+
+    with app.app_context():
+        _seed_newsletter_feed()
+
+    monkeypatch.setattr(
+        'newsletter_store.query_profile_matches',
+        lambda database, profile, limit=None: [{
+            'collection': 'avd_review',
+            'source_collection': 'avd',
+            'selection_id': 'avd-1',
+        }],
+    )
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
+        'filters': {'collections': ['avd_review']},
+    })
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['count'] == 1
+    assert len(body['data']) == 1
+    assert body['data'][0]['title'] == 'Matched Advisory'
+    assert 'html' not in body['data'][0]
+
+
+def test_newsletter_feed_query_returns_empty_when_no_matches(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {'enabled': True, 'filters': {}},
+    }).status_code == 201
+
+    with app.app_context():
+        _seed_newsletter_feed()
+
+    monkeypatch.setattr('newsletter_store.query_profile_matches', lambda *args, **kwargs: [])
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
+        'filters': {'collections': ['avd_review']},
+    })
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['count'] == 0
+    assert body['data'] == []
+
+
+def test_newsletter_feed_query_unknown_subscription_returns_404(client):
+    authenticate(client)
+    response = client.post(
+        '/api/subscriptions/missing@example.com/newsletters/query',
+        json={'filters': {}},
+    )
+    assert response.status_code == 404
+
+
+def test_newsletter_feed_query_rejects_invalid_filters(client):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {'enabled': True, 'filters': {}},
+    }).status_code == 201
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
+        'filters': {'status': 'Urgent'},
+    })
+    assert response.status_code == 400
+    assert response.get_json()['error'].startswith('Severity/status must be')

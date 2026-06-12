@@ -6,9 +6,13 @@ from app import app
 from bootstrap import configure_application
 from company_ai_preprocessor import (
     _claim_task,
+    _clear_queues,
     _complete_task,
+    _gpu_queue_declare,
     _now,
-    _refresh_provider_room,
+    _process_company_task,
+    _route_task,
+    _routed_queue_declare,
     _release_processing_task,
     _requeue_task,
     _reset_processing_for_owner,
@@ -29,7 +33,7 @@ def _source():
     return get_vulnerabilities_database()[TEST_COLLECTION]
 
 
-def test_content_hash_changes_with_language_model_and_details():
+def test_content_hash_changes_with_language_details_and_cache_version_not_model():
     config = dict(app.config)
     details = {'source': {'description': 'one'}}
     original = summary_content_hash(details, 'en', config)
@@ -37,7 +41,87 @@ def test_content_hash_changes_with_language_model_and_details():
     assert summary_content_hash(details, 'zh', config) != original
     assert summary_content_hash({'source': {'description': 'two'}}, 'en', config) != original
     config['COMPANY_AI_MODEL'] = 'different-model'
+    assert summary_content_hash(details, 'en', config) == original
+    config['PREPROCESSING_CACHE_VERSION'] = '2'
     assert summary_content_hash(details, 'en', config) != original
+
+
+def test_enqueue_summary_republishes_pending_after_queue_clear(monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish',
+        lambda task, priority, config, channel=None: published.append(task),
+    )
+    with app.app_context():
+        source = _source()
+        source.delete_many({})
+        source.insert_one({'_id': 'fresh', 'details': {'source': {'description': 'evidence'}}})
+        try:
+            reference, queued = enqueue_summary(
+                {'source': {'description': 'evidence'}},
+                'en',
+                app.config,
+                app.config['RABBITMQ_BACKGROUND_PRIORITY'],
+                TEST_COLLECTION,
+                'fresh',
+            )
+            again, queued_again = enqueue_summary(
+                {'source': {'description': 'evidence'}},
+                'en',
+                app.config,
+                app.config['RABBITMQ_BACKGROUND_PRIORITY'],
+                TEST_COLLECTION,
+                'fresh',
+            )
+
+            assert queued is True
+            assert queued_again is True
+            assert reference == again
+            assert len(published) == 2
+        finally:
+            source.drop()
+
+
+def test_enqueue_summary_republishes_stale_pending(monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish',
+        lambda task, priority, config, channel=None: published.append(task),
+    )
+    with app.app_context():
+        source = _source()
+        source.delete_many({})
+        source.insert_one({'_id': 'stale', 'details': {'source': {'description': 'evidence'}}})
+        try:
+            enqueue_summary(
+                {'source': {'description': 'evidence'}},
+                'en',
+                app.config,
+                app.config['RABBITMQ_BACKGROUND_PRIORITY'],
+                TEST_COLLECTION,
+                'stale',
+            )
+            source.update_one(
+                {'_id': 'stale'},
+                {'$set': {
+                    'html_json.en.updated_at': _now() - timedelta(
+                        seconds=app.config['COMPANY_AI_STALE_PROCESSING_SECONDS'] + 1,
+                    ),
+                }},
+            )
+            _, queued_again = enqueue_summary(
+                {'source': {'description': 'evidence'}},
+                'en',
+                app.config,
+                app.config['RABBITMQ_BACKGROUND_PRIORITY'],
+                TEST_COLLECTION,
+                'stale',
+            )
+
+            assert queued_again is True
+            assert len(published) == 2
+        finally:
+            source.drop()
 
 
 def test_completed_summary_is_stored_on_source_and_reused(monkeypatch):
@@ -297,9 +381,12 @@ def test_worker_failure_requeues_task_to_background_priority(monkeypatch):
         pass
 
     monkeypatch.setattr(
-        'company_ai_preprocessor._publish',
-        lambda task, priority, config, channel=None: republished.append((task, priority)),
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: republished.append(
+            (task, priority, queue_name)
+        ),
     )
+    retry_config = {**dict(app.config), 'COMPANY_AI_ENABLED': True}
     with app.app_context():
         source = _source()
         source.delete_many({})
@@ -319,7 +406,7 @@ def test_worker_failure_requeues_task_to_background_priority(monkeypatch):
                 task,
                 'worker-1',
                 ValueError('temporary failure'),
-                app.config,
+                retry_config,
                 FakeChannel(),
                 claimed,
             )
@@ -327,25 +414,56 @@ def test_worker_failure_requeues_task_to_background_priority(monkeypatch):
             entry = document['html_json']['en']
             assert entry['status'] == 'pending'
             assert entry['error'] == 'temporary failure'
-            assert republished[-1][1] == app.config['RABBITMQ_BACKGROUND_PRIORITY']
+            assert republished[-1][1] == retry_config['RABBITMQ_BACKGROUND_PRIORITY']
             assert republished[-1][0]['source_id'] == 'retry'
+            assert republished[-1][2] == app.config['RABBITMQ_COMPANY_QUEUE']
         finally:
             source.drop()
 
 
-def test_refresh_provider_room_closes_and_reopens_chat():
+def test_company_task_opens_primes_processes_and_closes_one_chat(monkeypatch):
     events = []
+    result = {'highlight': {'summary': 'done'}, 'recommendations': []}
 
     class FakeProvider:
-        def delete_room(self):
-            events.append('delete')
+        def __init__(self, config):
+            events.append('create-provider')
 
         def create_room(self):
-            events.append('create')
-            return 'new-room'
+            events.append('open-and-prime')
 
-    _refresh_provider_room(FakeProvider())
-    assert events == ['delete', 'create']
+        def delete_room(self):
+            events.append('close')
+
+    monkeypatch.setattr('company_ai_preprocessor.CompanyAIProvider', FakeProvider)
+    monkeypatch.setattr(
+        'company_ai_preprocessor._task_details',
+        lambda task, config: {'description': 'evidence'},
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor.summary_content_hash',
+        lambda details, language, config: 'hash',
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor.generate_item_data',
+        lambda provider, details, source_key, language, retries: (
+            events.append('process') or result,
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor._complete_task',
+        lambda task, owner, value, provider: events.append(('store', provider, value)),
+    )
+    task = {'content_hash': 'hash', 'language': 'en'}
+    assert _process_company_task(task, {'source_key': 'source'}, 'owner', dict(app.config)) == result
+    assert events == [
+        'create-provider',
+        'open-and-prime',
+        'process',
+        ('store', 'company_ai', result),
+        'close',
+    ]
 
 
 def test_reset_processing_for_owner_resets_source_entry_to_pending(monkeypatch):
@@ -377,9 +495,16 @@ def test_reset_processing_for_owner_resets_source_entry_to_pending(monkeypatch):
 def test_release_processing_task_republishes_to_background_priority(monkeypatch):
     republished = []
     monkeypatch.setattr(
-        'company_ai_preprocessor._publish',
-        lambda task, priority, config, channel=None: republished.append((task, priority)),
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: republished.append(
+            (task, priority, queue_name)
+        ),
     )
+    release_config = {
+        **dict(app.config),
+        'COMPANY_AI_ENABLED': True,
+        'GPU_ENABLED': False,
+    }
     with app.app_context():
         source = _source()
         source.delete_many({})
@@ -395,7 +520,7 @@ def test_release_processing_task_republishes_to_background_priority(monkeypatch)
             )
             task = {**reference, 'content_hash': reference['content_hash']}
             _claim_task(task, 'worker-release', app.config)
-            _release_processing_task(task, 'worker-release', app.config)
+            _release_processing_task(task, 'worker-release', release_config)
             entry = source.find_one({'_id': 'release'})['html_json']['en']
             assert entry['status'] == 'pending'
             assert republished[-1][1] == app.config['RABBITMQ_BACKGROUND_PRIORITY']
@@ -420,9 +545,16 @@ def test_shutdown_worker_deletes_room_resets_processing_and_acks(monkeypatch):
             deleted.append('delete')
 
     monkeypatch.setattr(
-        'company_ai_preprocessor._publish',
-        lambda task, priority, config, channel=None: republished.append((task, priority)),
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: republished.append(
+            (task, priority, queue_name)
+        ),
     )
+    shutdown_config = {
+        **dict(app.config),
+        'COMPANY_AI_ENABLED': True,
+        'GPU_ENABLED': False,
+    }
     with app.app_context():
         source = _source()
         source.delete_many({})
@@ -442,7 +574,7 @@ def test_shutdown_worker_deletes_room_resets_processing_and_acks(monkeypatch):
             _shutdown_worker(
                 'worker-shutdown',
                 FakeProvider(),
-                app.config,
+                shutdown_config,
                 FakeChannel(),
                 active_task=task,
                 active_method=method,
@@ -456,23 +588,132 @@ def test_shutdown_worker_deletes_room_resets_processing_and_acks(monkeypatch):
             source.drop()
 
 
-def test_refresh_provider_room_still_reopens_when_delete_fails():
-    events = []
-
-    class FakeProvider:
-        def delete_room(self):
-            raise RuntimeError('delete failed')
-
-        def create_room(self):
-            events.append('create')
-            return 'new-room'
-
-    _refresh_provider_room(FakeProvider())
-    assert events == ['create']
-
-
 def test_preprocessor_module_does_not_import_flask_app():
     loaded = importlib.import_module('company_ai_preprocessor')
     assert 'app' not in loaded.__dict__
     standalone_config = configure_application()
     assert standalone_config['COMPANY_AI_PARALLEL_CHATS'] >= 1
+
+
+def test_router_sends_sources_to_gpu_until_backlog_limit_and_uploads_to_company(monkeypatch):
+    routed = []
+
+    class QueueStatus:
+        method = type('Method', (), {'message_count': 0})()
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return QueueStatus()
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: routed.append(queue_name),
+    )
+    config = {
+        **dict(app.config),
+        'GPU_QUEUE_BACKLOG_LIMIT': 1,
+        'GPU_ENABLED': True,
+        'COMPANY_AI_ENABLED': True,
+    }
+    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
+        'RABBITMQ_GPU_QUEUE'
+    ]
+    assert _route_task({'storage': 'upload'}, 1, config, FakeChannel()) == config[
+        'RABBITMQ_COMPANY_QUEUE'
+    ]
+    assert routed == [config['RABBITMQ_GPU_QUEUE'], config['RABBITMQ_COMPANY_QUEUE']]
+
+
+def test_router_sends_source_overflow_to_company(monkeypatch):
+    routed = []
+
+    class QueueStatus:
+        method = type('Method', (), {'message_count': 3})()
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return QueueStatus()
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: routed.append(queue_name),
+    )
+    config = {
+        **dict(app.config),
+        'GPU_QUEUE_BACKLOG_LIMIT': 3,
+        'GPU_ENABLED': True,
+        'COMPANY_AI_ENABLED': True,
+    }
+    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
+        'RABBITMQ_COMPANY_QUEUE'
+    ]
+    assert routed == [config['RABBITMQ_COMPANY_QUEUE']]
+
+
+def test_gpu_queue_has_no_automatic_dead_letter_to_disabled_provider():
+    declarations = []
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            declarations.append(kwargs)
+
+    config = dict(app.config)
+    _gpu_queue_declare(FakeChannel(), config)
+    gpu = next(item for item in declarations if item['queue'] == config['RABBITMQ_GPU_QUEUE'])
+    assert gpu['arguments'] == {'x-max-priority': config['RABBITMQ_MAX_PRIORITY']}
+
+
+def test_router_never_sends_to_disabled_providers(monkeypatch):
+    routed = []
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return type('QueueStatus', (), {'method': type('Method', (), {'message_count': 0})()})()
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: routed.append(queue_name),
+    )
+    config = {
+        **dict(app.config),
+        'GPU_QUEUE_BACKLOG_LIMIT': 20,
+        'GPU_ENABLED': False,
+        'COMPANY_AI_ENABLED': True,
+    }
+    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
+        'RABBITMQ_COMPANY_QUEUE'
+    ]
+    config['COMPANY_AI_ENABLED'] = False
+    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) is None
+    assert _route_task({'storage': 'upload'}, 1, config, FakeChannel()) is None
+    assert routed == [config['RABBITMQ_COMPANY_QUEUE']]
+
+
+def test_clear_queues_purges_intake_gpu_and_company(monkeypatch):
+    purged = []
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return None
+
+        def queue_purge(self, queue):
+            purged.append(queue)
+
+    class FakeConnection:
+        def channel(self):
+            return FakeChannel()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor.pika.BlockingConnection',
+        lambda parameters: FakeConnection(),
+    )
+    config = dict(app.config)
+    _clear_queues(config)
+    assert purged == [
+        config['RABBITMQ_INTAKE_QUEUE'],
+        config['RABBITMQ_GPU_QUEUE'],
+        config['RABBITMQ_COMPANY_QUEUE'],
+    ]

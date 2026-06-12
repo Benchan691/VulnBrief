@@ -1,7 +1,7 @@
 import base64
 import json
+import time
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 import requests
@@ -11,7 +11,11 @@ from app import app
 from mongo import get_web_database
 from report_harness import (
     CompanyAIProvider,
+    ITEM_SCHEMA,
     ProviderError,
+    _assemble_report,
+    _finalize_item_result,
+    _render_job_html,
     compact_details,
     compact_document,
     create_job,
@@ -21,6 +25,7 @@ from report_harness import (
     generate_template_report_data,
     run_job,
 )
+from jsonschema import validate
 
 
 @pytest.fixture()
@@ -178,14 +183,14 @@ def test_item_generation_retries_with_corrective_prompt():
             if len(self.prompts) == 1:
                 return {'wrong': True}, {}
             return {
-                'highlight': {'title': 'Corrected', 'summary': 'Summary'},
+                'highlight': {'summary': 'Summary'},
                 'recommendations': [],
             }, {}
 
     provider = CorrectingProvider()
     result, _ = generate_item_data(provider, {'description': 'evidence'}, 'review-1', 'en', 2)
 
-    assert result['highlight']['title'] == 'Corrected'
+    assert result['highlight']['title'] == 'review-1'
     assert provider.prompts[1].startswith('The JSON above is invalid.\n\nError:\n')
     assert "'highlight' is a required property" in provider.prompts[1]
     assert 'Review details:' not in provider.prompts[1]
@@ -203,7 +208,7 @@ def test_company_ai_item_retry_sends_only_validation_error():
             if len(self.prompts) == 1:
                 return {'wrong': True}, {}
             return {
-                'highlight': {'title': 'Corrected', 'summary': 'Summary'},
+                'highlight': {'summary': 'Summary'},
                 'recommendations': [],
             }, {}
 
@@ -543,9 +548,37 @@ def test_company_ai_provider_create_room_skips_priming_for_summary(monkeypatch):
     provider = CompanyAIProvider(company_ai_config())
     monkeypatch.setattr(provider, '_encrypt_password', lambda: 'encrypted')
     chats = []
-    monkeypatch.setattr(provider, '_chat_once', lambda prompt: chats.append(prompt))
+    monkeypatch.setattr(
+        provider,
+        '_chat_once',
+        lambda prompt, wait_for_response=True: chats.append((prompt, wait_for_response)),
+    )
     provider.create_room(prime_prompt='')
     assert chats == []
+    provider.create_room()
+    assert chats == [('initial prompt', True)]
+
+
+def test_create_room_waits_for_and_ignores_priming_response(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'success': True, 'data': 'token'}
+
+    monkeypatch.setattr(
+        'report_harness.requests.post',
+        lambda *args, **kwargs: FakeResponse(),
+    )
+    monkeypatch.setattr(
+        'report_harness.requests.get',
+        lambda *args, **kwargs: FakeResponse(),
+    )
+    provider = CompanyAIProvider(company_ai_config())
+    monkeypatch.setattr(provider, '_encrypt_password', lambda: 'encrypted')
+    chats = []
+    monkeypatch.setattr(provider, '_chat_once', lambda prompt: chats.append(prompt) or 'not json')
     provider.create_room()
     assert chats == ['initial prompt']
 
@@ -739,7 +772,88 @@ def test_reports_api_upload_and_authentication(client, monkeypatch):
         get_web_database()['report_job_inputs'].delete_many({'job_id': job_id})
 
 
-def test_report_job_renders_and_saves_html(tmp_path, monkeypatch):
+def test_report_preview_and_download_render_structured_report_and_remove_legacy_html(client):
+    authenticate(client)
+    report = {
+        'title': 'Cybersecurity Report',
+        'executive_summary': 'Live report',
+        'trends': [],
+        'recommendations': [],
+        'highlights': [],
+    }
+    with app.app_context():
+        job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'completed',
+            'source_count': 0,
+            'effective_report_language': 'en',
+            'report': report,
+            'html': '<!doctype html><title>Stored report</title>',
+            'html_updated_at': 'old',
+            'html_path': 'old.html',
+        }).inserted_id
+    try:
+        preview = client.get(f'/reports/{job_id}/preview')
+        download = client.get(f'/reports/{job_id}/download')
+        assert preview.status_code == 200
+        assert b'Live report' in preview.data
+        assert b'Stored report' not in preview.data
+        assert download.status_code == 200
+        assert 'attachment;' in download.headers['Content-Disposition']
+        with app.app_context():
+            stored = get_web_database()['report_jobs'].find_one({'_id': job_id})
+            assert 'html' not in stored
+            assert 'html_updated_at' not in stored
+            assert 'html_path' not in stored
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_one({'_id': job_id})
+
+
+def test_running_report_preview_renders_stored_item_results(client):
+    authenticate(client)
+    with app.app_context():
+        job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'running',
+            'source_count': 2,
+            'processed_count': 1,
+            'report_language': 'en',
+            'effective_report_language': 'en',
+        }).inserted_id
+        get_web_database()['report_job_results'].insert_one({
+            'job_id': job_id,
+            'position': 0,
+            'highlight': {'title': 'Live item', 'summary': 'Live progress summary'},
+            'recommendations': ['Apply update.'],
+        })
+    try:
+        response = client.get(f'/reports/{job_id}/preview')
+        assert response.status_code == 200
+        assert b'Live progress summary' in response.data
+        assert client.get(f'/reports/{job_id}/download').status_code == 404
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_one({'_id': job_id})
+            get_web_database()['report_job_results'].delete_many({'job_id': job_id})
+
+
+def test_legacy_html_only_report_is_not_served_and_is_cleaned_up(client):
+    authenticate(client)
+    with app.app_context():
+        job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'completed',
+            'html': '<p>legacy only</p>',
+        }).inserted_id
+    try:
+        response = client.get(f'/reports/{job_id}/preview')
+        assert response.status_code == 404
+        with app.app_context():
+            assert 'html' not in get_web_database()['report_jobs'].find_one({'_id': job_id})
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_one({'_id': job_id})
+
+
+def test_report_job_stores_structured_report_without_html(tmp_path, monkeypatch):
     cached_item = {
         'highlight': {
             'title': 'Vulnerability 1',
@@ -759,9 +873,9 @@ def test_report_job_renders_and_saves_html(tmp_path, monkeypatch):
             run_job(app, job_id)
             job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
-            output = Path(tmp_path) / job['html_path']
-            assert output.exists()
-            assert 'Cybersecurity Report' in output.read_text(encoding='utf-8')
+            assert 'html_path' not in job
+            assert 'html' not in job
+            assert job['report']['title'] == 'Cybersecurity Report'
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
@@ -783,8 +897,9 @@ def test_template_report_job_renders_without_ai_provider(tmp_path, monkeypatch):
             assert job['generation_mode'] == 'template'
             assert job['model'] == 'Fixed Template'
             assert 'usage' not in job
-            output = Path(tmp_path) / job['html_path']
-            assert 'Evidence-based description.' in output.read_text(encoding='utf-8')
+            assert 'html_path' not in job
+            assert 'html' not in job
+            assert job['report']['highlights'][0]['summary'] == 'Evidence-based description.'
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
@@ -822,8 +937,8 @@ def test_company_ai_report_job_uses_company_provider(tmp_path, monkeypatch):
             assert job['effective_generation_mode'] == 'company_ai'
             assert job['effective_report_language'] == 'ch'
             assert 'fallback_reason' not in job
-            output = Path(tmp_path) / job['html_path']
-            html = output.read_text(encoding='utf-8')
+            assert 'html' not in job
+            html = _render_job_html(job, job['report'])
             assert '<html lang="zh-Hans">' in html
             assert '执行摘要' in html
         finally:
@@ -861,6 +976,91 @@ def test_generate_final_data_uses_configured_summary_prompt():
     )
 
     assert provider.system_prompt == 'Configured summary in Traditional Chinese.'
+
+
+def test_generate_final_data_uses_fixed_report_title():
+    provider = FakeProvider()
+    config = {'COMPANY_AI_SUMMARY_PROMPT': 'Summary in ${language}.'}
+    result, _ = generate_final_data(
+        provider,
+        [{'highlight': {'title': 'Ignored', 'summary': 'Summary'}, 'recommendations': []}],
+        'zh',
+        0,
+        config,
+    )
+    assert result['title'] == '網絡安全報告'
+
+
+def test_finalize_item_uses_source_record_title():
+    result = {
+        'highlight': {'summary': 'Summary'},
+        'recommendations': [],
+    }
+    finalized = _finalize_item_result(
+        result,
+        {'test': {'description': 'evidence'}},
+        'ignored-id',
+        1,
+        {'title': 'Source Title'},
+    )
+    assert finalized['highlight']['title'] == 'Source Title'
+
+
+def test_assemble_report_uses_fixed_title():
+    final_data = {
+        'title': 'AI Title Should Be Replaced',
+        'executive_summary': 'Summary',
+        'trends': [],
+        'recommendations': [],
+    }
+    item_results = [{'highlight': {'title': 'Item', 'summary': 'x'}, 'recommendations': []}]
+    report = _assemble_report(final_data, item_results, 'zh')
+    assert report['title'] == '網絡安全報告'
+
+
+def test_item_schema_accepts_optional_table():
+    validate(instance={
+        'highlight': {
+            'summary': 'Summary',
+            'table': {
+                'headers': ['Product', 'Version'],
+                'rows': [['App', '1.0']],
+            },
+        },
+        'recommendations': [],
+    }, schema=ITEM_SCHEMA)
+
+
+def test_rendered_report_includes_item_table(tmp_path):
+    with app.app_context():
+        original_root = app.config['NEWSLETTER_ROOT']
+        app.config['NEWSLETTER_ROOT'] = str(tmp_path)
+        try:
+            job = {
+                'source_count': 1,
+                'effective_report_language': 'en',
+            }
+            report = {
+                'title': 'Cybersecurity Report',
+                'executive_summary': 'Summary',
+                'trends': [],
+                'recommendations': [],
+                'highlights': [{
+                    'title': 'CVE-2024-1',
+                    'summary': 'Details',
+                    'table': {
+                        'caption': 'Affected versions',
+                        'headers': ['Product', 'Status'],
+                        'rows': [['Widget', 'Affected']],
+                    },
+                }],
+            }
+            html = _render_job_html(job, report)
+            assert 'Affected versions' in html
+            assert '<table class="item-table">' in html
+            assert 'Widget' in html
+        finally:
+            app.config['NEWSLETTER_ROOT'] = original_root
 
 
 def test_report_job_opens_fresh_summary_room_after_items(tmp_path, monkeypatch):
@@ -915,7 +1115,7 @@ def test_company_ai_cache_miss_uses_template(tmp_path, monkeypatch):
             job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
             assert job['item_fallback_count'] == 1
-            assert job['report']['highlights'][0]['title'] == 'Vulnerability record 1'
+            assert job['report']['highlights'][0]['title'] == 'Vulnerability 1'
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
