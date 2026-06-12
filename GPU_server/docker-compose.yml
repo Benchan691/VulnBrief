@@ -3,39 +3,47 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: gpu-preprocessor-llama
     restart: unless-stopped
-    gpus: all
-    environment:
-      NVIDIA_VISIBLE_DEVICES: "0,1,2"
-    volumes:
-      - ./models:/models:ro
+
+    env_file:
+      - .env
+
     ports:
       - "127.0.0.1:8080:8080"
+
+    volumes:
+      - ./models:/models:ro
+
+    gpus: all
+
     command:
-      - --host
+      - "-m"
+      - "${GPU_MODEL_PATH}"
+      - "--host"
       - "0.0.0.0"
-      - --port
+      - "--port"
       - "8080"
-      - --model
-      - "${GPU_MODEL_PATH:-/models/qwen-14b-q4.gguf}"
-      - --alias
-      - "${GPU_MODEL_NAME:-qwen-local}"
-      - --ctx-size
-      - "${GPU_CONTEXT_SIZE:-16384}"
-      - --n-gpu-layers
-      - "999"
-      - --split-mode
-      - layer
-      - --tensor-split
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "${GPU_CONTEXT_SIZE:-4096}"
+      - "--tensor-split"
       - "${GPU_TENSOR_SPLIT:-1,1,1}"
 
   gpu-worker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+
     container_name: gpu-preprocessor-worker
     restart: unless-stopped
+
     env_file:
-      - path: .env
-        required: false
-    environment:
-      GPU_INFERENCE_BASE_URL: http://llama-server:8080/v1
+      - .env
+
     depends_on:
       - llama-server
+
+    environment:
+      GPU_INFERENCE_BASE_URL: "http://llama-server:8080/v1"
+      LLAMA_SERVER_URL: "http://llama-server:8080"
+      GPU_SERVER_URL: "http://llama-server:8080"
