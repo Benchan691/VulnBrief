@@ -1,3 +1,5 @@
+.cursor/debug-*.log
+newsletters/reports/
 __pycache__/
 *.py[cod]
 .pytest_cache/

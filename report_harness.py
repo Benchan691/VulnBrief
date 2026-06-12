@@ -32,36 +32,6 @@ from review_data import (
 
 
 WORKER_LOCK = threading.Lock()
-DEBUG_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.cursor', 'debug-7a435c.log')
-def _debug_log(hypothesis_id, location, message, data=None, run_id='pre-fix'):
-    # region agent log
-    try:
-        payload = {
-            'sessionId': '7a435c',
-            'runId': run_id,
-            'hypothesisId': hypothesis_id,
-            'location': location,
-            'message': message,
-            'data': data or {},
-            'timestamp': int(time.time() * 1000),
-        }
-        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as log_file:
-            log_file.write(json.dumps(payload, ensure_ascii=False, default=str) + '\n')
-    except OSError:
-        pass
-    # endregion
-
-
-def _looks_like_utf8_mojibake(text):
-    if not isinstance(text, str) or not text:
-        return False
-    if re.search(r'[\u4e00-\u9fff]', text):
-        return False
-    try:
-        repaired = text.encode('latin-1').decode('utf-8')
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        return False
-    return bool(re.search(r'[\u4e00-\u9fff]', repaired))
 
 
 DEFAULT_JSON_ERROR_MESSAGE = (
@@ -599,45 +569,12 @@ class CompanyAIProvider:
         chunks = []
         with self._open_stream() as stream:
             stream.raise_for_status()
-            _debug_log(
-                'H3',
-                'report_harness.CompanyAIProvider._listen_sse',
-                'sse_stream_opened',
-                {'encoding': getattr(stream, 'encoding', None)},
-            )
             for raw_line in stream.iter_lines(chunk_size=1):
                 if not raw_line:
                     continue
-                # region agent log
-                if chunks == [] and (
-                    (isinstance(raw_line, bytes) and raw_line.startswith(b'data:'))
-                    or (isinstance(raw_line, str) and raw_line.startswith('data:'))
-                ):
-                    prefix = (
-                        raw_line[:80].decode('utf-8', errors='replace')
-                        if isinstance(raw_line, bytes)
-                        else raw_line[:80]
-                    )
-                    _debug_log(
-                        'H1',
-                        'report_harness.CompanyAIProvider._listen_sse',
-                        'sse_first_data_line',
-                        {
-                            'raw_line_type': type(raw_line).__name__,
-                            'stream_encoding': getattr(stream, 'encoding', None),
-                            'raw_prefix': prefix,
-                        },
-                    )
-                # endregion
                 try:
                     line = self._decode_sse_line(raw_line)
                 except UnicodeDecodeError as exc:
-                    _debug_log(
-                        'H3',
-                        'report_harness.CompanyAIProvider._listen_sse',
-                        'sse_utf8_decode_failed',
-                        {'error': str(exc)},
-                    )
                     raise ProviderError(f'Company AI SSE line is not valid UTF-8: {exc}') from exc
                 if not line.startswith('data:'):
                     continue
@@ -651,19 +588,7 @@ class CompanyAIProvider:
                     chunk = event.get('answer_content', '')
                     chunks.append(chunk)
                 if event.get('event') == 'message_end':
-                    answer = ''.join(chunks)
-                    _debug_log(
-                        'H1',
-                        'report_harness.CompanyAIProvider._listen_sse',
-                        'sse_message_complete',
-                        {
-                            'chunk_count': len(chunks),
-                            'has_cjk': bool(re.search(r'[\u4e00-\u9fff]', answer)),
-                            'looks_mojibake': _looks_like_utf8_mojibake(answer),
-                            'sample': answer[:120],
-                        },
-                    )
-                    return answer
+                    return ''.join(chunks)
         raise ProviderError('Company AI stream ended before message_end.')
 
     def _send_message(self, content):
@@ -1146,20 +1071,6 @@ def _local_item(details):
 
 
 def _deterministic_final(item_results, report_language='en'):
-    # region agent log
-    sample_title = (item_results[0].get('highlight') or {}).get('title') if item_results else None
-    _debug_log(
-        'H2',
-        'report_harness._deterministic_final',
-        'deterministic_final_called',
-        {
-            'report_language': report_language,
-            'item_count': len(item_results),
-            'sample_title': (sample_title or '')[:80],
-            'sample_title_mojibake': _looks_like_utf8_mojibake(sample_title or ''),
-        },
-    )
-    # endregion
     records = [
         {
             'title': item['highlight'].get('title'),
@@ -1316,21 +1227,6 @@ def run_job(app, job_id):
                     fallback_reason = None
                     if generation_mode == 'company_ai':
                         result = cached_company_results[position - 1]
-                        if result is not None:
-                            # region agent log
-                            highlight = (result or {}).get('highlight') or {}
-                            _debug_log(
-                                'H3',
-                                'report_harness.run_job',
-                                'cached_item_loaded',
-                                {
-                                    'position': position,
-                                    'report_language': report_language,
-                                    'title': (highlight.get('title') or '')[:80],
-                                    'title_mojibake': _looks_like_utf8_mojibake(highlight.get('title') or ''),
-                                },
-                            )
-                            # endregion
                         if result is None:
                             result = _local_item(details)
                             fallback_reason = (
@@ -1395,19 +1291,6 @@ def run_job(app, job_id):
                                 current_app.config,
                             )
                             final_source = 'company_ai'
-                            # region agent log
-                            _debug_log(
-                                'H4',
-                                'report_harness.run_job',
-                                'final_summary_from_ai',
-                                {
-                                    'report_language': report_language,
-                                    'title': (final_data.get('title') or '')[:80],
-                                    'executive_summary': (final_data.get('executive_summary') or '')[:120],
-                                    'title_mojibake': _looks_like_utf8_mojibake(final_data.get('title') or ''),
-                                },
-                            )
-                            # endregion
                         except (ProviderError, ValidationError) as exc:
                             final_data = _deterministic_final(
                                 item_results, report_language,
@@ -1432,19 +1315,6 @@ def run_job(app, job_id):
                     )
                     final_source = 'deterministic_wrong_mode'
                     final_fallback_reason = 'Unexpected generation mode for final summary.'
-                # region agent log
-                _debug_log(
-                    'H2',
-                    'report_harness.run_job',
-                    'final_summary_selected',
-                    {
-                        'report_language': report_language,
-                        'final_source': final_source,
-                        'final_fallback_reason': final_fallback_reason,
-                        'title': (final_data.get('title') or '')[:80],
-                    },
-                )
-                # endregion
                 report = _assemble_report(final_data, item_results, report_language)
                 completed = {
                     'status': 'completed',

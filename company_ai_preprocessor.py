@@ -18,8 +18,6 @@ from mongo import get_vulnerabilities_database, get_web_database
 from report_harness import (
     CompanyAIProvider,
     REPORT_LANGUAGES,
-    _debug_log,
-    _looks_like_utf8_mojibake,
     compact_details,
     generate_item_data,
 )
@@ -608,24 +606,6 @@ def _process_company_task(task, claimed, owner, config):
             config['REPORT_ITEM_JSON_RETRIES'],
         )
         _complete_task(task, owner, result, provider='company_ai')
-        highlight = (result or {}).get('highlight') or {}
-        _debug_log(
-            'H3',
-            'company_ai_preprocessor._process_company_task',
-            'item_completed',
-            {
-                'language': task.get('language'),
-                'title': (highlight.get('title') or '')[:80],
-                'severity': (highlight.get('severity') or '')[:40],
-                'title_mojibake': _looks_like_utf8_mojibake(highlight.get('title') or ''),
-                'has_cjk': bool(
-                    re.search(
-                        r'[\u4e00-\u9fff]',
-                        (highlight.get('title') or '') + (highlight.get('summary') or ''),
-                    )
-                ),
-            },
-        )
         return result
     finally:
         try:
