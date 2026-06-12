@@ -12,17 +12,17 @@ from bson import json_util
 from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
-from bootstrap import BASE_DIR, configure_application
-from mongo import get_vulnerabilities_database, get_web_database
+from bootstrap import BASE_DIR, configure_worker
+from mongo import get_config, get_vulnerabilities_database
 from report_harness import (
     CompanyAIProvider,
     REPORT_LANGUAGES,
     compact_details,
+    generate_final_data,
     generate_item_data,
 )
 
 
-UPLOAD_CACHE_COLLECTION = 'company_ai_upload_summaries'
 STOP_EVENT = threading.Event()
 
 
@@ -30,16 +30,17 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def _upload_cache_collection():
-    return get_web_database()[UPLOAD_CACHE_COLLECTION]
+def _shared_task_collection():
+    from mongo import get_config
+    return get_vulnerabilities_database()[get_config()['AI_TASK_COLLECTION']]
 
 
 def ensure_cache_indexes():
-    collection = _upload_cache_collection()
+    collection = _shared_task_collection()
     collection.create_index(
-        [('source_key', 1), ('language', 1)],
+        [('task_type', 1), ('source_key', 1), ('language', 1)],
         unique=True,
-        name='source_language',
+        name='task_source_language',
     )
     collection.create_index([('status', 1), ('updated_at', 1)], name='status_updated')
 
@@ -188,17 +189,21 @@ def enqueue_summary(
         existing = (document.get('html_json') or {}).get(language)
         reference = {
             'storage': 'source',
+            'task_type': 'item',
             'source_collection': source_collection,
             'source_id': source_id,
             'language': language,
             'content_hash': content_hash,
         }
     else:
-        collection = _upload_cache_collection()
-        existing = collection.find_one({'source_key': source_key, 'language': language})
+        collection = _shared_task_collection()
+        existing = collection.find_one({
+            'task_type': 'item', 'source_key': source_key, 'language': language,
+        })
         reference = {
-            'storage': 'upload',
-            'cache_id': existing['_id'] if existing else None,
+            'storage': 'shared',
+            'task_id': existing['_id'] if existing else None,
+            'task_type': 'item',
             'language': language,
             'content_hash': content_hash,
         }
@@ -206,15 +211,7 @@ def enqueue_summary(
         if existing.get('status') in {'completed', 'processing'}:
             return reference, False
         if existing.get('status') in {'pending', 'failed'}:
-            task = {
-                **reference,
-                'content_hash': content_hash,
-                'source_collection': source_collection,
-                'source_id': source_id,
-                'details': compacted if source_collection is None else None,
-                'language': language,
-            }
-            _publish(task, priority, config, channel)
+            _publish(reference, priority, config, channel)
             return reference, True
 
     now = _now()
@@ -233,22 +230,14 @@ def enqueue_summary(
             {'$set': {_language_path(language): entry}},
         )
     else:
-        document = _upload_cache_collection().find_one_and_update(
-            {'source_key': source_key, 'language': language},
-            {'$set': entry},
+        document = _shared_task_collection().find_one_and_update(
+            {'task_type': 'item', 'source_key': source_key, 'language': language},
+            {'$set': {**entry, 'task_type': 'item', 'payload': compacted}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
-        reference['cache_id'] = document['_id']
-    task = {
-        **reference,
-        'content_hash': content_hash,
-        'source_collection': source_collection,
-        'source_id': source_id,
-        'details': compacted if source_collection is None else None,
-        'language': language,
-    }
-    _publish(task, priority, config, channel)
+        reference['task_id'] = document['_id']
+    _publish(reference, priority, config, channel)
     return reference, True
 
 
@@ -261,7 +250,7 @@ def scan_unprocessed(config):
         channel = _publisher_channel(connection, config)
         for metadata in database.list_collections(filter={'type': 'collection'}):
             collection_name = metadata['name']
-            if collection_name.startswith('system.'):
+            if collection_name.startswith('system.') or collection_name == config['AI_TASK_COLLECTION']:
                 continue
             for document in database[collection_name].find({}, {'details': 1}):
                 details = document.get('details')
@@ -278,6 +267,22 @@ def scan_unprocessed(config):
                         channel,
                     )
                     queued += int(published)
+        stale_before = _now() - timedelta(seconds=config['COMPANY_AI_STALE_PROCESSING_SECONDS'])
+        for task in _shared_task_collection().find({
+            '$or': [
+                {'status': {'$in': ['pending', 'failed']}},
+                {'status': 'processing', 'processing_started_at': {'$lte': stale_before}},
+            ],
+        }):
+            reference = {
+                'storage': 'shared',
+                'task_id': task['_id'],
+                'task_type': task.get('task_type', 'item'),
+                'language': task['language'],
+                'content_hash': task['content_hash'],
+            }
+            _publish(reference, config['RABBITMQ_BACKGROUND_PRIORITY'], config, channel)
+            queued += 1
     finally:
         connection.close()
     return queued
@@ -304,6 +309,46 @@ def enqueue_report_items(items, language, config):
     return references
 
 
+def enqueue_final_summary(item_results, language, config):
+    payload = compact_details({'item_results': item_results}, config)
+    source_key = cache_source_key(details={'task_type': 'final', **payload})
+    content_hash = summary_content_hash(payload, language, config)
+    collection = _shared_task_collection()
+    existing = collection.find_one({
+        'task_type': 'final', 'source_key': source_key, 'language': language,
+    })
+    reference = {
+        'storage': 'shared',
+        'task_id': existing['_id'] if existing else None,
+        'task_type': 'final',
+        'language': language,
+        'content_hash': content_hash,
+    }
+    if existing and existing.get('content_hash') == content_hash:
+        if existing.get('status') in {'completed', 'processing'}:
+            return reference
+    now = _now()
+    document = collection.find_one_and_update(
+        {'task_type': 'final', 'source_key': source_key, 'language': language},
+        {'$set': {
+            'task_type': 'final',
+            'source_key': source_key,
+            'language': language,
+            'content_hash': content_hash,
+            'payload': payload,
+            'status': 'pending',
+            'attempts': existing.get('attempts', 0) if existing else 0,
+            'created_at': existing.get('created_at', now) if existing else now,
+            'updated_at': now,
+        }},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    reference['task_id'] = document['_id']
+    _publish(reference, config['RABBITMQ_REPORT_PRIORITY'], config)
+    return reference
+
+
 def _reference_result(reference):
     if reference['storage'] == 'source':
         document = _source_collection(reference['source_collection']).find_one(
@@ -312,7 +357,7 @@ def _reference_result(reference):
         )
         entry = ((document or {}).get('html_json') or {}).get(reference['language'], {})
     else:
-        entry = _upload_cache_collection().find_one({'_id': reference['cache_id']}) or {}
+        entry = _shared_task_collection().find_one({'_id': reference['task_id']}) or {}
     return entry.get('result') if entry.get('status') == 'completed' else None
 
 
@@ -335,7 +380,13 @@ def _task_details(task, config):
         if document is None or not isinstance(document.get('details'), dict):
             raise ValueError('Source vulnerability details no longer exist.')
         return compact_details(document['details'], config)
-    return task['details']
+    document = _shared_task_collection().find_one(
+        {'_id': task['task_id'], 'content_hash': task['content_hash']},
+        {'payload': 1},
+    )
+    if document is None or not isinstance(document.get('payload'), dict):
+        raise ValueError('Shared AI task payload no longer exists.')
+    return document['payload']
 
 
 def _claim_task(task, owner, config):
@@ -368,9 +419,9 @@ def _claim_task(task, owner, config):
             return_document=ReturnDocument.AFTER,
         )
         return ((document or {}).get('html_json') or {}).get(language)
-    return _upload_cache_collection().find_one_and_update(
+    return _shared_task_collection().find_one_and_update(
         {
-            '_id': task['cache_id'],
+            '_id': task['task_id'],
             'content_hash': task['content_hash'],
             '$or': [
                 {'status': {'$in': ['pending', 'failed']}},
@@ -443,16 +494,16 @@ def store_completed_summary(reference, result, provider='company_ai'):
             },
         )
         return True
-    cache_id = reference.get('cache_id')
-    if not cache_id:
+    task_id = reference.get('task_id')
+    if not task_id:
         return False
-    document = _upload_cache_collection().find_one({'_id': cache_id}) or {}
+    document = _shared_task_collection().find_one({'_id': task_id}) or {}
     if document.get('content_hash') != content_hash:
         return False
     if document.get('status') == 'completed':
         return True
-    _upload_cache_collection().update_one(
-        {'_id': cache_id, 'content_hash': content_hash},
+    _shared_task_collection().update_one(
+        {'_id': task_id, 'content_hash': content_hash},
         {
             '$set': values,
             '$unset': {key: '' for key in unset_fields},
@@ -493,8 +544,8 @@ def _update_task_entry(task, owner, values, unset_fields):
             },
         )
     else:
-        _upload_cache_collection().update_one(
-            {'_id': task['cache_id'], 'processing_owner': owner},
+        _shared_task_collection().update_one(
+            {'_id': task['task_id'], 'processing_owner': owner},
             {
                 '$set': values,
                 '$unset': {key: '' for key in unset_fields},
@@ -507,7 +558,7 @@ def _reset_processing_for_owner(owner):
     database = get_vulnerabilities_database()
     for metadata in database.list_collections(filter={'type': 'collection'}):
         collection_name = metadata['name']
-        if collection_name.startswith('system.'):
+        if collection_name.startswith('system.') or collection_name == get_config()['AI_TASK_COLLECTION']:
             continue
         for language in REPORT_LANGUAGES:
             path = _language_path(language)
@@ -518,7 +569,7 @@ def _reset_processing_for_owner(owner):
                     '$unset': {f'{path}.processing_owner': '', f'{path}.processing_started_at': ''},
                 },
             )
-    _upload_cache_collection().update_many(
+    _shared_task_collection().update_many(
         {'status': 'processing', 'processing_owner': owner},
         {
             '$set': {'status': 'pending', 'updated_at': now},
@@ -527,24 +578,28 @@ def _reset_processing_for_owner(owner):
     )
 
 
-def _reset_all_processing():
+def _reset_all_processing(config):
     now = _now()
+    stale_before = now - timedelta(seconds=config['COMPANY_AI_STALE_PROCESSING_SECONDS'])
     database = get_vulnerabilities_database()
     for metadata in database.list_collections(filter={'type': 'collection'}):
         collection_name = metadata['name']
-        if collection_name.startswith('system.'):
+        if collection_name.startswith('system.') or collection_name == get_config()['AI_TASK_COLLECTION']:
             continue
         for language in REPORT_LANGUAGES:
             path = _language_path(language)
             database[collection_name].update_many(
-                {f'{path}.status': 'processing'},
+                {
+                    f'{path}.status': 'processing',
+                    f'{path}.processing_started_at': {'$lte': stale_before},
+                },
                 {
                     '$set': {f'{path}.status': 'pending', f'{path}.updated_at': now},
                     '$unset': {f'{path}.processing_owner': '', f'{path}.processing_started_at': ''},
                 },
             )
-    _upload_cache_collection().update_many(
-        {'status': 'processing'},
+    _shared_task_collection().update_many(
+        {'status': 'processing', 'processing_started_at': {'$lte': stale_before}},
         {
             '$set': {'status': 'pending', 'updated_at': now},
             '$unset': {'processing_owner': '', 'processing_started_at': ''},
@@ -593,17 +648,29 @@ def _shutdown_worker(owner, provider, config, channel, active_task=None, active_
 def _process_company_task(task, claimed, owner, config):
     provider = CompanyAIProvider(config)
     try:
-        provider.create_room()
+        if task.get('task_type') == 'final':
+            provider.create_room(prime_prompt='')
+        else:
+            provider.create_room()
         details = _task_details(task, config)
         if summary_content_hash(details, task['language'], config) != task['content_hash']:
             raise ValueError('Source details changed while the task was queued.')
-        result, _ = generate_item_data(
-            provider,
-            details,
-            claimed['source_key'],
-            task['language'],
-            config['REPORT_ITEM_JSON_RETRIES'],
-        )
+        if task.get('task_type', 'item') == 'final':
+            result, _ = generate_final_data(
+                provider,
+                details['item_results'],
+                task['language'],
+                config['REPORT_FINAL_JSON_RETRIES'],
+                config,
+            )
+        else:
+            result, _ = generate_item_data(
+                provider,
+                details,
+                claimed['source_key'],
+                task['language'],
+                config['REPORT_ITEM_JSON_RETRIES'],
+            )
         _complete_task(task, owner, result, provider='company_ai')
         return result
     finally:
@@ -674,7 +741,7 @@ def _scan_loop(config):
 
 def _route_destination(task, config, channel):
     company_enabled = config['COMPANY_AI_ENABLED']
-    gpu_enabled = config['GPU_ENABLED'] and task.get('storage') == 'source'
+    gpu_enabled = config['GPU_ENABLED']
     if gpu_enabled:
         status = _gpu_queue_declare(channel, config)
         if not company_enabled or status.method.message_count < config['GPU_QUEUE_BACKLOG_LIMIT']:
@@ -727,8 +794,7 @@ def _route_loop(config):
 def run_worker(config):
     ensure_cache_indexes()
     STOP_EVENT.clear()
-    _reset_all_processing()
-    _try_clear_queues(config)
+    _reset_all_processing(config)
     threads = []
     if config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']:
         threads.extend([
@@ -750,16 +816,23 @@ def run_worker(config):
         for thread in threads:
             thread.join()
     finally:
-        _reset_all_processing()
-        _try_clear_queues(config)
+        _reset_all_processing(config)
 
 
 def main():
     parser = argparse.ArgumentParser(description='Run RabbitMQ Company AI preprocessing workers.')
-    parser.parse_args()
+    parser.add_argument(
+        '--purge-queues',
+        action='store_true',
+        help='Purge intake, GPU, and Company AI queues, then exit.',
+    )
+    args = parser.parse_args()
     signal.signal(signal.SIGINT, lambda *_: STOP_EVENT.set())
     signal.signal(signal.SIGTERM, lambda *_: STOP_EVENT.set())
-    config = configure_application(BASE_DIR)
+    config = configure_worker(BASE_DIR)
+    if args.purge_queues:
+        _clear_queues(config)
+        return
     run_worker(config)
 
 

@@ -13,3 +13,9 @@ def configure_application(base_dir=None):
     configure(config)
     ensure_bootstrap_user(config)
     return config
+
+
+def configure_worker(base_dir=None):
+    config = load_application_config(base_dir or BASE_DIR, require_local=False)
+    configure(config)
+    return config

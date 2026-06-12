@@ -13,7 +13,7 @@ def configure(config):
             config['ATLAS_MONGO_URI'],
             serverSelectionTimeoutMS=3000,
         )
-    if _local_client is None:
+    if _local_client is None and config.get('LOCAL_MONGO_URI'):
         _local_client = MongoClient(
             config['LOCAL_MONGO_URI'],
             serverSelectionTimeoutMS=3000,

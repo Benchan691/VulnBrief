@@ -51,6 +51,15 @@ ITEM_SCHEMA = {
         'recommendations': {'type': 'array', 'items': {'type': 'string'}},
     },
 }
+FINAL_SCHEMA = {
+    'type': 'object',
+    'required': ['executive_summary', 'trends', 'recommendations'],
+    'properties': {
+        'executive_summary': {'type': 'string'},
+        'trends': {'type': 'array', 'items': {'type': 'string'}},
+        'recommendations': {'type': 'array', 'items': {'type': 'string'}},
+    },
+}
 
 
 def _env_int(name, default):
@@ -88,6 +97,7 @@ def load_config():
             'VULNERABILITIES_DATABASE',
             'vulnerabilities',
         ),
+        'AI_TASK_COLLECTION': os.environ.get('AI_TASK_COLLECTION', 'ai_generation_tasks'),
         'RABBITMQ_URL': os.environ['RABBITMQ_URL'],
         'RABBITMQ_GPU_QUEUE': os.environ.get('RABBITMQ_GPU_QUEUE', 'gpu_preprocessing'),
         'RABBITMQ_COMPANY_QUEUE': os.environ.get(
@@ -109,6 +119,10 @@ def load_config():
         'GPU_JSON_RETRIES': _env_int('GPU_JSON_RETRIES', 2),
         'GPU_MAX_OUTPUT_TOKENS': _env_int('GPU_MAX_OUTPUT_TOKENS', 4096),
         'GPU_START_PROMPT': os.environ.get('GPU_START_PROMPT', ''),
+        'GPU_FINAL_SUMMARY_PROMPT': os.environ.get(
+            'GPU_FINAL_SUMMARY_PROMPT',
+            'Write the final cybersecurity report summary in ${language}.',
+        ),
         'PREPROCESSING_CACHE_VERSION': os.environ.get('PREPROCESSING_CACHE_VERSION', '1'),
         'COMPANY_AI_STALE_PROCESSING_SECONDS': _env_int(
             'COMPANY_AI_STALE_PROCESSING_SECONDS',
@@ -255,20 +269,20 @@ class LocalGPUProvider:
             raise ValueError('GPU model JSON response must be an object.')
         return result
 
-    def _completion(self, messages, constrained):
+    def _completion(self, messages, schema=None, schema_name='vulnerability_item'):
         payload = {
             'model': self.model,
             'messages': messages,
             'temperature': 0.1,
             'max_tokens': self.max_output_tokens,
         }
-        if constrained:
+        if schema is not None:
             payload['response_format'] = {
                 'type': 'json_schema',
                 'json_schema': {
-                    'name': 'vulnerability_item',
+                    'name': schema_name,
                     'strict': True,
-                    'schema': ITEM_SCHEMA,
+                    'schema': schema,
                 },
             }
         response = requests.post(
@@ -283,7 +297,7 @@ class LocalGPUProvider:
         if not self.start_prompt:
             raise ValueError('GPU_START_PROMPT must be configured when GPU processing is enabled.')
         self.messages = [{'role': 'user', 'content': self.start_prompt}]
-        answer = self._completion(self.messages, constrained=False)
+        answer = self._completion(self.messages)
         self.messages.append({'role': 'assistant', 'content': answer})
 
     def close_chat(self):
@@ -308,10 +322,34 @@ class LocalGPUProvider:
         error = None
         for _ in range(self.retries + 1):
             try:
-                answer = self._completion(self.messages, constrained=True)
+                answer = self._completion(self.messages, ITEM_SCHEMA)
                 self.messages.append({'role': 'assistant', 'content': answer})
                 result = self._parse_json(answer)
                 validate(instance=result, schema=ITEM_SCHEMA)
+                return result
+            except (KeyError, ValueError, ValidationError, requests.RequestException) as exc:
+                error = exc
+                self.messages.append({
+                    'role': 'user',
+                    'content': f'The previous response was invalid: {exc}. Return corrected JSON only.',
+                })
+        raise RuntimeError(str(error))
+
+    def generate_final(self, item_results, language, prompt_template):
+        if self.messages is None:
+            raise RuntimeError('GPU chat has not been opened.')
+        instruction = prompt_template.replace('${language}', language)
+        prompt = instruction + '\nProcessed review results:' + json.dumps(
+            item_results, ensure_ascii=False, separators=(',', ':'), default=str,
+        )
+        self.messages.append({'role': 'user', 'content': prompt})
+        error = None
+        for _ in range(self.retries + 1):
+            try:
+                answer = self._completion(self.messages, FINAL_SCHEMA, 'report_final_summary')
+                self.messages.append({'role': 'assistant', 'content': answer})
+                result = self._parse_json(answer)
+                validate(instance=result, schema=FINAL_SCHEMA)
                 return result
             except (KeyError, ValueError, ValidationError, requests.RequestException) as exc:
                 error = exc
@@ -363,28 +401,68 @@ def update_task(collection, task, owner, values, unset_fields):
     )
 
 
+def claim_shared_task(collection, task, owner, config):
+    stale_before = _now() - timedelta(seconds=config['COMPANY_AI_STALE_PROCESSING_SECONDS'])
+    return collection.find_one_and_update(
+        {
+            '_id': task['task_id'],
+            'content_hash': task['content_hash'],
+            '$or': [
+                {'status': {'$in': ['pending', 'failed']}},
+                {'status': 'processing', 'processing_started_at': {'$lte': stale_before}},
+            ],
+        },
+        {
+            '$set': {
+                'status': 'processing',
+                'processing_owner': owner,
+                'processing_started_at': _now(),
+                'updated_at': _now(),
+            },
+            '$inc': {'attempts': 1},
+            '$unset': {'error': ''},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def update_shared_task(collection, task, owner, values, unset_fields):
+    collection.update_one(
+        {'_id': task['task_id'], 'processing_owner': owner},
+        {'$set': values, '$unset': {field: '' for field in unset_fields}},
+    )
+
+
 def process_task(database, channel, task, owner, provider, config):
-    if task.get('storage') != 'source' or not task.get('source_collection'):
-        publish(
-            channel,
-            config['RABBITMQ_COMPANY_QUEUE'],
-            task,
-            config['RABBITMQ_BACKGROUND_PRIORITY'],
-            config,
-        )
-        return
-    collection = database[task['source_collection']]
-    claimed = claim_task(collection, task, owner, config)
+    shared = task.get('storage') == 'shared'
+    collection = database[
+        config['AI_TASK_COLLECTION'] if shared else task['source_collection']
+    ]
+    claimed = (
+        claim_shared_task(collection, task, owner, config)
+        if shared else claim_task(collection, task, owner, config)
+    )
     if claimed is None:
         return
     try:
         provider.open_chat()
-        document = collection.find_one({'_id': task['source_id']}, {'details': 1})
-        details = compact_details((document or {}).get('details'), config)
+        if shared:
+            details = claimed.get('payload')
+        else:
+            document = collection.find_one({'_id': task['source_id']}, {'details': 1})
+            details = compact_details((document or {}).get('details'), config)
         if summary_content_hash(details, task['language'], config) != task['content_hash']:
             raise ValueError('Source details changed while the task was queued.')
-        result = provider.generate_item(details, REPORT_LANGUAGES[task['language']])
-        update_task(
+        if task.get('task_type', 'item') == 'final':
+            result = provider.generate_final(
+                details['item_results'],
+                REPORT_LANGUAGES[task['language']],
+                config['GPU_FINAL_SUMMARY_PROMPT'],
+            )
+        else:
+            result = provider.generate_item(details, REPORT_LANGUAGES[task['language']])
+        updater = update_shared_task if shared else update_task
+        updater(
             collection,
             task,
             owner,
@@ -398,7 +476,8 @@ def process_task(database, channel, task, owner, provider, config):
             ['processing_owner', 'processing_started_at', 'error'],
         )
     except Exception as exc:
-        update_task(
+        updater = update_shared_task if shared else update_task
+        updater(
             collection,
             task,
             owner,
@@ -417,21 +496,37 @@ def process_task(database, channel, task, owner, provider, config):
         provider.close_chat()
 
 
-def reset_gpu_processing(database):
+def reset_gpu_processing(database, config):
     now = _now()
+    stale_before = now - timedelta(seconds=config['COMPANY_AI_STALE_PROCESSING_SECONDS'])
     for metadata in database.list_collections(filter={'type': 'collection'}):
         collection_name = metadata['name']
-        if collection_name.startswith('system.'):
+        if collection_name.startswith('system.') or collection_name == config['AI_TASK_COLLECTION']:
             continue
         for language in REPORT_LANGUAGES:
             path = _language_path(language)
             database[collection_name].update_many(
-                {f'{path}.status': 'processing', f'{path}.processing_owner': {'$regex': '^gpu:'}},
+                {
+                    f'{path}.status': 'processing',
+                    f'{path}.processing_owner': {'$regex': '^gpu:'},
+                    f'{path}.processing_started_at': {'$lte': stale_before},
+                },
                 {
                     '$set': {f'{path}.status': 'pending', f'{path}.updated_at': now},
                     '$unset': {f'{path}.processing_owner': '', f'{path}.processing_started_at': ''},
                 },
             )
+    database[config['AI_TASK_COLLECTION']].update_many(
+        {
+            'status': 'processing',
+            'processing_owner': {'$regex': '^gpu:'},
+            'processing_started_at': {'$lte': stale_before},
+        },
+        {
+            '$set': {'status': 'pending', 'updated_at': now},
+            '$unset': {'processing_owner': '', 'processing_started_at': ''},
+        },
+    )
 
 
 def consume(config, worker_number):
@@ -479,16 +574,14 @@ def main():
     config = load_config()
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
-    reset_gpu_processing(database)
-    try_clear_gpu_queue(config)
+    reset_gpu_processing(database, config)
     if not config['GPU_ENABLED']:
         print('GPU processing is disabled; waiting for shutdown.', flush=True)
         try:
             while not STOP_EVENT.wait(1):
                 pass
         finally:
-            reset_gpu_processing(database)
-            try_clear_gpu_queue(config)
+            reset_gpu_processing(database, config)
             client.close()
         return
     threads = [
@@ -503,8 +596,7 @@ def main():
         for thread in threads:
             thread.join()
     finally:
-        reset_gpu_processing(database)
-        try_clear_gpu_queue(config)
+        reset_gpu_processing(database, config)
         client.close()
 
 

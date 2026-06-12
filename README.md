@@ -36,10 +36,10 @@ flowchart LR
 | Process | Role |
 |---------|------|
 | `web` | Flask UI, report job orchestration |
-| `preprocessor` | RabbitMQ consumer; scans MongoDB and generates item summaries |
-| `GPU_server` | Optional standalone local-model worker for Atlas source items |
+| `preprocessor` | Isolated RabbitMQ worker/router; scans Atlas and generates item/final summaries |
+| `GPU_server` | Optional isolated local-model worker for source/shared AI tasks |
 | `scheduler` | Claims cron schedules, generates scheduled reports, and synchronizes newsletter feed metadata |
-| Atlas MongoDB | Vulnerability source data and review views |
+| Atlas MongoDB | Vulnerability source data, review views, source AI cache, and shared AI tasks |
 | Local MongoDB | Auth, subscriptions, newsletter metadata, structured report jobs/results, schedules, and locks |
 | CloudAMQP | Priority-backed intake, GPU, and Company AI queues |
 
@@ -78,9 +78,13 @@ Minimum sections:
     "enabled": true,
     "...": "..."
   },
-  "company_ai_preprocessing": { "...": "..." },
+  "company_ai_preprocessing": {
+    "task_collection": "ai_generation_tasks",
+    "...": "..."
+  },
   "gpu_preprocessing": {
     "enabled": false,
+    "final_summary_prompt": "Write the final summary in ${language}.",
     "...": "..."
   },
   "report_processing": { "...": "..." }

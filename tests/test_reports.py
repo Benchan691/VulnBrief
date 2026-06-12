@@ -749,7 +749,8 @@ def test_reports_api_upload_and_authentication(client, monkeypatch):
         job = get_web_database()['report_jobs'].find_one({'_id': job_id})
         assert job['generation_mode'] == 'company_ai'
         assert job['effective_generation_mode'] == 'company_ai'
-        assert job['model'] == 'Company AI'
+        assert job['model'] == 'Shared AI Workers'
+        assert job['provider'] == 'RabbitMQ + Atlas'
         assert job['report_language'] == 'zh'
         assert job['effective_report_language'] == 'zh'
         get_web_database()['report_jobs'].delete_one({'_id': job_id})
@@ -915,7 +916,24 @@ def _mock_company_ai_cache(monkeypatch, results):
     )
     monkeypatch.setattr(
         'company_ai_preprocessor.wait_for_summaries',
-        lambda references, timeout: list(results),
+        lambda references, timeout: [
+            {
+                'title': 'Cybersecurity Report',
+                'executive_summary': 'Queued final summary.',
+                'trends': [],
+                'recommendations': [],
+            }
+        ] if references and references[0].get('task_type') == 'final' else list(results),
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor.enqueue_final_summary',
+        lambda item_results, language, config: {
+            'storage': 'shared',
+            'task_id': ObjectId(),
+            'task_type': 'final',
+            'language': language,
+            'content_hash': 'final-hash',
+        },
     )
 
 
@@ -1063,7 +1081,7 @@ def test_rendered_report_includes_item_table(tmp_path):
             app.config['NEWSLETTER_ROOT'] = original_root
 
 
-def test_report_job_opens_fresh_summary_room_after_items(tmp_path, monkeypatch):
+def test_report_job_queues_final_summary_without_opening_provider_room(tmp_path, monkeypatch):
     cached_item = {
         'highlight': {'title': 'Cached', 'summary': 'Summary'},
         'recommendations': [],
@@ -1095,9 +1113,8 @@ def test_report_job_opens_fresh_summary_room_after_items(tmp_path, monkeypatch):
             run_job(app, job_id)
             job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
-            assert len(providers) == 1
-            assert providers[0].room_calls == ['']
-            assert job['company_ai_conversation_id'] == 'summary-room'
+            assert providers == []
+            assert 'company_ai_conversation_id' not in job
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
@@ -1150,7 +1167,7 @@ def test_company_ai_report_job_falls_back_to_template(tmp_path, monkeypatch):
             assert job['effective_report_language'] == 'zh'
             assert job['item_fallback_count'] == 1
             assert 'Timed out waiting for the prioritized Company AI summary.' in job['item_errors'][0]['error']
-            assert job['final_summary_fallback_reason'] == 'Company AI unavailable.'
+            assert 'final_summary_fallback_reason' not in job
             assert 'usage' not in job
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
@@ -1175,17 +1192,15 @@ def test_company_ai_authentication_failure_uses_template_and_deterministic_final
             run_job(app, job_id)
             job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
-            assert job['room_creation_warning'] == 'Company AI login failed.'
+            assert 'room_creation_warning' not in job
             assert job['item_fallback_count'] == 1
-            assert job['final_summary_fallback_reason'] == (
-                'AI provider or Company AI room was unavailable.'
-            )
+            assert 'final_summary_fallback_reason' not in job
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
 
 
-def test_company_ai_final_failure_uses_deterministic_final(tmp_path, monkeypatch):
+def test_queued_final_timeout_uses_deterministic_final(tmp_path, monkeypatch):
     class FinalFailureProvider(FakeProvider):
         def create_room(self, prime_prompt=None):
             return 'room'
@@ -1203,7 +1218,11 @@ def test_company_ai_final_failure_uses_deterministic_final(tmp_path, monkeypatch
         'recommendations': [],
     }
     _mock_company_ai_cache(monkeypatch, [cached_item])
-    monkeypatch.setattr('report_harness.CompanyAIProvider', lambda config: FinalFailureProvider())
+    monkeypatch.setattr(
+        'company_ai_preprocessor.wait_for_summaries',
+        lambda references, timeout: [None] if references[0].get('task_type') == 'final'
+        else [cached_item],
+    )
     with app.app_context():
         original_root = app.config['NEWSLETTER_ROOT']
         app.config['NEWSLETTER_ROOT'] = str(tmp_path)
@@ -1213,7 +1232,9 @@ def test_company_ai_final_failure_uses_deterministic_final(tmp_path, monkeypatch
             job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
             assert job['item_fallback_count'] == 0
-            assert job['final_summary_fallback_reason'] == 'Company AI final unavailable.'
+            assert job['final_summary_fallback_reason'] == (
+                'Timed out waiting for the queued final AI summary.'
+            )
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
@@ -1274,7 +1295,7 @@ def test_company_ai_schema_failure_falls_back_to_template(tmp_path, monkeypatch)
             assert job['effective_generation_mode'] == 'company_ai'
             assert job['item_fallback_count'] == 1
             assert 'Timed out waiting for the prioritized Company AI summary.' in job['item_errors'][0]['error']
-            assert 'final_summary_fallback_reason' in job
+            assert 'final_summary_fallback_reason' not in job
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})

@@ -58,7 +58,7 @@ def _cfg_json_list(env_name, source, key, default):
     return _env_json_list(env_name, source.get(key, default))
 
 
-def load_application_config(base_dir):
+def load_application_config(base_dir, require_local=True):
     config_path = os.environ.get(
         'APP_CONFIG',
         os.path.join(base_dir, 'config', 'config.json'),
@@ -96,8 +96,10 @@ def load_application_config(base_dir):
         'LOCAL_MONGO_URI',
         file_config.get('local_mongo_uri', file_config.get('mongo_uri', '')),
     )
-    if not atlas_mongo_uri or not local_mongo_uri:
+    if require_local and (not atlas_mongo_uri or not local_mongo_uri):
         raise ValueError('Both atlas_mongo_uri and local_mongo_uri must be configured.')
+    if not atlas_mongo_uri:
+        raise ValueError('atlas_mongo_uri must be configured.')
 
     local_database = file_config.get('local_database', file_config.get('web_database', 'web'))
     report_json_error_message = report_config.get(
@@ -116,6 +118,10 @@ def load_application_config(base_dir):
         'VULNERABILITIES_DATABASE': _env_str(
             'VULNERABILITIES_DATABASE',
             file_config['vulnerabilities_database'],
+        ),
+        'AI_TASK_COLLECTION': _env_str(
+            'AI_TASK_COLLECTION',
+            preprocessing_config.get('task_collection', 'ai_generation_tasks'),
         ),
         'REVIEW_VIEW_SUFFIX': _cfg_str('REVIEW_VIEW_SUFFIX', file_config, 'review_view_suffix', '_review'),
         'SECRET_KEY': _env_str('FLASK_SECRET_KEY', file_config['flask_secret_key']),
@@ -232,6 +238,10 @@ def load_application_config(base_dir):
         'GPU_START_PROMPT': _env_str(
             'GPU_START_PROMPT',
             gpu_config.get('start_prompt', company_ai_config.get('start_prompt', '')),
+        ),
+        'GPU_FINAL_SUMMARY_PROMPT': _env_str(
+            'GPU_FINAL_SUMMARY_PROMPT',
+            gpu_config.get('final_summary_prompt', company_ai_config.get('summary_prompt', '')),
         ),
         'REPORT_ITEM_JSON_RETRIES': _cfg_int(
             'REPORT_ITEM_JSON_RETRIES', report_config, 'item_json_retries', 2,

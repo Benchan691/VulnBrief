@@ -22,7 +22,7 @@ def test_bootstrap_creates_default_user_when_auth_is_empty():
         user = get_web_database()['auth'].find_one({'username': 'admin'})
         assert user is not None
         assert user['password'].startswith('$2')
-        assert verify_login('admin', 'changeme') is not None
+        assert verify_login('admin', app.config['WEB_AUTH_BOOTSTRAP_PASSWORD']) is not None
 
 
 def test_login_accepts_email_when_stored_on_user():

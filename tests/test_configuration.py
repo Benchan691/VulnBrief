@@ -169,6 +169,21 @@ def test_mongo_connections_are_required(tmp_path):
         load_application_config(str(tmp_path))
 
 
+def test_worker_configuration_requires_atlas_but_not_local_mongo(tmp_path):
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.json').write_text(json.dumps({
+        'atlas_mongo_uri': 'mongodb://atlas.example/',
+        'vulnerabilities_database': 'vulnerabilities',
+        'flask_secret_key': 'secret',
+    }), encoding='utf-8')
+
+    loaded = load_application_config(str(tmp_path), require_local=False)
+    assert loaded['ATLAS_MONGO_URI'] == 'mongodb://atlas.example/'
+    assert loaded['LOCAL_MONGO_URI'] == ''
+    assert loaded['AI_TASK_COLLECTION'] == 'ai_generation_tasks'
+
+
 def test_file_only_settings_can_be_overridden_by_environment(tmp_path, monkeypatch):
     config_dir = tmp_path / 'config'
     config_dir.mkdir()

@@ -1018,8 +1018,8 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
         queued_inputs.append({'position': position, **queued})
     now = datetime.now(timezone.utc)
     if generation_mode == 'company_ai':
-        provider = current_app.config['COMPANY_AI_BASE_URL']
-        model = 'Company AI'
+        provider = 'RabbitMQ + Atlas'
+        model = 'Shared AI Workers'
     else:
         provider = None
         model = 'Fixed Template'
@@ -1151,8 +1151,6 @@ def run_job(app, job_id):
             owner = f'{job_id}:{uuid.uuid4()}'
             _acquire_worker_lease(owner)
             collection = _job_collection()
-            provider = None
-            cleanup_provider = None
             try:
                 job_object_id = ObjectId(job_id)
                 now = datetime.now(timezone.utc)
@@ -1262,40 +1260,30 @@ def run_job(app, job_id):
                     }
                     collection.update_one({'_id': job_object_id}, {'$set': progress})
                 final_fallback_reason = None
-                provider = None
-                cleanup_provider = None
                 try:
-                    provider = CompanyAIProvider(current_app.config)
-                    cleanup_provider = provider
-                    conversation_id = provider.create_room(prime_prompt='')
+                    from company_ai_preprocessor import enqueue_final_summary, wait_for_summaries
+
+                    final_reference = enqueue_final_summary(
+                        item_results, report_language, current_app.config,
+                    )
+                    final_data = wait_for_summaries(
+                        [final_reference],
+                        current_app.config['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'],
+                    )[0]
+                    if final_data is None:
+                        raise TimeoutError('Timed out waiting for the queued final AI summary.')
+                    final_task = get_vulnerabilities_database()[
+                        current_app.config['AI_TASK_COLLECTION']
+                    ].find_one({'_id': final_reference['task_id']}, {'provider': 1})
                     collection.update_one(
                         {'_id': job_object_id},
-                        {'$set': {'company_ai_conversation_id': conversation_id}},
+                        {'$set': {'final_summary_provider': (final_task or {}).get('provider')}},
                     )
-                    try:
-                        final_data, _ = generate_final_data(
-                            provider,
-                            item_results,
-                            report_language,
-                            current_app.config['REPORT_FINAL_JSON_RETRIES'],
-                            current_app.config,
-                        )
-                    except (ProviderError, ValidationError) as exc:
-                        final_data = _deterministic_final(
-                            item_results, report_language,
-                        )
-                        final_fallback_reason = str(exc)
-                except (requests.RequestException, ValueError, ProviderError) as exc:
-                    provider = None
-                    cleanup_provider = None
+                except Exception as exc:
                     final_data = _deterministic_final(
                         item_results, report_language,
                     )
-                    final_fallback_reason = 'AI provider or Company AI room was unavailable.'
-                    collection.update_one(
-                        {'_id': job_object_id},
-                        {'$set': {'room_creation_warning': str(exc)}},
-                    )
+                    final_fallback_reason = str(exc)
                 report = _assemble_report(final_data, item_results, report_language)
                 completed = {
                     'status': 'completed',
@@ -1323,14 +1311,6 @@ def run_job(app, job_id):
                     }},
                 )
             finally:
-                if cleanup_provider is not None and hasattr(cleanup_provider, 'delete_room'):
-                    try:
-                        cleanup_provider.delete_room()
-                    except Exception as exc:
-                        collection.update_one(
-                            {'_id': ObjectId(job_id)},
-                            {'$set': {'room_cleanup_warning': str(exc)}},
-                        )
                 _input_collection().delete_many({'job_id': ObjectId(job_id)})
                 _release_worker_lease(owner)
 

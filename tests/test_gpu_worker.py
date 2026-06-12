@@ -17,6 +17,8 @@ def _config():
         'GPU_JSON_RETRIES': 0,
         'GPU_MAX_OUTPUT_TOKENS': 1000,
         'GPU_START_PROMPT': 'Prime this chat for vulnerability JSON.',
+        'GPU_FINAL_SUMMARY_PROMPT': 'Summarize in ${language}.',
+        'AI_TASK_COLLECTION': 'ai_generation_tasks',
         'GPU_ENABLED': True,
         'COMPANY_AI_ENABLED': True,
         'PREPROCESSING_CACHE_VERSION': '1',
@@ -164,3 +166,53 @@ def test_gpu_failure_resets_task_and_routes_to_company(monkeypatch):
     assert updates[-1]['status'] == 'pending'
     assert updates[-1]['error'] == 'GPU unavailable'
     assert published == ['company']
+
+
+def test_gpu_processes_shared_final_task(monkeypatch):
+    updates = []
+    payload = {'item_results': [{'highlight': {'summary': 'Item'}, 'recommendations': []}]}
+    config = {
+        **_config(),
+        'RABBITMQ_COMPANY_QUEUE': 'company',
+        'RABBITMQ_GPU_QUEUE': 'gpu',
+        'RABBITMQ_BACKGROUND_PRIORITY': 1,
+        'GPU_MAX_TASK_ATTEMPTS': 2,
+    }
+
+    class FakeCollection:
+        pass
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return FakeCollection()
+
+    class Provider:
+        def open_chat(self):
+            return None
+
+        def close_chat(self):
+            return None
+
+        def generate_final(self, item_results, language, prompt):
+            assert item_results == payload['item_results']
+            return {'executive_summary': 'GPU final', 'trends': [], 'recommendations': []}
+
+    monkeypatch.setattr(
+        'GPU_server.gpu_worker.claim_shared_task',
+        lambda collection, task, owner, config: {'attempts': 1, 'payload': payload},
+    )
+    monkeypatch.setattr(
+        'GPU_server.gpu_worker.update_shared_task',
+        lambda collection, task, owner, values, unset: updates.append(values),
+    )
+    task = {
+        'storage': 'shared',
+        'task_id': 'task',
+        'task_type': 'final',
+        'language': 'en',
+        'content_hash': summary_content_hash(payload, 'en', config),
+    }
+    process_task(FakeDatabase(), object(), task, 'gpu-owner', Provider(), config)
+    assert updates[-1]['status'] == 'completed'
+    assert updates[-1]['provider'] == 'gpu_local'
+    assert updates[-1]['result']['executive_summary'] == 'GPU final'

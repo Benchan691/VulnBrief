@@ -32,12 +32,13 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Set the Atlas URI, RabbitMQ URI, and `GPU_MODEL_PATH`. Queue names,
+Set the Atlas URI, RabbitMQ URI, `AI_TASK_COLLECTION`, and `GPU_MODEL_PATH`. Queue names,
 `PREPROCESSING_CACHE_VERSION`, and report compaction settings must match the
 webserver.
 
 - Start `GPU_WORKER_CONCURRENCY` at `1`.
-- `GPU_MAX_TASK_ATTEMPTS` controls attempts before direct Company AI fallback.
+- `GPU_MAX_TASK_ATTEMPTS` controls attempts before queued Company AI fallback.
+- `GPU_FINAL_SUMMARY_PROMPT` configures queued final report-summary generation.
 - `GPU_TENSOR_SPLIT` distributes model layers across NVIDIA GPUs `0,1,2`.
 - Set `GPU_ENABLED` and `COMPANY_AI_ENABLED` to match the webserver router.
 - `GPU_START_PROMPT` is sent and ignored before every task JSON.
@@ -68,8 +69,8 @@ docker compose down
 docker compose up -d
 ```
 
-The GPU worker clears its queue and resets its in-flight Atlas entries on startup
-and graceful shutdown. Set `GPU_ENABLED=false` in both deployments before
-stopping it so the router does not send new work there. Increase
+The GPU worker preserves durable queue messages and recovers stale Atlas claims.
+Use `company_ai_preprocessor.py --purge-queues` only when queued work must be
+intentionally discarded. Increase
 `PREPROCESSING_CACHE_VERSION` on both deployments when preprocessing changes
 should invalidate existing caches.
