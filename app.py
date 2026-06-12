@@ -95,7 +95,7 @@ def create_app():
 
     @application.errorhandler(404)
     def page_not_found(error):
-        image_filename = 'cat.gif'
+        image_filename = '67.gif'
         return render_template('404.html', image_filename=image_filename), 404
 
     application.register_blueprint(newsletter_blueprint)
