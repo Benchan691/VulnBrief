@@ -280,9 +280,139 @@ def _github_affected(details):
     return values
 
 
-def _source_fields(document, source_collection, details):
-    source = document.get('source') if isinstance(document.get('source'), dict) else {}
-    fields = {
+def _avd_source_fields(fields, document, details):
+    fields['affected'] = _dict_lines(
+        details.get('affected_software'),
+        ('vendor', 'product', 'version', 'impact'),
+    )
+
+
+def _cisco_source_fields(fields, document, details):
+    fields['overview'] = details.get('summary') or fields['overview']
+    fields['affected'] = _values(details.get('product_names'))
+    fields['reference_values'] = _values([
+        details.get('publication_url'), details.get('cvrf_url'), details.get('csaf_url'),
+    ])
+
+
+def _cnvd_source_fields(fields, document, details):
+    fields['title'] = _cnvd_title(document, details) or fields['title']
+    fields['affected'] = _values(details.get('affected_products'))
+    fields['reference_values'] = _values(_path(details, 'raw_fields', '参考链接'))
+
+
+def _cnnvd_source_fields(fields, document, details):
+    fields['overview'] = details.get('vulDesc') or details.get('productDesc') or fields['overview']
+    severity = _severity_label(document.get('severity') or details.get('hazardLevel'))
+    fields['impacts'] = [severity] if severity else []
+    fields['affected'] = _values([
+        details.get('affectedProduct'), details.get('affectedSystem'), details.get('affectedVendor'),
+    ])
+    fields['recommendations'] = _values(details.get('patch'))
+    fields['reference_values'] = _values(details.get('referUrl'))
+
+
+def _cve_source_fields(fields, document, details):
+    fields['title'] = details.get('title') or fields['title']
+    fields['overview'] = _first({}, {'values': _nested_values(details.get('descriptions'), 'value')}, 'values')
+    fields['affected'] = _values(details.get('affected_products'))
+    fields['reference_values'] = _nested_values(details.get('references'), 'url')
+
+
+def _github_advisory_source_fields(fields, document, details):
+    fields['overview'] = details.get('description') or details.get('summary') or fields['overview']
+    fields['affected'] = _github_affected(details)
+    fields['recommendations'] = _nested_values(details.get('vulnerabilities'), 'first_patched_version')
+    fields['reference_values'] = _values(details.get('references'))
+
+
+def _hkcert_source_fields(fields, document, details):
+    fields['impacts'] = _values(details.get('impact'))
+    fields['affected'] = _values(details.get('systems_affected'))
+    fields['recommendations'] = _values(details.get('solutions'))
+    fields['reference_values'] = _values(details.get('solution_links'))
+    fields['related_values'] = _values(details.get('related_links'))
+
+
+def _huawei_sa_source_fields(fields, document, details):
+    fields['show_affected'] = False
+    fields['affected'] = []
+
+
+def _govcert_infosec_source_fields(fields, document, details):
+    fields['overview'] = details.get('description') or details.get('summary') or fields['overview']
+    fields['impacts'] = _values(details.get('impact'))
+    fields['affected'] = _values(details.get('affected_systems'))
+    fields['recommendations'] = _values(details.get('recommendation'))
+    fields['reference_values'] = _values(details.get('more_information_links'))
+
+
+def _juniper_source_fields(fields, document, details):
+    fields['affected'] = []
+    fields['affected_table'] = _raw_table(details)
+
+
+def _paloalto_source_fields(fields, document, details):
+    fields['affected'] = _values(details.get('products'))
+    fields['recommendations'] = _values([details.get('solution'), details.get('workarounds')])
+
+
+def _qianxin_source_fields(fields, document, details):
+    fields['overview'] = (
+        _path(details, 'description', 'security_advisory')
+        or _path(details, 'description', 'vulnerability_information', 'summary')
+        or fields['overview']
+    )
+    fields['affected'] = _qianxin_affected(details)
+    fields['recommendations'] = _values(_path(details, 'description', 'recommendations'))
+    fields['reference_values'] = _values([
+        details.get('reference_links'), _path(details, 'description', 'references'),
+    ])
+
+
+def _hikvision_source_fields(fields, document, details):
+    fields['reference_values'] = []
+
+
+def _ransomwarelive_source_fields(fields, document, details):
+    fields['overview'] = details.get('press') or document.get('title') or fields['overview']
+    fields['show_impacts'] = False
+    fields['show_affected'] = False
+
+
+def _zeroday_source_fields(fields, document, details):
+    fields['show_impacts'] = False
+    fields['show_affected'] = False
+    fields['impacts'] = []
+    fields['affected'] = []
+
+
+SOURCE_FIELD_OVERRIDES = {
+    'avd': _avd_source_fields,
+    'cisco': _cisco_source_fields,
+    'cnvd': _cnvd_source_fields,
+    'cnnvd': _cnnvd_source_fields,
+    'cve': _cve_source_fields,
+    'github_advisory': _github_advisory_source_fields,
+    'hkcert': _hkcert_source_fields,
+    'huawei_sa': _huawei_sa_source_fields,
+    'govcert': _govcert_infosec_source_fields,
+    'infosec': _govcert_infosec_source_fields,
+    'juniper': _juniper_source_fields,
+    'paloalto': _paloalto_source_fields,
+    'qianxin': _qianxin_source_fields,
+    'hikvision': _hikvision_source_fields,
+    'ransomwarelive': _ransomwarelive_source_fields,
+    'zeroday': _zeroday_source_fields,
+}
+SEVERITY_DOCUMENT_SOURCES = {
+    'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'github_advisory', 'hikvision',
+    'huawei_sa', 'juniper', 'paloalto', 'qianxin', 'splunk',
+}
+
+
+def _default_source_fields(document, details):
+    return {
         'title': _first({}, document, 'title') or _first(details, {}, 'title', 'advisory_title', 'vulName'),
         'overview': _first(details, document, 'intro', 'summary', 'description', 'vulDesc', 'productDesc'),
         'impacts': _all(details, document, 'impact', 'impacts', 'severity'),
@@ -304,90 +434,17 @@ def _source_fields(document, source_collection, details):
         'affected_table': None,
     }
 
-    severity_sources = {
-        'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'github_advisory', 'hikvision',
-        'huawei_sa', 'juniper', 'paloalto', 'qianxin', 'splunk',
-    }
-    if source_collection in severity_sources:
+
+def _source_fields(document, source_collection, details):
+    source = document.get('source') if isinstance(document.get('source'), dict) else {}
+    fields = _default_source_fields(document, details)
+
+    if source_collection in SEVERITY_DOCUMENT_SOURCES:
         fields['impacts'] = _all({}, document, 'severity') or fields['impacts']
 
-    if source_collection == 'avd':
-        fields['affected'] = _dict_lines(
-            details.get('affected_software'),
-            ('vendor', 'product', 'version', 'impact'),
-        )
-    elif source_collection == 'cisco':
-        fields['overview'] = details.get('summary') or fields['overview']
-        fields['affected'] = _values(details.get('product_names'))
-        fields['reference_values'] = _values([
-            details.get('publication_url'), details.get('cvrf_url'), details.get('csaf_url'),
-        ])
-    elif source_collection == 'cnvd':
-        fields['title'] = _cnvd_title(document, details) or fields['title']
-        fields['affected'] = _values(details.get('affected_products'))
-        fields['reference_values'] = _values(_path(details, 'raw_fields', '参考链接'))
-    elif source_collection == 'cnnvd':
-        fields['overview'] = details.get('vulDesc') or details.get('productDesc') or fields['overview']
-        severity = _severity_label(document.get('severity') or details.get('hazardLevel'))
-        fields['impacts'] = [severity] if severity else []
-        fields['affected'] = _values([
-            details.get('affectedProduct'), details.get('affectedSystem'), details.get('affectedVendor'),
-        ])
-        fields['recommendations'] = _values(details.get('patch'))
-        fields['reference_values'] = _values(details.get('referUrl'))
-    elif source_collection == 'cve':
-        fields['title'] = details.get('title') or fields['title']
-        fields['overview'] = _first({}, {'values': _nested_values(details.get('descriptions'), 'value')}, 'values')
-        fields['affected'] = _values(details.get('affected_products'))
-        fields['reference_values'] = _nested_values(details.get('references'), 'url')
-    elif source_collection == 'github_advisory':
-        fields['overview'] = details.get('description') or details.get('summary') or fields['overview']
-        fields['affected'] = _github_affected(details)
-        fields['recommendations'] = _nested_values(details.get('vulnerabilities'), 'first_patched_version')
-        fields['reference_values'] = _values(details.get('references'))
-    elif source_collection == 'hkcert':
-        fields['impacts'] = _values(details.get('impact'))
-        fields['affected'] = _values(details.get('systems_affected'))
-        fields['recommendations'] = _values(details.get('solutions'))
-        fields['reference_values'] = _values(details.get('solution_links'))
-        fields['related_values'] = _values(details.get('related_links'))
-    elif source_collection == 'huawei_sa':
-        fields['show_affected'] = False
-        fields['affected'] = []
-    elif source_collection in {'govcert', 'infosec'}:
-        fields['overview'] = details.get('description') or details.get('summary') or fields['overview']
-        fields['impacts'] = _values(details.get('impact'))
-        fields['affected'] = _values(details.get('affected_systems'))
-        fields['recommendations'] = _values(details.get('recommendation'))
-        fields['reference_values'] = _values(details.get('more_information_links'))
-    elif source_collection == 'juniper':
-        fields['affected'] = []
-        fields['affected_table'] = _raw_table(details)
-    elif source_collection == 'paloalto':
-        fields['affected'] = _values(details.get('products'))
-        fields['recommendations'] = _values([details.get('solution'), details.get('workarounds')])
-    elif source_collection == 'qianxin':
-        fields['overview'] = (
-            _path(details, 'description', 'security_advisory')
-            or _path(details, 'description', 'vulnerability_information', 'summary')
-            or fields['overview']
-        )
-        fields['affected'] = _qianxin_affected(details)
-        fields['recommendations'] = _values(_path(details, 'description', 'recommendations'))
-        fields['reference_values'] = _values([
-            details.get('reference_links'), _path(details, 'description', 'references'),
-        ])
-    elif source_collection == 'hikvision':
-        fields['reference_values'] = []
-    elif source_collection == 'ransomwarelive':
-        fields['overview'] = details.get('press') or document.get('title') or fields['overview']
-        fields['show_impacts'] = False
-        fields['show_affected'] = False
-    elif source_collection == 'zeroday':
-        fields['show_impacts'] = False
-        fields['show_affected'] = False
-        fields['impacts'] = []
-        fields['affected'] = []
+    override = SOURCE_FIELD_OVERRIDES.get(source_collection)
+    if override is not None:
+        override(fields, document, details)
 
     detail_url = source.get('detail_url')
     if detail_url:

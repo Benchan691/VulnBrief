@@ -1165,10 +1165,8 @@ def run_job(app, job_id):
                     }, '$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
                 )
                 inputs = list(_input_collection().find({'job_id': job_object_id}).sort('position', 1))
-                generation_mode = LEGACY_GENERATION_MODES.get(
-                    job.get('generation_mode', 'company_ai'),
-                    job.get('generation_mode', 'company_ai'),
-                )
+                raw_mode = job.get('generation_mode', 'company_ai')
+                generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
                 report_language = job.get('report_language', 'en')
                 if generation_mode == 'template':
                     records = []
@@ -1193,31 +1191,29 @@ def run_job(app, job_id):
                     compact_details(_load_input_details(item), current_app.config)
                     for item in inputs
                 ]
-                cached_company_results = None
                 company_cache_warning = None
-                if generation_mode == 'company_ai':
-                    try:
-                        from company_ai_preprocessor import enqueue_report_items, wait_for_summaries
+                try:
+                    from company_ai_preprocessor import enqueue_report_items, wait_for_summaries
 
-                        summary_references = enqueue_report_items([
-                            {
-                                'details': details,
-                                'source_collection': item.get('source_collection'),
-                                'source_id': item.get('selection_id'),
-                            }
-                            for item, details in zip(inputs, prepared_details)
-                        ], report_language, current_app.config)
-                        cached_company_results = wait_for_summaries(
-                            summary_references,
-                            current_app.config['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'],
-                        )
-                    except Exception as exc:
-                        cached_company_results = [None] * len(inputs)
-                        company_cache_warning = str(exc)
-                        collection.update_one(
-                            {'_id': job_object_id},
-                            {'$set': {'company_ai_cache_warning': company_cache_warning}},
-                        )
+                    summary_references = enqueue_report_items([
+                        {
+                            'details': details,
+                            'source_collection': item.get('source_collection'),
+                            'source_id': item.get('selection_id'),
+                        }
+                        for item, details in zip(inputs, prepared_details)
+                    ], report_language, current_app.config)
+                    cached_company_results = wait_for_summaries(
+                        summary_references,
+                        current_app.config['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'],
+                    )
+                except Exception as exc:
+                    cached_company_results = [None] * len(inputs)
+                    company_cache_warning = str(exc)
+                    collection.update_one(
+                        {'_id': job_object_id},
+                        {'$set': {'company_ai_cache_warning': company_cache_warning}},
+                    )
 
                 for position, (item, details) in enumerate(
                     zip(inputs, prepared_details),
@@ -1225,17 +1221,13 @@ def run_job(app, job_id):
                 ):
                     identifier = item.get('identifier') or str(position)
                     fallback_reason = None
-                    if generation_mode == 'company_ai':
-                        result = cached_company_results[position - 1]
-                        if result is None:
-                            result = _local_item(details)
-                            fallback_reason = (
-                                company_cache_warning
-                                or 'Timed out waiting for the prioritized Company AI summary.'
-                            )
-                    else:
+                    result = cached_company_results[position - 1]
+                    if result is None:
                         result = _local_item(details)
-                        fallback_reason = 'Unexpected generation mode for item processing.'
+                        fallback_reason = (
+                            company_cache_warning
+                            or 'Timed out waiting for the prioritized Company AI summary.'
+                        )
                     result = _finalize_item_result(
                         result,
                         details,
@@ -1270,51 +1262,40 @@ def run_job(app, job_id):
                     }
                     collection.update_one({'_id': job_object_id}, {'$set': progress})
                 final_fallback_reason = None
-                final_source = None
                 provider = None
                 cleanup_provider = None
-                if generation_mode == 'company_ai':
+                try:
+                    provider = CompanyAIProvider(current_app.config)
+                    cleanup_provider = provider
+                    conversation_id = provider.create_room(prime_prompt='')
+                    collection.update_one(
+                        {'_id': job_object_id},
+                        {'$set': {'company_ai_conversation_id': conversation_id}},
+                    )
                     try:
-                        provider = CompanyAIProvider(current_app.config)
-                        cleanup_provider = provider
-                        conversation_id = provider.create_room(prime_prompt='')
-                        collection.update_one(
-                            {'_id': job_object_id},
-                            {'$set': {'company_ai_conversation_id': conversation_id}},
+                        final_data, _ = generate_final_data(
+                            provider,
+                            item_results,
+                            report_language,
+                            current_app.config['REPORT_FINAL_JSON_RETRIES'],
+                            current_app.config,
                         )
-                        try:
-                            final_data, _ = generate_final_data(
-                                provider,
-                                item_results,
-                                report_language,
-                                current_app.config['REPORT_FINAL_JSON_RETRIES'],
-                                current_app.config,
-                            )
-                            final_source = 'company_ai'
-                        except (ProviderError, ValidationError) as exc:
-                            final_data = _deterministic_final(
-                                item_results, report_language,
-                            )
-                            final_source = 'deterministic_after_ai_error'
-                            final_fallback_reason = str(exc)
-                    except (requests.RequestException, ValueError, ProviderError) as exc:
-                        provider = None
-                        cleanup_provider = None
+                    except (ProviderError, ValidationError) as exc:
                         final_data = _deterministic_final(
                             item_results, report_language,
                         )
-                        final_source = 'deterministic_no_provider'
-                        final_fallback_reason = 'AI provider or Company AI room was unavailable.'
-                        collection.update_one(
-                            {'_id': job_object_id},
-                            {'$set': {'room_creation_warning': str(exc)}},
-                        )
-                else:
+                        final_fallback_reason = str(exc)
+                except (requests.RequestException, ValueError, ProviderError) as exc:
+                    provider = None
+                    cleanup_provider = None
                     final_data = _deterministic_final(
                         item_results, report_language,
                     )
-                    final_source = 'deterministic_wrong_mode'
-                    final_fallback_reason = 'Unexpected generation mode for final summary.'
+                    final_fallback_reason = 'AI provider or Company AI room was unavailable.'
+                    collection.update_one(
+                        {'_id': job_object_id},
+                        {'$set': {'room_creation_warning': str(exc)}},
+                    )
                 report = _assemble_report(final_data, item_results, report_language)
                 completed = {
                     'status': 'completed',

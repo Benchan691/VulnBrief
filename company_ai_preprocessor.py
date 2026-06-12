@@ -1,7 +1,6 @@
 import argparse
 import hashlib
 import json
-import re
 import signal
 import threading
 import time
