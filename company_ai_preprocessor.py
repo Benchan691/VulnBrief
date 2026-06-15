@@ -14,8 +14,10 @@ from pymongo.errors import PyMongoError
 
 from bootstrap import BASE_DIR, configure_worker
 from mongo import get_config, get_vulnerabilities_database
+from preprocessor_log import log_error, log_info
 from report_harness import (
     CompanyAIProvider,
+    CompanyAILoginLimitExceeded,
     REPORT_LANGUAGES,
     compact_details,
     generate_final_data,
@@ -97,7 +99,85 @@ def _gpu_queue_declare(channel, config):
 
 def _routed_queue_declare(channel, config):
     _company_queue_declare(channel, config)
-    _gpu_queue_declare(channel, config)
+    if config['GPU_ENABLED']:
+        _gpu_queue_declare(channel, config)
+
+
+def _task_target(task):
+    if task.get('source_collection') and task.get('source_id') is not None:
+        return f"{task['source_collection']}/{task['source_id']}"
+    if task.get('task_id') is not None:
+        return f"shared/{task['task_id']}"
+    return 'unknown'
+
+
+def _queue_status(config):
+    connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
+    try:
+        channel = connection.channel()
+        intake_status = _queue_declare(channel, config)
+        company_status = channel.queue_declare(
+            queue=config['RABBITMQ_COMPANY_QUEUE'],
+            durable=True,
+            arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+        )
+        counts = {
+            config['RABBITMQ_INTAKE_QUEUE']: intake_status.method.message_count,
+            config['RABBITMQ_COMPANY_QUEUE']: company_status.method.message_count,
+        }
+        if config['GPU_ENABLED']:
+            gpu_status = _gpu_queue_declare(channel, config)
+            counts[config['RABBITMQ_GPU_QUEUE']] = gpu_status.method.message_count
+        else:
+            counts[config['RABBITMQ_GPU_QUEUE']] = 0
+        return counts
+    finally:
+        connection.close()
+
+
+def _startup_worker(config):
+    scan_count = router_count = 0
+    company_count = 0
+    if config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']:
+        scan_count = router_count = 1
+    if config['COMPANY_AI_ENABLED']:
+        company_count = config['COMPANY_AI_PARALLEL_CHATS']
+
+    log_info(
+        'Starting Company AI preprocessor',
+        parallel_chats=config['COMPANY_AI_PARALLEL_CHATS'],
+        scan_interval=f"{config['COMPANY_AI_SCAN_INTERVAL_SECONDS']}s",
+        company_ai=config['COMPANY_AI_ENABLED'],
+        gpu=config['GPU_ENABLED'],
+    )
+
+    if config['COMPANY_AI_ENABLED']:
+        provider = CompanyAIProvider(config)
+        session_mode = provider.ensure_session()
+        log_info(
+            'Company AI login successful',
+            username=config['COMPANY_AI_USERNAME'],
+            mode=session_mode,
+        )
+
+    try:
+        counts = _queue_status(config)
+        log_info(
+            'Connected to RabbitMQ',
+            intake=counts[config['RABBITMQ_INTAKE_QUEUE']],
+            gpu=counts[config['RABBITMQ_GPU_QUEUE']],
+            company=counts[config['RABBITMQ_COMPANY_QUEUE']],
+        )
+    except pika.exceptions.AMQPError as exc:
+        log_error('Failed to connect to RabbitMQ', error=str(exc))
+        raise
+
+    log_info(
+        'Workers started',
+        scan=scan_count,
+        router=router_count,
+        company_ai=company_count,
+    )
 
 
 def _clear_queues(config, queue_names=None):
@@ -106,11 +186,10 @@ def _clear_queues(config, queue_names=None):
         channel = connection.channel()
         _queue_declare(channel, config)
         _routed_queue_declare(channel, config)
-        for queue_name in queue_names or (
-            config['RABBITMQ_INTAKE_QUEUE'],
-            config['RABBITMQ_GPU_QUEUE'],
-            config['RABBITMQ_COMPANY_QUEUE'],
-        ):
+        default_queues = [config['RABBITMQ_INTAKE_QUEUE'], config['RABBITMQ_COMPANY_QUEUE']]
+        if config['GPU_ENABLED']:
+            default_queues.insert(1, config['RABBITMQ_GPU_QUEUE'])
+        for queue_name in queue_names or default_queues:
             channel.queue_purge(queue=queue_name)
     finally:
         connection.close()
@@ -121,7 +200,7 @@ def _try_clear_queues(config, queue_names=None):
         _clear_queues(config, queue_names)
         return True
     except pika.exceptions.AMQPError as exc:
-        print(f'Unable to clear preprocessing queues: {exc}', flush=True)
+        log_error('Unable to clear preprocessing queues', error=str(exc))
         return False
 
 
@@ -361,9 +440,11 @@ def _reference_result(reference):
     return entry.get('result') if entry.get('status') == 'completed' else None
 
 
-def wait_for_summaries(references, timeout_seconds):
+def wait_for_summaries(references, timeout_seconds, should_continue=None):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
+        if should_continue is not None and not should_continue():
+            break
         results = [_reference_result(reference) for reference in references]
         if all(result is not None for result in results):
             break
@@ -451,6 +532,14 @@ def _complete_task(task, owner, result, provider='company_ai'):
         'provider': provider,
     }
     _update_task_entry(task, owner, values, ['processing_owner', 'processing_started_at', 'error'])
+    log_info(
+        'Stored AI JSON',
+        target=_task_target(task),
+        storage=task.get('storage'),
+        task_type=task.get('task_type', 'item'),
+        language=task['language'],
+        provider=provider,
+    )
 
 
 def _fail_task(task, owner, error):
@@ -626,6 +715,28 @@ def _release_processing_task(task, owner, config=None, channel=None):
             )
 
 
+def _delete_company_chat(provider, *, worker=None, target=None):
+    if provider is None or not getattr(provider, 'conversation_id', None):
+        return
+    conversation_id = provider.conversation_id
+    try:
+        provider.delete_room()
+        log_info(
+            'Company AI chat deleted',
+            worker=worker,
+            conversation_id=conversation_id,
+            target=target,
+        )
+    except Exception as exc:
+        log_error(
+            'Company AI chat delete failed',
+            worker=worker,
+            conversation_id=conversation_id,
+            target=target,
+            error=str(exc),
+        )
+
+
 def _shutdown_worker(owner, provider, config, channel, active_task=None, active_method=None):
     if active_task is not None:
         try:
@@ -639,23 +750,47 @@ def _shutdown_worker(owner, provider, config, channel, active_task=None, active_
         except Exception:
             pass
     if provider is not None:
-        try:
-            provider.delete_room()
-        except Exception:
-            pass
+        _delete_company_chat(provider)
 
 
-def _process_company_task(task, claimed, owner, config):
+def _process_company_task(task, claimed, owner, config, worker_number):
     provider = CompanyAIProvider(config)
+    task_type = task.get('task_type', 'item')
+    target = _task_target(task)
+    started = time.monotonic()
     try:
-        if task.get('task_type') == 'final':
-            provider.create_room(prime_prompt='')
+        log_info(
+            'Processing task',
+            worker=worker_number,
+            task_type=task_type,
+            language=task['language'],
+            target=target,
+        )
+        session_mode = provider.ensure_session()
+        log_info(
+            'Company AI session ready',
+            worker=worker_number,
+            mode=session_mode,
+            target=target,
+        )
+        if task_type == 'final':
+            conversation_id = provider.create_room(prime_prompt='')
+            primed = False
         else:
-            provider.create_room()
+            conversation_id = provider.create_room()
+            primed = True
+        log_info(
+            'Company AI room created',
+            worker=worker_number,
+            conversation_id=conversation_id,
+            task_type=task_type,
+            primed=primed,
+            target=target,
+        )
         details = _task_details(task, config)
         if summary_content_hash(details, task['language'], config) != task['content_hash']:
             raise ValueError('Source details changed while the task was queued.')
-        if task.get('task_type', 'item') == 'final':
+        if task_type == 'final':
             result, _ = generate_final_data(
                 provider,
                 details['item_results'],
@@ -672,12 +807,25 @@ def _process_company_task(task, claimed, owner, config):
                 config['REPORT_ITEM_JSON_RETRIES'],
             )
         _complete_task(task, owner, result, provider='company_ai')
+        log_info(
+            'Task completed',
+            worker=worker_number,
+            task_type=task_type,
+            language=task['language'],
+            target=target,
+            seconds=round(time.monotonic() - started, 1),
+        )
         return result
+    except CompanyAILoginLimitExceeded as exc:
+        log_error(
+            'Company AI login limit exceeded; stopping preprocessor',
+            failures=config['COMPANY_AI_LOGIN_MAX_FAILURES'],
+            error=str(exc),
+        )
+        STOP_EVENT.set()
+        raise
     finally:
-        try:
-            provider.delete_room()
-        except Exception:
-            pass
+        _delete_company_chat(provider, worker=worker_number, target=target)
 
 
 def _consume(config, worker_number):
@@ -690,7 +838,17 @@ def _consume(config, worker_number):
         try:
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
-            _company_queue_declare(channel, config)
+            company_status = channel.queue_declare(
+                queue=config['RABBITMQ_COMPANY_QUEUE'],
+                durable=True,
+                arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+            )
+            log_info(
+                'Company AI worker connected',
+                worker=worker_number,
+                queue=config['RABBITMQ_COMPANY_QUEUE'],
+                messages=company_status.method.message_count,
+            )
             channel.basic_qos(prefetch_count=1)
             for method, _, body in channel.consume(
                 config['RABBITMQ_COMPANY_QUEUE'],
@@ -703,6 +861,11 @@ def _consume(config, worker_number):
                 task = json_util.loads(body.decode('utf-8'))
                 claimed = _claim_task(task, owner, config)
                 if claimed is None:
+                    log_info(
+                        'Skipped stale task',
+                        worker=worker_number,
+                        target=_task_target(task),
+                    )
                     channel.basic_ack(method.delivery_tag)
                     continue
                 active_task = task
@@ -710,14 +873,29 @@ def _consume(config, worker_number):
                 if STOP_EVENT.is_set():
                     break
                 try:
-                    _process_company_task(task, claimed, owner, config)
+                    _process_company_task(task, claimed, owner, config, worker_number)
+                except CompanyAILoginLimitExceeded:
+                    active_task = None
+                    active_method = None
+                    channel.basic_ack(method.delivery_tag)
+                    break
                 except Exception as exc:
+                    log_error(
+                        'Task failed',
+                        worker=worker_number,
+                        target=_task_target(task),
+                        error=str(exc),
+                    )
                     _requeue_task(task, owner, exc, config, channel, claimed)
                 active_task = None
                 active_method = None
                 channel.basic_ack(method.delivery_tag)
         except Exception as exc:
-            print(f'Company AI worker {worker_number} reconnecting after error: {exc}', flush=True)
+            log_error(
+                'Company AI worker reconnecting after error',
+                worker=worker_number,
+                error=str(exc),
+            )
             STOP_EVENT.wait(5)
         finally:
             _shutdown_worker(owner, None, config, channel, active_task, active_method)
@@ -732,10 +910,9 @@ def _scan_loop(config):
             continue
         try:
             queued = scan_unprocessed(config)
-            if queued:
-                print(f'Company AI scan queued {queued} summaries.', flush=True)
+            log_info('Scan complete', published=queued)
         except (PyMongoError, pika.exceptions.AMQPError, ValueError) as exc:
-            print(f'Company AI scan failed: {exc}', flush=True)
+            log_error('Scan failed', error=str(exc))
         STOP_EVENT.wait(config['COMPANY_AI_SCAN_INTERVAL_SECONDS'])
 
 
@@ -765,8 +942,13 @@ def _route_loop(config):
         try:
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
-            _queue_declare(channel, config)
+            intake_status = _queue_declare(channel, config)
             _company_queue_declare(channel, config)
+            log_info(
+                'Router connected to intake queue',
+                queue=config['RABBITMQ_INTAKE_QUEUE'],
+                messages=intake_status.method.message_count,
+            )
             channel.confirm_delivery()
             channel.basic_qos(prefetch_count=1)
             for method, properties, body in channel.consume(
@@ -784,7 +966,7 @@ def _route_loop(config):
                 _route_task(task, priority, config, channel)
                 channel.basic_ack(method.delivery_tag)
         except Exception as exc:
-            print(f'Preprocessing router reconnecting after error: {exc}', flush=True)
+            log_error('Preprocessing router reconnecting after error', error=str(exc))
             STOP_EVENT.wait(5)
         finally:
             if connection is not None and connection.is_open:
@@ -807,7 +989,9 @@ def run_worker(config):
             for number in range(config['COMPANY_AI_PARALLEL_CHATS'])
         )
     if not threads:
-        print('All preprocessing providers are disabled; waiting for shutdown.', flush=True)
+        log_info('All preprocessing providers are disabled; waiting for shutdown')
+    else:
+        _startup_worker(config)
     try:
         for thread in threads:
             thread.start()

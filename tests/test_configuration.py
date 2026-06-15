@@ -90,6 +90,8 @@ def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
     assert loaded['COMPANY_AI_MAX_OUTPUT_TOKENS'] == 2200
     assert loaded['COMPANY_AI_TIMEOUT_SECONDS'] == 90
     assert loaded['COMPANY_AI_RETRIES'] == 3
+    assert loaded['COMPANY_AI_AUTH_TTL_SECONDS'] == 3600
+    assert loaded['COMPANY_AI_LOGIN_MAX_FAILURES'] == 3
     assert loaded['COMPANY_AI_PARALLEL_CHATS'] == 6
     assert loaded['COMPANY_AI_ENABLED'] is True
     assert loaded['RABBITMQ_URL'] == 'amqp://rabbit.example/'

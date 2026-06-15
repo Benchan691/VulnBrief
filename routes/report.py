@@ -8,6 +8,7 @@ from report_harness import (
     _assemble_report,
     _deterministic_final,
     _render_job_html,
+    cancel_job,
     create_job,
     resolve_review_selections,
     start_job,
@@ -91,11 +92,24 @@ def create_report_job():
 
         job_id = create_job(inputs, input_source, generation_mode, report_language)
         start_job(current_app._get_current_object(), job_id)
-        return jsonify({'id': job_id, 'status': 'queued'}), 202
+        status = 'running' if generation_mode == 'template' else 'queued'
+        return jsonify({'id': job_id, 'status': status}), 202
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': 'Unable to create report job.'}), 503
+
+
+@report_blueprint.route('/api/reports/<job_id>/cancel', methods=['POST'])
+@login_required
+def cancel_report_job(job_id):
+    try:
+        cancel_job(job_id)
+        return jsonify({'id': job_id, 'status': 'cancelled'})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to cancel report job.'}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>')
@@ -119,7 +133,7 @@ def _send_job_html(job_id, as_attachment):
         {'$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
     )
     report = job.get('report')
-    if report is None and job.get('status') == 'running':
+    if report is None and job.get('status') in ('running', 'cancelled'):
         stored_results = list(
             get_web_database()['report_job_results']
             .find({'job_id': job['_id']})

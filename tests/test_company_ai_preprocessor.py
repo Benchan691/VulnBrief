@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 import importlib
+import pytest
 
 from app import app
 from bootstrap import configure_application
@@ -11,6 +12,7 @@ from company_ai_preprocessor import (
     _gpu_queue_declare,
     _now,
     _process_company_task,
+    _queue_status,
     _route_task,
     _routed_queue_declare,
     _release_processing_task,
@@ -465,8 +467,14 @@ def test_company_task_opens_primes_processes_and_closes_one_chat(monkeypatch):
         def __init__(self, config):
             events.append('create-provider')
 
-        def create_room(self):
+        def ensure_session(self):
+            events.append('session')
+            return 'cached'
+
+        def create_room(self, prime_prompt=None):
             events.append('open-and-prime')
+            self.conversation_id = 'room-id'
+            return 'room-id'
 
         def delete_room(self):
             events.append('close')
@@ -492,9 +500,10 @@ def test_company_task_opens_primes_processes_and_closes_one_chat(monkeypatch):
         lambda task, owner, value, provider: events.append(('store', provider, value)),
     )
     task = {'content_hash': 'hash', 'language': 'en'}
-    assert _process_company_task(task, {'source_key': 'source'}, 'owner', dict(app.config)) == result
+    assert _process_company_task(task, {'source_key': 'source'}, 'owner', dict(app.config), 0) == result
     assert events == [
         'create-provider',
+        'session',
         'open-and-prime',
         'process',
         ('store', 'company_ai', result),
@@ -511,8 +520,13 @@ def test_company_worker_processes_final_summary_task(monkeypatch):
         def __init__(self, config):
             pass
 
+        def ensure_session(self):
+            return 'cached'
+
         def create_room(self, prime_prompt=None):
             events.append(('open', prime_prompt))
+            self.conversation_id = 'room-id'
+            return 'room-id'
 
         def delete_room(self):
             events.append('close')
@@ -535,7 +549,7 @@ def test_company_worker_processes_final_summary_task(monkeypatch):
         lambda task, owner, value, provider: events.append(('store', provider, value)),
     )
     task = {'task_type': 'final', 'content_hash': 'hash', 'language': 'en'}
-    assert _process_company_task(task, {'source_key': 'final'}, 'owner', dict(app.config)) == result
+    assert _process_company_task(task, {'source_key': 'final'}, 'owner', dict(app.config), 0) == result
     assert events == [('open', ''), ('store', 'company_ai', result), 'close']
 
 
@@ -614,6 +628,8 @@ def test_shutdown_worker_deletes_room_resets_processing_and_acks(monkeypatch):
             acked.append(delivery_tag)
 
     class FakeProvider:
+        conversation_id = 'room-id'
+
         def delete_room(self):
             deleted.append('delete')
 
@@ -783,10 +799,98 @@ def test_clear_queues_purges_intake_gpu_and_company(monkeypatch):
         'company_ai_preprocessor.pika.BlockingConnection',
         lambda parameters: FakeConnection(),
     )
-    config = dict(app.config)
+    config = {**dict(app.config), 'GPU_ENABLED': True}
     _clear_queues(config)
     assert purged == [
         config['RABBITMQ_INTAKE_QUEUE'],
         config['RABBITMQ_GPU_QUEUE'],
         config['RABBITMQ_COMPANY_QUEUE'],
     ]
+
+
+def test_process_company_task_sets_stop_event_on_login_limit(monkeypatch):
+    import company_ai_preprocessor as preprocessor
+
+    class LoginLimitProvider:
+        def __init__(self, config):
+            pass
+
+        def ensure_session(self):
+            from report_harness import CompanyAILoginLimitExceeded
+            raise CompanyAILoginLimitExceeded('blocked')
+
+        def create_room(self, prime_prompt=None):
+            return 'room-id'
+
+        def delete_room(self):
+            return None
+
+    preprocessor.STOP_EVENT.clear()
+    monkeypatch.setattr(preprocessor, 'CompanyAIProvider', LoginLimitProvider)
+    with app.app_context():
+        with pytest.raises(preprocessor.CompanyAILoginLimitExceeded):
+            preprocessor._process_company_task(
+                {'language': 'en', 'content_hash': 'hash'},
+                {'source_key': 'source'},
+                'owner',
+                dict(app.config),
+                0,
+            )
+    assert preprocessor.STOP_EVENT.is_set()
+    preprocessor.STOP_EVENT.clear()
+
+
+def test_queue_status_reads_message_counts(monkeypatch):
+    declarations = []
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            declarations.append(kwargs['queue'])
+            return type('Status', (), {'method': type('Method', (), {'message_count': len(declarations) * 10})()})()
+
+    class FakeConnection:
+        def channel(self):
+            return FakeChannel()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor.pika.BlockingConnection',
+        lambda parameters: FakeConnection(),
+    )
+    config = dict(app.config)
+    counts = _queue_status(config)
+    assert counts[config['RABBITMQ_INTAKE_QUEUE']] == 10
+    assert counts[config['RABBITMQ_COMPANY_QUEUE']] == 20
+    if config['GPU_ENABLED']:
+        assert counts[config['RABBITMQ_GPU_QUEUE']] == 30
+        assert declarations.count(config['RABBITMQ_GPU_QUEUE']) == 1
+    else:
+        assert counts[config['RABBITMQ_GPU_QUEUE']] == 0
+        assert config['RABBITMQ_GPU_QUEUE'] not in declarations
+
+
+def test_queue_status_skips_gpu_queue_when_gpu_disabled(monkeypatch):
+    declarations = []
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            declarations.append(kwargs['queue'])
+            return type('Status', (), {'method': type('Method', (), {'message_count': 5})()})()
+
+    class FakeConnection:
+        def channel(self):
+            return FakeChannel()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor.pika.BlockingConnection',
+        lambda parameters: FakeConnection(),
+    )
+    config = {**dict(app.config), 'GPU_ENABLED': False}
+    counts = _queue_status(config)
+    assert counts[config['RABBITMQ_GPU_QUEUE']] == 0
+    assert config['RABBITMQ_GPU_QUEUE'] not in declarations

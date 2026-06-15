@@ -25,6 +25,8 @@ services:
     container_name: webserver-preprocessor
     restart: unless-stopped
     command: ["python", "company_ai_preprocessor.py"]
+    environment:
+      PYTHONUNBUFFERED: "1"
     volumes:
       - ./config/config.json:/app/config/config.json:ro
 

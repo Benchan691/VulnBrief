@@ -1,16 +1,20 @@
 import base64
 import json
+import threading
 import time
 from io import BytesIO
 
 import pytest
 import requests
+import report_harness
 from bson import ObjectId
 
 from app import app
 from mongo import get_web_database
+from company_ai_auth_cache import clear_auth_state_for_tests, invalidate
 from report_harness import (
     CompanyAIProvider,
+    CompanyAILoginLimitExceeded,
     ITEM_SCHEMA,
     ProviderError,
     _assemble_report,
@@ -18,12 +22,14 @@ from report_harness import (
     _render_job_html,
     compact_details,
     compact_document,
+    cancel_job,
     create_job,
     generate_final_data,
     generate_item_data,
     generate_report_data,
     generate_template_report_data,
     run_job,
+    run_template_job,
 )
 from jsonschema import validate
 
@@ -280,11 +286,17 @@ def test_template_generation_maps_source_fields_and_counts():
     }
     assert report['highlights'][1]['title'] == 'CVE-TEST-2'
     assert report['recommendations'] == ['Apply update.', 'Restrict access.']
-    assert 'HIGH: 1' in report['executive_summary']
-    assert 'MEDIUM: 1' in report['executive_summary']
+    assert 'Severity or status data is available for 2 of 2 records.' in report['executive_summary']
+    assert 'Affected product or system data is available for 2 of 2 records.' in report['executive_summary']
+    assert 'Remediation guidance is available for 2 of 2 records.' in report['executive_summary']
     assert report['trends'] == [
-        'Total vulnerability records: 2.',
-        'Source-provided severity or status counts: HIGH: 1, MEDIUM: 1.',
+        'Severity or status coverage: 2 of 2 records. Distribution: HIGH: 1, MEDIUM: 1.',
+        (
+            'Affected product or system coverage: 2 of 2 records. '
+            'Most frequently affected: Product A: 1, Product B: 1.'
+        ),
+        'Remediation guidance coverage: 2 of 2 records.',
+        'Reference coverage: 1 of 2 records.',
     ]
 
 
@@ -324,7 +336,12 @@ def test_template_generation_uses_missing_field_fallbacks():
     assert report['recommendations'] == [
         'No recommendations were provided in the source records.',
     ]
-    assert report['trends'] == ['Total vulnerability records: 1.']
+    assert report['trends'] == [
+        'Severity or status coverage: 0 of 1 records.',
+        'Affected product or system coverage: 0 of 1 records.',
+        'Remediation guidance coverage: 0 of 1 records.',
+        'Reference coverage: 0 of 1 records.',
+    ]
 
 
 def company_ai_config():
@@ -358,7 +375,16 @@ def company_ai_config():
         'COMPANY_AI_MAX_OUTPUT_TOKENS': 500,
         'COMPANY_AI_TIMEOUT_SECONDS': 10,
         'COMPANY_AI_RETRIES': 0,
+        'COMPANY_AI_AUTH_TTL_SECONDS': 3600,
+        'COMPANY_AI_LOGIN_MAX_FAILURES': 3,
     }
+
+
+@pytest.fixture(autouse=True)
+def reset_company_ai_auth_cache():
+    clear_auth_state_for_tests()
+    yield
+    clear_auth_state_for_tests()
 
 
 def test_company_ai_sse_decodes_utf8_chinese_bytes(monkeypatch):
@@ -529,6 +555,224 @@ def test_company_ai_authenticates_creates_and_deletes_room(monkeypatch):
     assert calls[2][1]['headers']['Authorization'] == 'Bearer bot-token'
 
 
+def test_company_ai_tokens_are_reused_across_providers(monkeypatch):
+    login_posts = []
+    bot_token_gets = []
+
+    class FakeResponse:
+        def __init__(self, body=None, status_code=200):
+            self.body = body or {}
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.body
+
+    def fake_post(url, **kwargs):
+        if url.endswith('/api/sys/login'):
+            login_posts.append(url)
+            return FakeResponse({'success': True, 'data': 'system-token'})
+        return FakeResponse()
+
+    def fake_get(url, **kwargs):
+        if url.endswith('/api/sys/getBotToken'):
+            bot_token_gets.append(url)
+            return FakeResponse({'success': True, 'data': 'bot-token'})
+        return FakeResponse()
+
+    monkeypatch.setattr('report_harness.requests.post', fake_post)
+    monkeypatch.setattr('report_harness.requests.get', fake_get)
+    config = company_ai_config()
+    first = CompanyAIProvider(config)
+    second = CompanyAIProvider(config)
+    monkeypatch.setattr(first, '_encrypt_password', lambda: 'encrypted')
+    monkeypatch.setattr(second, '_encrypt_password', lambda: 'encrypted')
+    monkeypatch.setattr(first, '_chat_once', lambda prompt: '')
+    monkeypatch.setattr(second, '_chat_once', lambda prompt: '')
+
+    first.create_room()
+    second.create_room()
+
+    assert len(login_posts) == 1
+    assert len(bot_token_gets) == 1
+
+
+def test_company_ai_tokens_refresh_after_ttl_expiry(monkeypatch):
+    import company_ai_auth_cache as auth_cache
+
+    times = [1000.0]
+    monkeypatch.setattr(auth_cache.time, 'monotonic', lambda: times[0])
+
+    login_posts = []
+
+    class FakeResponse:
+        def __init__(self, body=None, status_code=200):
+            self.body = body or {}
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.body
+
+    def fake_post(url, **kwargs):
+        if url.endswith('/api/sys/login'):
+            login_posts.append(url)
+            return FakeResponse({'success': True, 'data': 'system-token'})
+        return FakeResponse()
+
+    def fake_get(url, **kwargs):
+        if url.endswith('/api/sys/getBotToken'):
+            return FakeResponse({'success': True, 'data': 'bot-token'})
+        return FakeResponse()
+
+    monkeypatch.setattr('report_harness.requests.post', fake_post)
+    monkeypatch.setattr('report_harness.requests.get', fake_get)
+    config = {**company_ai_config(), 'COMPANY_AI_AUTH_TTL_SECONDS': 60}
+    provider = CompanyAIProvider(config)
+    monkeypatch.setattr(provider, '_encrypt_password', lambda: 'encrypted')
+    monkeypatch.setattr(provider, '_chat_once', lambda prompt: '')
+
+    provider.create_room()
+    times[0] = 1061.0
+    provider.create_room()
+
+    assert len(login_posts) == 2
+
+
+def test_company_ai_send_message_retries_once_after_auth_error(monkeypatch):
+    attempts = {'count': 0}
+
+    class FakeResponse:
+        def __init__(self, status_code=200, body=None):
+            self.status_code = status_code
+            self.body = body or {'success': True}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(response=self)
+
+        def json(self):
+            return self.body
+
+    def fake_post(url, **kwargs):
+        if url.endswith('/biz/createChat'):
+            attempts['count'] += 1
+            if attempts['count'] == 1:
+                return FakeResponse(status_code=401)
+            return FakeResponse()
+        if url.endswith('/api/sys/login'):
+            return FakeResponse(body={'success': True, 'data': 'system-token'})
+        return FakeResponse()
+
+    def fake_get(url, **kwargs):
+        if url.endswith('/api/sys/getBotToken'):
+            return FakeResponse(body={'success': True, 'data': 'bot-token'})
+        return FakeResponse()
+
+    monkeypatch.setattr('report_harness.requests.post', fake_post)
+    monkeypatch.setattr('report_harness.requests.get', fake_get)
+    provider = CompanyAIProvider(company_ai_config())
+    monkeypatch.setattr(provider, '_encrypt_password', lambda: 'encrypted')
+    provider.create_room(prime_prompt='')
+    provider._send_message('payload')
+    assert attempts['count'] == 2
+
+
+def test_company_ai_login_limit_blocks_after_max_failures(monkeypatch):
+    login_posts = []
+
+    class FakeResponse:
+        def __init__(self, body=None, status_code=200):
+            self.body = body or {'success': False}
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.body
+
+    def fake_post(url, **kwargs):
+        if url.endswith('/api/sys/login'):
+            login_posts.append(url)
+            return FakeResponse({'success': False})
+        return FakeResponse()
+
+    def fake_get(url, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr('report_harness.requests.post', fake_post)
+    monkeypatch.setattr('report_harness.requests.get', fake_get)
+    config = {**company_ai_config(), 'COMPANY_AI_LOGIN_MAX_FAILURES': 3}
+    provider = CompanyAIProvider(config)
+    monkeypatch.setattr(provider, '_encrypt_password', lambda: 'encrypted')
+    monkeypatch.setattr(provider, '_chat_once', lambda prompt: '')
+
+    for _ in range(3):
+        with pytest.raises(ProviderError):
+            provider.create_room()
+
+    with pytest.raises(CompanyAILoginLimitExceeded):
+        provider.create_room()
+
+    assert len(login_posts) == 3
+
+
+def test_company_ai_login_failure_counter_resets_after_success(monkeypatch):
+    login_results = [
+        {'success': False},
+        {'success': False},
+        {'success': True, 'data': 'system-token'},
+        {'success': False},
+        {'success': True, 'data': 'system-token'},
+    ]
+    login_index = {'value': 0}
+
+    class FakeResponse:
+        def __init__(self, body=None, status_code=200):
+            self.body = body or {}
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.body
+
+    def fake_post(url, **kwargs):
+        if url.endswith('/api/sys/login'):
+            body = login_results[login_index['value']]
+            login_index['value'] += 1
+            return FakeResponse(body)
+        return FakeResponse({'success': True})
+
+    def fake_get(url, **kwargs):
+        if url.endswith('/api/sys/getBotToken'):
+            return FakeResponse({'success': True, 'data': 'bot-token'})
+        return FakeResponse()
+
+    monkeypatch.setattr('report_harness.requests.post', fake_post)
+    monkeypatch.setattr('report_harness.requests.get', fake_get)
+    config = {**company_ai_config(), 'COMPANY_AI_LOGIN_MAX_FAILURES': 3}
+    provider = CompanyAIProvider(config)
+    monkeypatch.setattr(provider, '_encrypt_password', lambda: 'encrypted')
+    monkeypatch.setattr(provider, '_chat_once', lambda prompt: '')
+
+    with pytest.raises(ProviderError):
+        provider.create_room()
+    with pytest.raises(ProviderError):
+        provider.create_room()
+    provider.create_room()
+    invalidate(provider.base_url, provider.username)
+    with pytest.raises(ProviderError):
+        provider.create_room()
+    provider.create_room()
+
+
 def test_company_ai_provider_create_room_skips_priming_for_summary(monkeypatch):
     class FakeResponse:
         def raise_for_status(self):
@@ -697,6 +941,7 @@ def test_reports_api_upload_and_authentication(client, monkeypatch):
         'json_file': (BytesIO(json.dumps([sample_document()]).encode()), 'input.json'),
     })
     assert response.status_code == 202
+    assert response.get_json()['status'] == 'queued'
     job_id = ObjectId(response.get_json()['id'])
     with app.app_context():
         job = get_web_database()['report_jobs'].find_one({'_id': job_id})
@@ -762,15 +1007,88 @@ def test_reports_api_upload_and_authentication(client, monkeypatch):
         'json_file': (BytesIO(json.dumps([sample_document()]).encode()), 'input.json'),
     })
     assert response.status_code == 202
+    assert response.get_json()['status'] == 'running'
     job_id = ObjectId(response.get_json()['id'])
     with app.app_context():
         job = get_web_database()['report_jobs'].find_one({'_id': job_id})
         assert job['generation_mode'] == 'template'
+        assert job['status'] == 'running'
         assert job['model'] == 'Fixed Template'
         assert job['report_language'] == 'en'
         assert job['effective_report_language'] == 'en'
         get_web_database()['report_jobs'].delete_one({'_id': job_id})
         get_web_database()['report_job_inputs'].delete_many({'job_id': job_id})
+
+
+def test_cancel_report_job_api(client, monkeypatch):
+    authenticate(client)
+    monkeypatch.setattr('routes.report.start_job', lambda app, job_id: None)
+    response = client.post('/api/reports', data={
+        'json_file': (BytesIO(json.dumps([sample_document()]).encode()), 'input.json'),
+    })
+    assert response.status_code == 202
+    job_id = response.get_json()['id']
+
+    cancel = client.post(f'/api/reports/{job_id}/cancel')
+    assert cancel.status_code == 200
+    assert cancel.get_json()['status'] == 'cancelled'
+    with app.app_context():
+        job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
+        assert job['status'] == 'cancelled'
+        get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
+        get_web_database()['report_job_inputs'].delete_many({'job_id': ObjectId(job_id)})
+
+    cancel_again = client.post(f'/api/reports/{job_id}/cancel')
+    assert cancel_again.status_code == 400
+
+
+def test_run_job_exits_when_job_already_cancelled(tmp_path, monkeypatch):
+    monkeypatch.setattr('report_harness.CompanyAIProvider', lambda config: FakeProvider())
+    with app.app_context():
+        original_root = app.config['NEWSLETTER_ROOT']
+        app.config['NEWSLETTER_ROOT'] = str(tmp_path)
+        try:
+            job_id = create_job([sample_document()], 'test', 'template')
+            get_web_database()['report_jobs'].update_one(
+                {'_id': ObjectId(job_id)},
+                {'$set': {'status': 'cancelled'}},
+            )
+            run_job(app, job_id)
+            job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
+            assert job['status'] == 'cancelled'
+            assert 'report' not in job
+        finally:
+            app.config['NEWSLETTER_ROOT'] = original_root
+            get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
+
+
+def test_run_job_stops_during_company_ai_wait(tmp_path, monkeypatch):
+    def wait_then_cancel(references, timeout, should_continue=None):
+        with app.app_context():
+            get_web_database()['report_jobs'].update_one(
+                {'_id': ObjectId(job_id_holder['id'])},
+                {'$set': {'status': 'cancelled'}},
+            )
+        while should_continue is not None and should_continue():
+            time.sleep(0.05)
+        return [None] * len(references)
+
+    job_id_holder = {}
+    monkeypatch.setattr('company_ai_preprocessor.enqueue_report_items', lambda *args: [{}])
+    monkeypatch.setattr('company_ai_preprocessor.wait_for_summaries', wait_then_cancel)
+    with app.app_context():
+        original_root = app.config['NEWSLETTER_ROOT']
+        app.config['NEWSLETTER_ROOT'] = str(tmp_path)
+        try:
+            job_id = create_job([sample_document()], 'test', 'company_ai')
+            job_id_holder['id'] = job_id
+            run_job(app, job_id)
+            job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
+            assert job['status'] == 'cancelled'
+            assert 'report' not in job
+        finally:
+            app.config['NEWSLETTER_ROOT'] = original_root
+            get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id_holder['id'])})
 
 
 def test_report_preview_and_download_render_structured_report_and_remove_legacy_html(client):
@@ -906,6 +1224,83 @@ def test_template_report_job_renders_without_ai_provider(tmp_path, monkeypatch):
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
 
 
+def test_template_report_job_bypasses_shared_worker_lock_and_lease(monkeypatch):
+    monkeypatch.setattr(
+        'report_harness._acquire_worker_lease',
+        lambda owner: (_ for _ in ()).throw(AssertionError('Template must not acquire lease.')),
+    )
+    with app.app_context():
+        job_id = create_job([sample_document()], 'test', 'template')
+
+    completed = threading.Event()
+
+    def execute():
+        run_job(app, job_id)
+        completed.set()
+
+    with report_harness.WORKER_LOCK:
+        thread = threading.Thread(target=execute)
+        thread.start()
+        assert completed.wait(timeout=2)
+    thread.join(timeout=2)
+
+    with app.app_context():
+        job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
+        assert job['status'] == 'completed'
+
+
+def test_template_report_jobs_run_concurrently(monkeypatch):
+    barrier = threading.Barrier(2)
+    original_load = report_harness._load_input_details
+
+    def synchronized_load(item):
+        barrier.wait(timeout=2)
+        return original_load(item)
+
+    monkeypatch.setattr('report_harness._load_input_details', synchronized_load)
+    with app.app_context():
+        job_ids = [
+            create_job([sample_document(index)], 'test', 'template')
+            for index in (1, 2)
+        ]
+
+    threads = [
+        threading.Thread(target=run_template_job, args=(app, job_id))
+        for job_id in job_ids
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+
+    with app.app_context():
+        jobs = [
+            get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
+            for job_id in job_ids
+        ]
+        assert [job['status'] for job in jobs] == ['completed', 'completed']
+
+
+def test_template_report_job_records_failure(monkeypatch):
+    monkeypatch.setattr(
+        'report_harness.generate_template_report_data',
+        lambda records: (_ for _ in ()).throw(ValueError('Template generation failed.')),
+    )
+    with app.app_context():
+        job_id = create_job([sample_document()], 'test', 'template')
+
+    run_template_job(app, job_id)
+
+    with app.app_context():
+        job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
+        assert job['status'] == 'failed'
+        assert job['error'] == 'Template generation failed.'
+        assert get_web_database()['report_job_inputs'].count_documents({
+            'job_id': ObjectId(job_id),
+        }) == 0
+
+
 def _mock_company_ai_cache(monkeypatch, results):
     monkeypatch.setattr(
         'company_ai_preprocessor.enqueue_report_items',
@@ -916,14 +1311,16 @@ def _mock_company_ai_cache(monkeypatch, results):
     )
     monkeypatch.setattr(
         'company_ai_preprocessor.wait_for_summaries',
-        lambda references, timeout: [
-            {
-                'title': 'Cybersecurity Report',
-                'executive_summary': 'Queued final summary.',
-                'trends': [],
-                'recommendations': [],
-            }
-        ] if references and references[0].get('task_type') == 'final' else list(results),
+        lambda references, timeout, should_continue=None: (
+            [
+                {
+                    'title': 'Cybersecurity Report',
+                    'executive_summary': 'Queued final summary.',
+                    'trends': [],
+                    'recommendations': [],
+                }
+            ] if references and references[0].get('task_type') == 'final' else list(results)
+        ),
     )
     monkeypatch.setattr(
         'company_ai_preprocessor.enqueue_final_summary',
@@ -1220,7 +1617,7 @@ def test_queued_final_timeout_uses_deterministic_final(tmp_path, monkeypatch):
     _mock_company_ai_cache(monkeypatch, [cached_item])
     monkeypatch.setattr(
         'company_ai_preprocessor.wait_for_summaries',
-        lambda references, timeout: [None] if references[0].get('task_type') == 'final'
+        lambda references, timeout, should_continue=None: [None] if references[0].get('task_type') == 'final'
         else [cached_item],
     )
     with app.app_context():

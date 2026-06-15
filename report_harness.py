@@ -23,6 +23,15 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from mongo import get_vulnerabilities_database, get_web_database
+from company_ai_auth_cache import (
+    get_tokens,
+    invalidate,
+    is_login_blocked,
+    record_login_failure,
+    reset_login_failures,
+    set_login_blocked,
+    set_tokens,
+)
 from review_data import (
     MAX_EXPORT_SELECTIONS,
     canonical_selection_id,
@@ -351,6 +360,10 @@ class ProviderError(RuntimeError):
     pass
 
 
+class CompanyAILoginLimitExceeded(ProviderError):
+    pass
+
+
 def _parse_json_text(content):
     if not isinstance(content, str) or not content.strip():
         raise ProviderError('AI provider returned an empty response.')
@@ -397,6 +410,8 @@ class CompanyAIProvider:
         self.max_output = config['COMPANY_AI_MAX_OUTPUT_TOKENS']
         self.timeout = config['COMPANY_AI_TIMEOUT_SECONDS']
         self.retries = config['COMPANY_AI_RETRIES']
+        self.auth_ttl_seconds = config.get('COMPANY_AI_AUTH_TTL_SECONDS', 3600)
+        self.login_max_failures = config.get('COMPANY_AI_LOGIN_MAX_FAILURES', 3)
         self.json_error_message = config.get('REPORT_JSON_ERROR_MESSAGE', DEFAULT_JSON_ERROR_MESSAGE)
 
     @staticmethod
@@ -495,33 +510,124 @@ class CompanyAIProvider:
         encrypted = public_key.encrypt(self.password.encode('utf-8'), padding.PKCS1v15())
         return base64.b64encode(encrypted).decode('ascii')
 
-    def authenticate(self):
-        self._validate_config()
-        login_path = '/sys/login'
-        login_body = {'username': self.username, 'password': self._encrypt_password()}
-        response = requests.post(
-            self.api_base + login_path,
-            headers=self._api_headers(login_path, login_body),
-            json=login_body,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        body = response.json()
-        if body.get('success') is not True or not body.get('data'):
-            raise ProviderError('Company AI login failed.')
-        self.system_token = self._normalize_bearer(body['data'])
+    @staticmethod
+    def _is_auth_error(response, *, read_body=True):
+        if response is None:
+            return False
+        status_code = getattr(response, 'status_code', None)
+        if status_code in (401, 403):
+            return True
+        if not read_body:
+            return False
+        try:
+            body = response.json()
+        except (ValueError, AttributeError):
+            return False
+        if body.get('success') is False:
+            message = str(body.get('msg') or '').lower()
+            return any(
+                term in message
+                for term in ('auth', 'token', 'login', 'unauthorized', 'expired', 'permission')
+            )
+        return False
 
-        token_path = '/sys/getBotToken'
-        response = requests.get(
-            self.api_base + token_path,
-            headers=self._api_headers(token_path, authorization=self.system_token),
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        body = response.json()
-        if body.get('success') is not True or not body.get('data'):
-            raise ProviderError('Company AI bot-token request failed.')
-        self.bot_token = self._normalize_bearer(body['data'])
+    def _raise_if_login_blocked(self):
+        if is_login_blocked(self.base_url, self.username):
+            raise CompanyAILoginLimitExceeded(
+                'Company AI login is blocked after too many consecutive failures.',
+            )
+
+    def _handle_login_failure(self, error):
+        count = record_login_failure(self.base_url, self.username)
+        if count >= self.login_max_failures:
+            set_login_blocked(self.base_url, self.username)
+            raise CompanyAILoginLimitExceeded(
+                f'Company AI login failed {count} times; login is blocked.',
+            ) from error
+        if isinstance(error, ProviderError):
+            raise error
+        raise ProviderError(str(error)) from error
+
+    def _fetch_tokens(self):
+        self._validate_config()
+        try:
+            login_path = '/sys/login'
+            login_body = {'username': self.username, 'password': self._encrypt_password()}
+            response = requests.post(
+                self.api_base + login_path,
+                headers=self._api_headers(login_path, login_body),
+                json=login_body,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if body.get('success') is not True or not body.get('data'):
+                raise ProviderError('Company AI login failed.')
+            system_token = self._normalize_bearer(body['data'])
+
+            token_path = '/sys/getBotToken'
+            response = requests.get(
+                self.api_base + token_path,
+                headers=self._api_headers(token_path, authorization=system_token),
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if body.get('success') is not True or not body.get('data'):
+                raise ProviderError('Company AI bot-token request failed.')
+            bot_token = self._normalize_bearer(body['data'])
+            reset_login_failures(self.base_url, self.username)
+            return system_token, bot_token
+        except (ProviderError, requests.RequestException) as exc:
+            self._handle_login_failure(exc)
+
+    def _assign_tokens(self, system_token, bot_token):
+        self.system_token = system_token
+        self.bot_token = bot_token
+
+    def _ensure_authenticated(self):
+        self.ensure_session()
+
+    def ensure_session(self):
+        self._raise_if_login_blocked()
+        entry = get_tokens(self.base_url, self.username)
+        if entry is not None:
+            self._assign_tokens(entry.system_token, entry.bot_token)
+            return 'cached'
+        with WORKER_LOCK:
+            self._raise_if_login_blocked()
+            entry = get_tokens(self.base_url, self.username)
+            if entry is not None:
+                self._assign_tokens(entry.system_token, entry.bot_token)
+                return 'cached'
+            system_token, bot_token = self._fetch_tokens()
+            set_tokens(
+                self.base_url,
+                self.username,
+                system_token,
+                bot_token,
+                self.auth_ttl_seconds,
+            )
+            self._assign_tokens(system_token, bot_token)
+            return 'fresh'
+
+    def authenticate(self):
+        self._raise_if_login_blocked()
+        invalidate(self.base_url, self.username)
+        with WORKER_LOCK:
+            system_token, bot_token = self._fetch_tokens()
+            set_tokens(
+                self.base_url,
+                self.username,
+                system_token,
+                bot_token,
+                self.auth_ttl_seconds,
+            )
+            self._assign_tokens(system_token, bot_token)
+
+    def _refresh_authentication(self):
+        invalidate(self.base_url, self.username)
+        self._ensure_authenticated()
 
     def _chat_payload(self, content):
         return {
@@ -538,7 +644,7 @@ class CompanyAIProvider:
         }
 
     def create_room(self, prime_prompt=None):
-        self.authenticate()
+        self._ensure_authenticated()
         self.conversation_id = str(uuid.uuid4())
         prompt = self.start_prompt if prime_prompt is None else prime_prompt
         if prompt:
@@ -565,9 +671,12 @@ class CompanyAIProvider:
             return raw_line.decode('utf-8')
         return raw_line
 
-    def _listen_sse(self):
+    def _listen_sse(self, *, _auth_retry=True):
         chunks = []
         with self._open_stream() as stream:
+            if _auth_retry and self._is_auth_error(stream, read_body=False):
+                self._refresh_authentication()
+                return self._listen_sse(_auth_retry=False)
             stream.raise_for_status()
             for raw_line in stream.iter_lines(chunk_size=1):
                 if not raw_line:
@@ -591,13 +700,17 @@ class CompanyAIProvider:
                     return ''.join(chunks)
         raise ProviderError('Company AI stream ended before message_end.')
 
-    def _send_message(self, content):
+    def _send_message(self, content, *, _auth_retry=True):
         response = requests.post(
             self.smartbot_base + '/biz/createChat',
             headers=self._smartbot_headers(),
             json=self._chat_payload(content),
             timeout=self.timeout,
         )
+        if _auth_retry and self._is_auth_error(response):
+            self._refresh_authentication()
+            self._send_message(content, _auth_retry=False)
+            return
         response.raise_for_status()
 
     def _chat_once(self, content, *, wait_for_response=True):
@@ -623,7 +736,7 @@ class CompanyAIProvider:
             raise result['error']
         return result['answer']
 
-    def delete_room(self):
+    def delete_room(self, *, _auth_retry=True):
         if not self.conversation_id or not self.system_token or not self.bot_token:
             return
         response = requests.delete(
@@ -631,6 +744,10 @@ class CompanyAIProvider:
             headers=self._smartbot_headers(),
             timeout=self.timeout,
         )
+        if _auth_retry and self._is_auth_error(response):
+            self._refresh_authentication()
+            self.delete_room(_auth_retry=False)
+            return
         response.raise_for_status()
         body = response.json()
         if body.get('success') is not True or body.get('data') is not True:
@@ -875,6 +992,10 @@ def generate_template_report_data(records):
     highlights = []
     recommendations = []
     severities = {}
+    affected_counts = {}
+    affected_record_count = 0
+    recommendation_record_count = 0
+    reference_record_count = 0
     for position, record in enumerate(records, start=1):
         details = record.get('details') if isinstance(record.get('details'), dict) else {}
         code = _template_first_value(record, details, 'code', 'cve', 'cve_code')
@@ -890,42 +1011,72 @@ def generate_template_report_data(records):
         if not summary:
             summary = 'No description or summary was provided in the source record.'
 
+        affected = _template_all_values(
+            record, details, 'affected', 'affected_products', 'systems_affected', 'products',
+        )
+        references = _template_all_values(
+            record, details, 'references', 'reference_links', 'related_links', 'urls',
+        )
+        record_recommendations = _template_all_values(
+            record, details, 'recommendation', 'recommendations', 'solution', 'solutions',
+            'remediation', 'mitigation', 'mitigations',
+        )
         highlights.append({
             'title': title,
             'code': code,
             'severity': severity,
             'summary': summary,
-            'affected': _template_all_values(
-                record, details, 'affected', 'affected_products', 'systems_affected', 'products',
-            ),
-            'references': _template_all_values(
-                record, details, 'references', 'reference_links', 'related_links', 'urls',
-            ),
+            'affected': affected,
+            'references': references,
         })
-        recommendations.extend(_template_all_values(
-            record, details, 'recommendation', 'recommendations', 'solution', 'solutions',
-            'remediation', 'mitigation', 'mitigations',
-        ))
+        recommendations.extend(record_recommendations)
         if severity:
             severity_key = severity.casefold()
             if severity_key not in severities:
                 severities[severity_key] = {'label': severity, 'count': 0}
             severities[severity_key]['count'] += 1
+        if affected:
+            affected_record_count += 1
+            for value in affected:
+                affected_key = value.casefold()
+                if affected_key not in affected_counts:
+                    affected_counts[affected_key] = {'label': value, 'count': 0}
+                affected_counts[affected_key]['count'] += 1
+        recommendation_record_count += int(bool(record_recommendations))
+        reference_record_count += int(bool(references))
 
     severity_summary = ', '.join(
         f"{item['label']}: {item['count']}"
         for item in sorted(severities.values(), key=lambda item: item['label'].casefold())
     )
-    executive_summary = (
-        f'This report contains {len(highlights)} vulnerability '
-        f'{"record" if len(highlights) == 1 else "records"}.'
+    affected_summary = ', '.join(
+        f"{item['label']}: {item['count']}"
+        for item in sorted(
+            affected_counts.values(),
+            key=lambda item: (-item['count'], item['label'].casefold()),
+        )[:5]
     )
-    if severity_summary:
-        executive_summary += f' Source-provided severity or status counts: {severity_summary}.'
+    total = len(highlights)
+    severity_record_count = sum(item['count'] for item in severities.values())
+    executive_summary = (
+        f'This report contains {total} vulnerability '
+        f'{"record" if total == 1 else "records"}. '
+        f'Severity or status data is available for {severity_record_count} of {total} records. '
+        f'Affected product or system data is available for {affected_record_count} of {total} '
+        f'records. Remediation guidance is available for {recommendation_record_count} of '
+        f'{total} records.'
+    )
 
-    trends = [f'Total vulnerability records: {len(highlights)}.']
+    trends = [
+        f'Severity or status coverage: {severity_record_count} of {total} records.',
+        f'Affected product or system coverage: {affected_record_count} of {total} records.',
+        f'Remediation guidance coverage: {recommendation_record_count} of {total} records.',
+        f'Reference coverage: {reference_record_count} of {total} records.',
+    ]
     if severity_summary:
-        trends.append(f'Source-provided severity or status counts: {severity_summary}.')
+        trends[0] += f' Distribution: {severity_summary}.'
+    if affected_summary:
+        trends[1] += f' Most frequently affected: {affected_summary}.'
 
     report = {
         'title': _fixed_report_title('en'),
@@ -1033,7 +1184,7 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
         'processed_count': 0,
         'current_position': 0,
         'item_fallback_count': 0,
-        'status': 'queued',
+        'status': 'queued' if generation_mode == 'company_ai' else 'running',
         'created_at': now,
         'updated_at': now,
         'provider': provider,
@@ -1145,7 +1296,93 @@ def _release_worker_lease(owner):
     })
 
 
+def _job_is_cancelled(job_object_id):
+    job = _job_collection().find_one({'_id': job_object_id}, {'status': 1})
+    return job is not None and job.get('status') == 'cancelled'
+
+
+def cancel_job(job_id):
+    try:
+        job_object_id = ObjectId(job_id)
+    except Exception as exc:
+        raise ValueError('Invalid report job id.') from exc
+    result = _job_collection().update_one(
+        {'_id': job_object_id, 'status': {'$in': ['queued', 'running']}},
+        {'$set': {
+            'status': 'cancelled',
+            'updated_at': datetime.now(timezone.utc),
+        }},
+    )
+    if result.matched_count == 0:
+        raise ValueError('Report job cannot be cancelled.')
+    return str(job_object_id)
+
+
+def run_template_job(app, job_id):
+    with app.app_context():
+        collection = _job_collection()
+        job_object_id = ObjectId(job_id)
+        try:
+            job = collection.find_one({'_id': job_object_id})
+            if job is None or job.get('status') == 'cancelled':
+                return
+            if job.get('status') not in ('queued', 'running'):
+                return
+            raw_mode = job.get('generation_mode', 'company_ai')
+            if LEGACY_GENERATION_MODES.get(raw_mode, raw_mode) != 'template':
+                raise ValueError('Independent template runner received a non-template job.')
+            if job.get('status') == 'queued':
+                collection.update_one(
+                    {'_id': job_object_id, 'status': 'queued'},
+                    {'$set': {'status': 'running', 'updated_at': datetime.now(timezone.utc)}},
+                )
+
+            inputs = list(_input_collection().find({'job_id': job_object_id}).sort('position', 1))
+            records = []
+            for item in inputs:
+                if _job_is_cancelled(job_object_id):
+                    return
+                details = compact_details(_load_input_details(item), current_app.config)
+                normalized = next(iter(details.values()), details) if len(details) == 1 else details
+                records.append({**_source_record_for_item(item), 'details': normalized})
+            if _job_is_cancelled(job_object_id):
+                return
+
+            report = generate_template_report_data(records)
+            collection.update_one(
+                {'_id': job_object_id, 'status': {'$ne': 'cancelled'}},
+                {'$set': {
+                    'status': 'completed',
+                    'processed_count': len(inputs),
+                    'current_position': len(inputs),
+                    'report': report,
+                    'completed_at': datetime.now(timezone.utc),
+                    'updated_at': datetime.now(timezone.utc),
+                }},
+            )
+        except Exception as exc:
+            if _job_is_cancelled(job_object_id):
+                return
+            collection.update_one(
+                {'_id': job_object_id, 'status': {'$nin': ['cancelled']}},
+                {'$set': {
+                    'status': 'failed',
+                    'updated_at': datetime.now(timezone.utc),
+                    'error': str(exc),
+                }},
+            )
+        finally:
+            _input_collection().delete_many({'job_id': job_object_id})
+
+
 def run_job(app, job_id):
+    with app.app_context():
+        job = _job_collection().find_one({'_id': ObjectId(job_id)}, {'generation_mode': 1})
+        raw_mode = (job or {}).get('generation_mode', 'company_ai')
+        if LEGACY_GENERATION_MODES.get(raw_mode, raw_mode) == 'template':
+            run_template_job(app, job_id)
+            return
+
     with WORKER_LOCK:
         with app.app_context():
             owner = f'{job_id}:{uuid.uuid4()}'
@@ -1155,33 +1392,25 @@ def run_job(app, job_id):
                 job_object_id = ObjectId(job_id)
                 now = datetime.now(timezone.utc)
                 job = collection.find_one({'_id': job_object_id})
-                collection.update_one(
-                    {'_id': job_object_id},
+                if job is None or job.get('status') == 'cancelled':
+                    return
+                started = collection.update_one(
+                    {'_id': job_object_id, 'status': 'queued'},
                     {'$set': {
                         'status': 'running',
                         'updated_at': now,
                     }, '$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
                 )
+                if started.modified_count == 0:
+                    if _job_is_cancelled(job_object_id):
+                        return
+                    job = collection.find_one({'_id': job_object_id})
+                    if job is None or job.get('status') != 'running':
+                        return
                 inputs = list(_input_collection().find({'job_id': job_object_id}).sort('position', 1))
                 raw_mode = job.get('generation_mode', 'company_ai')
                 generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
                 report_language = job.get('report_language', 'en')
-                if generation_mode == 'template':
-                    records = []
-                    for item in inputs:
-                        details = compact_details(_load_input_details(item), current_app.config)
-                        normalized = next(iter(details.values()), details) if len(details) == 1 else details
-                        records.append({'details': normalized})
-                    report = generate_template_report_data(records)
-                    collection.update_one({'_id': job_object_id}, {'$set': {
-                        'status': 'completed',
-                        'processed_count': len(inputs),
-                        'current_position': len(inputs),
-                        'report': report,
-                        'completed_at': datetime.now(timezone.utc),
-                        'updated_at': datetime.now(timezone.utc),
-                    }})
-                    return
                 item_results = []
                 item_errors = []
                 fallback_count = 0
@@ -1204,6 +1433,7 @@ def run_job(app, job_id):
                     cached_company_results = wait_for_summaries(
                         summary_references,
                         current_app.config['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'],
+                        should_continue=lambda: not _job_is_cancelled(job_object_id),
                     )
                 except Exception as exc:
                     cached_company_results = [None] * len(inputs)
@@ -1217,6 +1447,8 @@ def run_job(app, job_id):
                     zip(inputs, prepared_details),
                     start=1,
                 ):
+                    if _job_is_cancelled(job_object_id):
+                        return
                     identifier = item.get('identifier') or str(position)
                     fallback_reason = None
                     result = cached_company_results[position - 1]
@@ -1259,6 +1491,8 @@ def run_job(app, job_id):
                         'updated_at': datetime.now(timezone.utc),
                     }
                     collection.update_one({'_id': job_object_id}, {'$set': progress})
+                if _job_is_cancelled(job_object_id):
+                    return
                 final_fallback_reason = None
                 try:
                     from company_ai_preprocessor import enqueue_final_summary, wait_for_summaries
@@ -1269,6 +1503,7 @@ def run_job(app, job_id):
                     final_data = wait_for_summaries(
                         [final_reference],
                         current_app.config['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'],
+                        should_continue=lambda: not _job_is_cancelled(job_object_id),
                     )[0]
                     if final_data is None:
                         raise TimeoutError('Timed out waiting for the queued final AI summary.')
@@ -1302,8 +1537,10 @@ def run_job(app, job_id):
                     {'$set': completed},
                 )
             except Exception as exc:
+                if _job_is_cancelled(ObjectId(job_id)):
+                    return
                 collection.update_one(
-                    {'_id': ObjectId(job_id)},
+                    {'_id': ObjectId(job_id), 'status': {'$nin': ['cancelled']}},
                     {'$set': {
                         'status': 'failed',
                         'updated_at': datetime.now(timezone.utc),

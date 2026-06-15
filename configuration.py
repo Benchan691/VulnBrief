@@ -174,6 +174,12 @@ def load_application_config(base_dir, require_local=True):
             'COMPANY_AI_TIMEOUT_SECONDS', company_ai_config, 'timeout_seconds', 180,
         ),
         'COMPANY_AI_RETRIES': _cfg_int('COMPANY_AI_RETRIES', company_ai_config, 'retries', 1),
+        'COMPANY_AI_AUTH_TTL_SECONDS': _cfg_int(
+            'COMPANY_AI_AUTH_TTL_SECONDS', company_ai_config, 'auth_ttl_seconds', 3600,
+        ),
+        'COMPANY_AI_LOGIN_MAX_FAILURES': _cfg_int(
+            'COMPANY_AI_LOGIN_MAX_FAILURES', company_ai_config, 'login_max_failures', 3,
+        ),
         'COMPANY_AI_PARALLEL_CHATS': _cfg_int(
             'COMPANY_AI_PARALLEL_CHATS', company_ai_config, 'parallel_chats', 4,
         ),

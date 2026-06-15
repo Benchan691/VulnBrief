@@ -74,6 +74,7 @@
 <script>
 (function () {
     const jobsUrl = {{ url_for('report.get_report_jobs')|tojson }};
+    const cancelUrlTemplate = {{ url_for('report.cancel_report_job', job_id='__JOB_ID__')|tojson }};
     const selectionStorageKey = 'vulnerabilityReviewSelections';
     const rows = document.getElementById('job-rows');
     const empty = document.getElementById('empty');
@@ -158,17 +159,41 @@
             } else if (job.status === 'failed') {
                 action.textContent = job.error || 'Generation failed.';
                 action.className = 'text-danger small';
-            } else {
+            } else if (job.status === 'cancelled') {
                 if ((job.processed_count || 0) > 0) {
-                    action.innerHTML = '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Progress</button>';
+                    action.innerHTML = '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Partial</button>';
                     action.querySelector('.preview-btn').addEventListener('click', function () {
                         document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
                         previewModal.show();
                     });
                 } else {
-                    action.textContent = 'Waiting for worker...';
+                    action.textContent = 'Cancelled.';
                     action.className = 'text-muted small';
                 }
+            } else {
+                action.innerHTML = '<button class="btn btn-outline-danger btn-sm cancel-btn me-1">Cancel</button>';
+                if ((job.processed_count || 0) > 0) {
+                    action.innerHTML += '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Progress</button>';
+                    action.querySelector('.preview-btn').addEventListener('click', function () {
+                        document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
+                        previewModal.show();
+                    });
+                } else {
+                    const waiting = document.createElement('span');
+                    waiting.className = 'text-muted small';
+                    waiting.textContent = 'Waiting for worker...';
+                    action.append(waiting);
+                }
+                action.querySelector('.cancel-btn').addEventListener('click', function () {
+                    const button = action.querySelector('.cancel-btn');
+                    button.disabled = true;
+                    requestJson(cancelUrlTemplate.replace('__JOB_ID__', job.id), { method: 'POST' })
+                        .then(function () { showMessage('Report generation cancelled.', 'success'); loadJobs(); })
+                        .catch(function (reason) {
+                            showMessage(reason.message, 'danger');
+                            button.disabled = false;
+                        });
+                });
             }
             row.append(action); rows.append(row);
         });
@@ -202,7 +227,13 @@
             };
         }
         requestJson(jobsUrl, options)
-            .then(function () { showMessage('Report job queued.', 'success'); loadJobs(); })
+            .then(function (body) {
+                const text = body.status === 'running'
+                    ? 'Fixed Template report generation started.'
+                    : 'Company AI report job queued.';
+                showMessage(text, 'success');
+                loadJobs();
+            })
             .catch(function (reason) { showMessage(reason.message, 'danger'); })
             .finally(function () { button.disabled = false; });
     });

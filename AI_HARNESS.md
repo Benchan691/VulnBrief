@@ -5,8 +5,11 @@ The Reports page supports two explicit generation modes:
 - **Company AI** queues item and final-summary work through RabbitMQ. Isolated
   Company AI or GPU workers store results in shared Atlas records.
 - **Fixed Template** copies source fields into a structured report and generates
-  only factual record and severity/status counts.
-  It does not require Company AI credentials or make provider requests.
+  factual coverage and distribution summaries for severity/status, affected
+  products or systems, remediation guidance, and references. Each template
+  request runs independently without the Company AI queue, shared report worker
+  lock, or worker lease. It does not require Company AI credentials or make
+  provider requests.
 
 Company AI report jobs accept `report_language` values `en` (English), `zh`
 (Traditional Chinese), and `ch` (Simplified Chinese). Fixed Template reports
@@ -67,9 +70,19 @@ jobs enqueue a final-summary task. The web process never opens a Company AI chat
 task creates a fresh room, sends `start_prompt`, waits for and ignores that
 priming response, sends the compacted JSON, sends correction errors in the same
 room until valid JSON is produced or retry limits are reached, stores the result,
-and deletes the room. Durable queues are preserved across restarts; the scanner
-republishes pending or stale Atlas tasks. Queue purging is an explicit
-`company_ai_preprocessor.py --purge-queues` maintenance action.
+and deletes the room. Login tokens are cached per preprocessor process for
+`auth_ttl_seconds` / `COMPANY_AI_AUTH_TTL_SECONDS` (default 3600) and refreshed
+when they expire or an API call returns an auth error. After
+`login_max_failures` / `COMPANY_AI_LOGIN_MAX_FAILURES` consecutive login failures
+(default 3), the preprocessor stops; fix credentials and restart it. Durable queues
+are preserved across restarts; the scanner republishes pending or stale Atlas
+tasks. Queue purging is an explicit `company_ai_preprocessor.py --purge-queues`
+maintenance action.
+
+### Preprocessor logs
+
+`company_ai_preprocessor.py` writes operational lines to stdout (visible in Docker via `docker logs webserver-preprocessor`). On startup it logs configuration, Company AI login success (`mode=cached` or `mode=fresh`), RabbitMQ queue depths (`intake`, `gpu`, `company`), and worker counts. Each scan cycle logs `Scan complete published=N`. Each Company AI task logs session ready, room creation, `Stored AI JSON` after results are written to Atlas, completion, and `Company AI chat deleted` after room cleanup. Chat delete failures log as `ERROR Company AI chat delete failed`. Other errors and reconnects use the `ERROR` prefix.
+
 The password is RSA-encrypted for the signed `/api/sys/login` request, then
 `/api/sys/getBotToken` supplies the bot token. SmartBot requests use the bot
 token in `Authorization` and the login/system token in `x-authorization`.

@@ -76,6 +76,8 @@ Minimum sections:
   },
   "company_ai": {
     "enabled": true,
+    "auth_ttl_seconds": 3600,
+    "login_max_failures": 3,
     "...": "..."
   },
   "company_ai_preprocessing": {
@@ -138,6 +140,7 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 |------|-------------|
 | `app.py` | Flask application entry |
 | `company_ai_preprocessor.py` | RabbitMQ worker |
+| `company_ai_auth_cache.py` | Process-wide Company AI token cache |
 | `scheduler.py` | Scheduled report and newsletter synchronization worker |
 | `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and feed metadata synchronization |
 | `report_harness.py` | Report generation pipeline |
