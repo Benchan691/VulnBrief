@@ -84,6 +84,8 @@ def _source_projection(view):
             ],
         }
     first_stage['$project'] = projection
+    projection['scraped_at'] = 1
+    projection['disclosure_date'] = 1
     return [first_stage, *pipeline[1:]]
 
 
@@ -97,11 +99,17 @@ def _query_review_documents(database, view, mongo_filter, page, page_size):
     )
 
 
+def _review_sort_key(document):
+    scraped_at = document.get('scraped_at') or ''
+    return (scraped_at, str(document.get('_id', '')))
+
+
 def _query_review_slice(database, view, mongo_filter, skip, limit):
     source_name = view['options']['viewOn']
     pipeline = _source_projection(view)
     pipeline.extend([
         {'$match': mongo_filter},
+        {'$sort': {'scraped_at': -1, '_id': -1}},
         {
             '$facet': {
                 'documents': [
@@ -187,32 +195,41 @@ def search_review_documents():
         page = max(request.args.get('page', 1, type=int), 1)
         page_size = min(max(request.args.get('page_size', 25, type=int), 1), 100)
         global_skip = (page - 1) * page_size
-        remaining = page_size
+        fetch_limit = global_skip + page_size
         total = 0
-        data = []
+        merged = []
 
         for name in view_names:
             view_total = database[name].count_documents(mongo_filter)
-            collection_start = total
             total += view_total
-            local_skip = max(global_skip - collection_start, 0)
-            if remaining <= 0 or local_skip >= view_total:
+            if fetch_limit <= 0 or view_total == 0:
                 continue
 
             _, documents = _query_review_slice(
                 database,
                 views[name],
                 mongo_filter,
-                local_skip,
-                min(remaining, view_total - local_skip),
+                0,
+                min(fetch_limit, view_total),
             )
             for document in documents:
-                data.append({
+                sort_key = _review_sort_key(document)
+                merged.append({
                     'collection': name,
                     'selection_id': str(document.pop('_id')),
                     'document': _serialize(document),
+                    '_sort': sort_key,
                 })
-            remaining -= len(documents)
+
+        merged.sort(key=lambda item: item['_sort'], reverse=True)
+        data = [
+            {
+                'collection': item['collection'],
+                'selection_id': item['selection_id'],
+                'document': item['document'],
+            }
+            for item in merged[global_skip:global_skip + page_size]
+        ]
 
         return jsonify({
             'data': data,

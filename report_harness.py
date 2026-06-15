@@ -574,7 +574,7 @@ class CompanyAIProvider:
             response.raise_for_status()
             body = response.json()
             if body.get('success') is not True or not body.get('data'):
-                raise ProviderError('Company AI bot-token request failed.')
+                raise ProviderError(body.get('msg') or 'Company AI bot-token request failed.')
             bot_token = self._normalize_bearer(body['data'])
             reset_login_failures(self.base_url, self.username)
             return system_token, bot_token
@@ -752,6 +752,53 @@ class CompanyAIProvider:
         body = response.json()
         if body.get('success') is not True or body.get('data') is not True:
             raise ProviderError(body.get('msg') or 'Company AI room deletion failed.')
+
+    def delete_chat(self, conversation_id, *, _auth_retry=True):
+        previous = self.conversation_id
+        try:
+            self.conversation_id = conversation_id
+            self.delete_room(_auth_retry=_auth_retry)
+        finally:
+            self.conversation_id = previous
+
+    def list_chats_page(self, page=1, page_size=50, list_path=None, *, _auth_retry=True):
+        self._ensure_authenticated()
+        path = self._normalize_chat_list_path(
+            list_path or os.environ.get('COMPANY_AI_CHAT_LIST_PATH') or 'common/getSkillAllChatList',
+        )
+        params = {
+            'ownerAccount': self.owner_account,
+            'pageNum': page,
+            'pageSize': page_size,
+            'fromSource': self.from_source,
+        }
+        response = requests.get(
+            self.smartbot_base + '/' + path,
+            headers=self._smartbot_headers(),
+            params=params,
+            timeout=self.timeout,
+        )
+        if _auth_retry and self._is_auth_error(response):
+            self._refresh_authentication()
+            return self.list_chats_page(
+                page=page,
+                page_size=page_size,
+                list_path=list_path,
+                _auth_retry=False,
+            )
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _normalize_chat_list_path(path):
+        normalized = str(path).strip().split('?', 1)[0].strip('/')
+        marker = '/smartbot/openapi/im/'
+        marker_index = normalized.find(marker)
+        if marker_index >= 0:
+            normalized = normalized[marker_index + len(marker):].strip('/')
+        if normalized.startswith('http://') or normalized.startswith('https://'):
+            raise ProviderError('COMPANY_AI_CHAT_LIST_PATH must be a relative path, not a full URL.')
+        return normalized
 
     def complete_json(self, system_prompt, user_prompt):
         self._validate_config()
@@ -954,8 +1001,8 @@ def _normalized_details_root(details):
 def _item_title_from_details(details, identifier, position, record=None):
     record = record if isinstance(record, dict) else {}
     normalized = _normalized_details_root(details)
-    title = _template_first_value(record, normalized, 'title')
-    code = _template_first_value(record, normalized, 'code', 'cve', 'cve_code')
+    title = _template_first_value(record, normalized, 'title', 'vulName', 'advisory_title')
+    code = _template_first_value(record, normalized, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode')
     return title or code or identifier or f'Vulnerability record {position}'
 
 
@@ -998,13 +1045,18 @@ def generate_template_report_data(records):
     reference_record_count = 0
     for position, record in enumerate(records, start=1):
         details = record.get('details') if isinstance(record.get('details'), dict) else {}
-        code = _template_first_value(record, details, 'code', 'cve', 'cve_code')
-        severity = _template_first_value(record, details, 'severity', 'status', 'risk', 'priority')
+        code = _template_first_value(
+            record, details, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode',
+        )
+        severity = _template_first_value(
+            record, details, 'severity', 'status', 'risk', 'priority', 'hazardLevel',
+        )
         summary = _template_first_value(
-            record, details, 'description', 'summary', 'impacts', 'impact',
+            record, details,
+            'description', 'summary', 'impacts', 'impact', 'vulDesc', 'productDesc',
         )
         title = (
-            _template_first_value(record, details, 'title')
+            _template_first_value(record, details, 'title', 'vulName', 'advisory_title')
             or code
             or f'Vulnerability record {position}'
         )
@@ -1012,14 +1064,18 @@ def generate_template_report_data(records):
             summary = 'No description or summary was provided in the source record.'
 
         affected = _template_all_values(
-            record, details, 'affected', 'affected_products', 'systems_affected', 'products',
+            record, details,
+            'affected', 'affected_products', 'systems_affected', 'products',
+            'affectedProduct', 'affectedSystem', 'affectedVendor',
         )
         references = _template_all_values(
-            record, details, 'references', 'reference_links', 'related_links', 'urls',
+            record, details,
+            'references', 'reference_links', 'related_links', 'urls', 'referUrl',
         )
         record_recommendations = _template_all_values(
-            record, details, 'recommendation', 'recommendations', 'solution', 'solutions',
-            'remediation', 'mitigation', 'mitigations',
+            record, details,
+            'recommendation', 'recommendations', 'solution', 'solutions',
+            'remediation', 'mitigation', 'mitigations', 'patch',
         )
         highlights.append({
             'title': title,

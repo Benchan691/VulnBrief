@@ -56,9 +56,9 @@ Report profile Run actions prepare the browser's Vulnerability Reviews selection
 list. Enabled five-field cron schedules are executed in `Asia/Hong_Kong` by the
 dedicated `scheduler.py` process and generate report jobs automatically.
 
-Company AI settings live in the `company_ai` section of `config/config.json`.
-`company_ai.enabled` / `COMPANY_AI_ENABLED` and
-`gpu_preprocessing.enabled` / `GPU_ENABLED` are the router's provider status
+Company AI settings live in `.env` (`COMPANY_AI_*` variables). See
+[`.env.example`](.env.example).
+`COMPANY_AI_ENABLED` and `GPU_ENABLED` are the router's provider status
 flags. Set a provider false before stopping it; the router never publishes work
 to a disabled provider.
 `start_prompt` primes preprocessor rooms for per-item vulnerability JSON work.
@@ -97,13 +97,10 @@ start-prompt responses are ignored. Cleanup calls
 `success: true` and `data: true`; cleanup failure leaves the completed report
 intact and stores a warning.
 
-Per-item cleanup, retry, and preview behavior lives in the `report_processing`
-section. `config/config.json` also contains application paths and remains the
-single application configuration file, with environment overrides supported for
-deployment paths and secrets. `report_processing.json_error_message` configures
-the full correction prompt sent to Company AI when a JSON response needs
-correction. Use `${error}` where the parser or schema validation error should be
-inserted.
+Per-item cleanup, retry, and preview behavior is configured with `REPORT_*`
+variables in `.env`. `REPORT_JSON_ERROR_MESSAGE` configures the full correction
+prompt sent to Company AI when a JSON response needs correction. Use `${error}`
+where the parser or schema validation error should be inserted.
 
 Structured report data and job metadata are stored in the local MongoDB
 `report_jobs` collection. Queued references/details live temporarily in
@@ -127,11 +124,10 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-RabbitMQ is hosted on CloudAMQP. Set `rabbitmq.url` in `config/config.json`
-to your `amqps://` connection URL (vhost, user, and password from the CloudAMQP
-dashboard). Queue name and priorities stay in the same `rabbitmq` section.
-Every setting loaded from `config/config.json` can be overridden by an
-environment variable; see `.env.example` for the full list.
+RabbitMQ is hosted on CloudAMQP. Set `RABBITMQ_URL` in `.env` to your
+`amqps://` connection URL (vhost, user, and password from the CloudAMQP
+dashboard). Queue names and priorities use `RABBITMQ_*` variables in the same
+file. See [`.env.example`](.env.example) for the full list.
 
 Start the preprocessing worker and the web server in separate terminals:
 

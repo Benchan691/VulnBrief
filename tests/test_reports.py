@@ -300,6 +300,30 @@ def test_template_generation_maps_source_fields_and_counts():
     ]
 
 
+def test_template_generation_maps_cnnvd_fields():
+    report = generate_template_report_data([{
+        'title': 'Spring Security 资源管理错误漏洞',
+        'details': {
+            'vulName': 'Spring Security 资源管理错误漏洞',
+            'cveCode': 'CVE-2026-40988',
+            'hazardLevel': 'High',
+            'vulDesc': 'Spring Security存在资源管理错误漏洞。',
+            'affectedVendor': 'Spring',
+            'patch': 'https://spring.io/security/cve-2026-40988',
+            'referUrl': '链接:https://nvd.nist.gov/vuln/detail/CVE-2026-40988',
+        },
+    }])
+
+    highlight = report['highlights'][0]
+    assert highlight['title'] == 'Spring Security 资源管理错误漏洞'
+    assert highlight['code'] == 'CVE-2026-40988'
+    assert highlight['severity'] == 'High'
+    assert highlight['summary'] == 'Spring Security存在资源管理错误漏洞。'
+    assert highlight['affected'] == ['Spring']
+    assert highlight['references'] == ['链接:https://nvd.nist.gov/vuln/detail/CVE-2026-40988']
+    assert report['recommendations'] == ['https://spring.io/security/cve-2026-40988']
+
+
 def test_template_generation_strips_html_from_source_fields():
     html_description = (
         '<p>A vulnerability in the CLI of Cisco Catalyst SD-WAN Manager could allow '

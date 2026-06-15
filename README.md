@@ -53,57 +53,37 @@ flowchart LR
 
 ## Configuration
 
-`config/config.json` is **not committed** (see `.gitignore`). Create it locally before running.
+**All configuration lives in `.env`.** Do not use `config/config.json`.
 
-Minimum sections:
-
-```json
-{
-  "atlas_mongo_uri": "mongodb+srv://user:password@atlas.example/",
-  "local_mongo_uri": "mongodb://localhost:27017/",
-  "local_database": "web",
-  "vulnerabilities_database": "vulnerabilities",
-  "flask_secret_key": "change-me",
-  "newsletter_root": "newsletters",
-  "rabbitmq": {
-    "url": "amqps://user:password@host.lmq.cloudamqp.com/vhost",
-    "intake_queue": "company_ai_preprocessing",
-    "gpu_queue": "gpu_preprocessing",
-    "company_queue": "company_ai_processing",
-    "max_priority": 10,
-    "background_priority": 1,
-    "report_priority": 10
-  },
-  "company_ai": {
-    "enabled": true,
-    "auth_ttl_seconds": 3600,
-    "login_max_failures": 3,
-    "...": "..."
-  },
-  "company_ai_preprocessing": {
-    "task_collection": "ai_generation_tasks",
-    "...": "..."
-  },
-  "gpu_preprocessing": {
-    "enabled": false,
-    "final_summary_prompt": "Write the final summary in ${language}.",
-    "...": "..."
-  },
-  "report_processing": { "...": "..." }
-}
+```sh
+cp .env.example .env
+# edit .env with your values
 ```
 
-Environment variables can override **any** loaded setting (see `.env.example`). `config/config.json` is still required as the base file; env wins when both are set. List values accept JSON arrays (`["a","b"]`) or comma-separated strings (`a,b`).
+The app loads `.env` automatically on startup. See [`.env.example`](.env.example)
+for every variable. Minimum for local web:
+
+| Variable | Purpose |
+|----------|---------|
+| `ATLAS_MONGO_URI` | Atlas vulnerability data |
+| `LOCAL_MONGO_URI` | Local application MongoDB |
+| `FLASK_SECRET_KEY` | Session signing |
+| `RABBITMQ_URL` | CloudAMQP (for AI reports / preprocessor) |
+
+List values accept JSON arrays (`["a","b"]`) or comma-separated strings (`a,b`).
+Long prompts can use `\n` inside double-quoted `.env` strings.
+
+See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full setup, migration from
+`config/config.json`, and troubleshooting.
 
 TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them local if your deployment uses them.
 
 ## Quick start (Docker)
 
 ```sh
-# 1. Create config/config.json (see above)
-# 2. Export ATLAS_MONGO_URI. Docker Compose starts the local MongoDB service.
+# 1. Create .env (see Configuration above)
+cp .env.example .env
 
-export ATLAS_MONGO_URI='mongodb+srv://...'
 docker compose up -d --build
 ```
 
@@ -111,6 +91,8 @@ docker compose up -d --build
 - Services: `webserver-web`, `webserver-preprocessor`, `webserver-scheduler`, `webserver-local-mongo`
 
 ## Quick start (local Python)
+
+See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full virtual-environment setup (MongoDB, `.env`, TLS certs, and troubleshooting).
 
 ```sh
 python3 -m venv .venv
@@ -148,10 +130,11 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 | `templates/` | Jinja HTML templates |
 | `tests/` | Pytest suite |
 | `AI_HARNESS.md` | Detailed report/preprocessor behavior and prompts |
+| `LOCAL_DEPLOY.md` | Step-by-step local virtual-environment deployment |
 | `GPU_server/` | Independent Ubuntu GPU preprocessing deployment |
 
 ## Security notes
 
-- Do not commit `config/config.json`, `.env`, `cert.pem`, or `key.pem`
+- Do not commit `.env`, `cert.pem`, or `key.pem`
 - Rotate CloudAMQP and Company AI credentials if they were ever exposed
 - Use a strong `flask_secret_key` in production

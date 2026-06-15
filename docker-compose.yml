@@ -12,12 +12,13 @@ services:
     restart: unless-stopped
     ports:
       - "6767:6767"
+    env_file:
+      - .env
     environment:
       LOCAL_MONGO_URI: mongodb://local-mongo:27017/
     depends_on:
       - local-mongo
     volumes:
-      - ./config/config.json:/app/config/config.json:ro
       - ./newsletters:/app/newsletters
 
   preprocessor:
@@ -25,20 +26,20 @@ services:
     container_name: webserver-preprocessor
     restart: unless-stopped
     command: ["python", "company_ai_preprocessor.py"]
+    env_file:
+      - .env
     environment:
       PYTHONUNBUFFERED: "1"
-    volumes:
-      - ./config/config.json:/app/config/config.json:ro
 
   scheduler:
     build: .
     container_name: webserver-scheduler
     restart: unless-stopped
     command: ["python", "scheduler.py"]
+    env_file:
+      - .env
     environment:
       LOCAL_MONGO_URI: mongodb://local-mongo:27017/
-    volumes:
-      - ./config/config.json:/app/config/config.json:ro
     depends_on:
       - local-mongo
 

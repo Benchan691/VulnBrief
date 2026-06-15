@@ -95,7 +95,7 @@ def test_original_document_export_preserves_order(client):
     assert all('details' in document and 'source' in document for document in documents)
 
 
-def test_global_review_search_paginates_across_sorted_collections(client, monkeypatch):
+def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
     authenticate(client)
     views = {
         'b_review': {'options': {'viewOn': 'b', 'pipeline': [{'$project': {'title': 1}}]}},
@@ -103,12 +103,12 @@ def test_global_review_search_paginates_across_sorted_collections(client, monkey
     }
     documents = {
         'a_review': [
-            {'_id': 'a:1', 'title': 'First'},
-            {'_id': 'a:2', 'title': 'Second'},
+            {'_id': 'a:1', 'title': 'Older A', 'scraped_at': '2026-06-01T00:00:00+00:00'},
+            {'_id': 'a:2', 'title': 'Newer A', 'scraped_at': '2026-06-10T00:00:00+00:00'},
         ],
         'b_review': [
-            {'_id': 'b:1', 'title': 'Third'},
-            {'_id': 'b:2', 'title': 'Fourth'},
+            {'_id': 'b:1', 'title': 'Newest B', 'scraped_at': '2026-06-15T00:00:00+00:00'},
+            {'_id': 'b:2', 'title': 'Middle B', 'scraped_at': '2026-06-05T00:00:00+00:00'},
         ],
     }
 
@@ -132,17 +132,49 @@ def test_global_review_search_paginates_across_sorted_collections(client, monkey
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
     monkeypatch.setattr('routes.review._query_review_slice', query_slice)
 
-    response = client.get('/api/reviews/search?title=test&page=2&page_size=2')
+    response = client.get('/api/reviews/search?title=test&page=1&page_size=2')
     assert response.status_code == 200
     body = response.get_json()
     assert body['total'] == 4
     assert body['pages'] == 2
-    assert [item['collection'] for item in body['data']] == ['b_review', 'b_review']
-    assert [item['selection_id'] for item in body['data']] == ['b:1', 'b:2']
+    assert [item['selection_id'] for item in body['data']] == ['b:1', 'a:2']
+
+    response = client.get('/api/reviews/search?title=test&page=2&page_size=2')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert [item['selection_id'] for item in body['data']] == ['b:2', 'a:1']
 
     response = client.get('/api/reviews/search?collection=a_review&page_size=1')
     assert response.status_code == 200
     assert response.get_json()['total'] == 2
+
+
+def test_review_documents_sort_newest_first(client, monkeypatch):
+    authenticate(client)
+    view = {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}}
+    captured = {}
+
+    class FakeCollection:
+        def aggregate(self, pipeline):
+            captured['pipeline'] = pipeline
+            return iter([{
+                'documents': [
+                    {'_id': 'cve:2', 'title': 'Newer', 'scraped_at': '2026-06-10T00:00:00+00:00'},
+                ],
+                'metadata': [{'total': 2}],
+            }])
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return FakeCollection()
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: {'cve_review': view})
+
+    response = client.get('/api/reviews/cve_review?page_size=1')
+    assert response.status_code == 200
+    assert response.get_json()['data'][0]['selection_id'] == 'cve:2'
+    assert {'$sort': {'scraped_at': -1, '_id': -1}} in captured['pipeline']
 
 
 def test_global_review_search_rejects_empty_and_invalid_filters(client, monkeypatch):

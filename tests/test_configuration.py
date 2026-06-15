@@ -1,73 +1,65 @@
-import json
-
 import pytest
 
-from configuration import load_application_config
+from bootstrap import _load_env
+from configuration import DEFAULT_JSON_ERROR_MESSAGE, load_application_config
 
 
-def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
-    config_dir = tmp_path / 'config'
-    config_dir.mkdir()
-    config = {
-        'mongo_uri': 'mongodb://example/',
-        'web_database': 'web',
-        'vulnerabilities_database': 'vulnerabilities',
-        'review_view_suffix': '_review',
-        'flask_secret_key': 'secret',
-        'company_ai': {
-            'base_url': 'https://company.example',
-            'username': 'owner',
-            'password': 'password',
-            'start_prompt': 'initial',
-            'summary_prompt': 'Summary in ${language}.',
-            'public_key_b64': 'public-key',
-            'sign_secret': 'sign-secret',
-            'api_timezone': 'Asia/Shanghai',
-            'sse_connection_delay_seconds': 1.5,
-            'model': 'company-model',
-            'owner_account': 'owner',
-            'platform_id': 6,
-            'qa_type': 1,
-            'from_source': 'report',
-            'use_think': False,
-            'user_prompt': 'prompt',
-            'dataset_ids': ['dataset'],
-            'file_ids': ['file'],
-            'context_limit': 22000,
-            'max_output_tokens': 2200,
-            'timeout_seconds': 90,
-            'retries': 3,
-            'parallel_chats': 6,
-        },
-        'rabbitmq': {
-            'url': 'amqp://rabbit.example/',
-            'queue_name': 'summaries',
-            'max_priority': 8,
-            'background_priority': 2,
-            'report_priority': 8,
-        },
-        'company_ai_preprocessing': {
-            'scan_interval_seconds': 30,
-            'stale_processing_seconds': 600,
-            'report_wait_timeout_seconds': 45,
-        },
-        'report_processing': {
-            'item_json_retries': 4,
-            'final_json_retries': 5,
-            'json_error_message': 'Configured JSON error: ${error}',
-            'deny_keys': ['raw'],
-            'deny_prefixes': ['raw_'],
-            'max_depth': 7,
-            'max_list_items': 8,
-            'max_string_chars': 900,
-            'preview_after_each_item': False,
-        },
+def _set_required_env(monkeypatch, **overrides):
+    values = {
+        'ATLAS_MONGO_URI': 'mongodb://example/',
+        'LOCAL_MONGO_URI': 'mongodb://local.example/',
+        'FLASK_SECRET_KEY': 'secret',
+        'COMPANY_AI_BASE_URL': 'https://company.example',
+        'COMPANY_AI_USERNAME': 'owner',
+        'COMPANY_AI_PASSWORD': 'password',
+        'COMPANY_AI_START_PROMPT': 'initial',
+        'COMPANY_AI_SUMMARY_PROMPT': 'Summary in ${language}.',
+        'COMPANY_AI_PUBLIC_KEY_B64': 'public-key',
+        'COMPANY_AI_SIGN_SECRET': 'sign-secret',
+        'COMPANY_AI_MODEL': 'company-model',
+        'RABBITMQ_URL': 'amqp://rabbit.example/',
+        'RABBITMQ_INTAKE_QUEUE': 'summaries',
+        'RABBITMQ_QUEUE_NAME': 'summaries',
     }
-    (config_dir / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+    values.update(overrides)
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_settings_load_from_environment(tmp_path, monkeypatch):
+    _set_required_env(
+        monkeypatch,
+        COMPANY_AI_SSE_DELAY_SECONDS='1.5',
+        COMPANY_AI_OWNER_ACCOUNT='owner',
+        COMPANY_AI_PLATFORM_ID='6',
+        COMPANY_AI_QA_TYPE='1',
+        COMPANY_AI_FROM_SOURCE='report',
+        COMPANY_AI_USE_THINK='false',
+        COMPANY_AI_USER_PROMPT='prompt',
+        COMPANY_AI_DATASET_IDS='["dataset"]',
+        COMPANY_AI_FILE_IDS='["file"]',
+        COMPANY_AI_CONTEXT_LIMIT='22000',
+        COMPANY_AI_MAX_OUTPUT_TOKENS='2200',
+        COMPANY_AI_TIMEOUT_SECONDS='90',
+        COMPANY_AI_RETRIES='3',
+        COMPANY_AI_PARALLEL_CHATS='6',
+        COMPANY_AI_ENABLED='true',
+        RABBITMQ_MAX_PRIORITY='8',
+        RABBITMQ_BACKGROUND_PRIORITY='2',
+        RABBITMQ_REPORT_PRIORITY='8',
+        COMPANY_AI_SCAN_INTERVAL_SECONDS='30',
+        COMPANY_AI_STALE_PROCESSING_SECONDS='600',
+        COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS='45',
+        REPORT_ITEM_JSON_RETRIES='4',
+        REPORT_FINAL_JSON_RETRIES='5',
+        REPORT_JSON_ERROR_MESSAGE='Configured JSON error: ${error}',
+        REPORT_DENY_KEYS='["raw"]',
+        REPORT_PREVIEW_AFTER_EACH_ITEM='false',
+    )
 
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://example/'
-    assert loaded['LOCAL_MONGO_URI'] == 'mongodb://example/'
+    assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
     assert loaded['LOCAL_DATABASE'] == 'web'
     assert loaded['COMPANY_AI_BASE_URL'] == 'https://company.example'
     assert loaded['COMPANY_AI_USERNAME'] == 'owner'
@@ -137,16 +129,13 @@ def test_settings_load_from_single_json_config(tmp_path, monkeypatch):
     assert legacy_queue['RABBITMQ_INTAKE_QUEUE'] == 'legacy-environment-intake'
 
 
-def test_separate_mongo_connections_override_legacy_uri(tmp_path, monkeypatch):
-    config_dir = tmp_path / 'config'
-    config_dir.mkdir()
-    (config_dir / 'config.json').write_text(json.dumps({
-        'atlas_mongo_uri': 'mongodb+srv://atlas.example/',
-        'local_mongo_uri': 'mongodb://local.example/',
-        'local_database': 'local_app',
-        'vulnerabilities_database': 'vulnerabilities',
-        'flask_secret_key': 'secret',
-    }), encoding='utf-8')
+def test_separate_mongo_connections(tmp_path, monkeypatch):
+    _set_required_env(
+        monkeypatch,
+        ATLAS_MONGO_URI='mongodb+srv://atlas.example/',
+        LOCAL_MONGO_URI='mongodb://local.example/',
+        LOCAL_DATABASE='local_app',
+    )
 
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb+srv://atlas.example/'
@@ -159,26 +148,19 @@ def test_separate_mongo_connections_override_legacy_uri(tmp_path, monkeypatch):
     )
 
 
-def test_mongo_connections_are_required(tmp_path):
-    config_dir = tmp_path / 'config'
-    config_dir.mkdir()
-    (config_dir / 'config.json').write_text(json.dumps({
-        'vulnerabilities_database': 'vulnerabilities',
-        'flask_secret_key': 'secret',
-    }), encoding='utf-8')
+def test_mongo_connections_are_required(tmp_path, monkeypatch):
+    monkeypatch.delenv('ATLAS_MONGO_URI', raising=False)
+    monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
+    monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
 
-    with pytest.raises(ValueError, match='atlas_mongo_uri and local_mongo_uri'):
+    with pytest.raises(ValueError, match='Missing required environment variable'):
         load_application_config(str(tmp_path))
 
 
-def test_worker_configuration_requires_atlas_but_not_local_mongo(tmp_path):
-    config_dir = tmp_path / 'config'
-    config_dir.mkdir()
-    (config_dir / 'config.json').write_text(json.dumps({
-        'atlas_mongo_uri': 'mongodb://atlas.example/',
-        'vulnerabilities_database': 'vulnerabilities',
-        'flask_secret_key': 'secret',
-    }), encoding='utf-8')
+def test_worker_configuration_requires_atlas_but_not_local_mongo(tmp_path, monkeypatch):
+    monkeypatch.setenv('ATLAS_MONGO_URI', 'mongodb://atlas.example/')
+    monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
+    monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
 
     loaded = load_application_config(str(tmp_path), require_local=False)
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://atlas.example/'
@@ -186,41 +168,9 @@ def test_worker_configuration_requires_atlas_but_not_local_mongo(tmp_path):
     assert loaded['AI_TASK_COLLECTION'] == 'ai_generation_tasks'
 
 
-def test_file_only_settings_can_be_overridden_by_environment(tmp_path, monkeypatch):
-    config_dir = tmp_path / 'config'
-    config_dir.mkdir()
-    (config_dir / 'config.json').write_text(
-        json.dumps({
-            'mongo_uri': 'mongodb://example/',
-            'web_database': 'web',
-            'vulnerabilities_database': 'vulnerabilities',
-            'flask_secret_key': 'secret',
-            'company_ai': {
-                'start_prompt': 'from-file',
-                'public_key_b64': 'file-key',
-                'sign_secret': 'file-secret',
-                'api_timezone': 'Asia/Shanghai',
-                'sse_connection_delay_seconds': 2,
-                'dataset_ids': ['file-dataset'],
-                'file_ids': ['file-id'],
-            },
-            'company_ai_preprocessing': {
-                'max_task_attempts': 10,
-            },
-            'report_processing': {
-                'item_json_retries': 2,
-                'final_json_retries': 2,
-                'deny_keys': ['raw'],
-                'deny_prefixes': ['raw_'],
-                'max_depth': 6,
-                'max_list_items': 100,
-                'max_string_chars': 12000,
-                'preview_after_each_item': True,
-            },
-        }),
-        encoding='utf-8',
-    )
-
+def test_environment_list_and_report_defaults(tmp_path, monkeypatch):
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv('REPORT_JSON_ERROR_MESSAGE', raising=False)
     monkeypatch.setenv('COMPANY_AI_START_PROMPT', 'from-env')
     monkeypatch.setenv('COMPANY_AI_PUBLIC_KEY_B64', 'env-key')
     monkeypatch.setenv('COMPANY_AI_SIGN_SECRET', 'env-secret')
@@ -255,3 +205,40 @@ def test_file_only_settings_can_be_overridden_by_environment(tmp_path, monkeypat
     assert loaded['REPORT_MAX_LIST_ITEMS'] == 42
     assert loaded['REPORT_MAX_STRING_CHARS'] == 5000
     assert loaded['REPORT_PREVIEW_AFTER_EACH_ITEM'] is False
+    assert loaded['REPORT_JSON_ERROR_MESSAGE'] == DEFAULT_JSON_ERROR_MESSAGE
+
+
+def test_load_dotenv_from_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        'ATLAS_MONGO_URI', 'LOCAL_MONGO_URI', 'FLASK_SECRET_KEY',
+        'COMPANY_AI_BASE_URL', 'COMPANY_AI_USERNAME', 'COMPANY_AI_PASSWORD',
+        'COMPANY_AI_START_PROMPT', 'COMPANY_AI_SUMMARY_PROMPT',
+        'COMPANY_AI_PUBLIC_KEY_B64', 'COMPANY_AI_SIGN_SECRET', 'COMPANY_AI_MODEL',
+        'RABBITMQ_URL',
+    ):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / '.env').write_text(
+        '\n'.join([
+            'ATLAS_MONGO_URI=mongodb://dotenv-atlas/',
+            'LOCAL_MONGO_URI=mongodb://dotenv-local/',
+            'FLASK_SECRET_KEY=dotenv-secret',
+            'COMPANY_AI_BASE_URL=https://dotenv.example',
+            'COMPANY_AI_USERNAME=dotenv-user',
+            'COMPANY_AI_PASSWORD=dotenv-password',
+            'COMPANY_AI_START_PROMPT=dotenv-start',
+            'COMPANY_AI_SUMMARY_PROMPT=dotenv-summary',
+            'COMPANY_AI_PUBLIC_KEY_B64=dotenv-key',
+            'COMPANY_AI_SIGN_SECRET=dotenv-sign',
+            'COMPANY_AI_MODEL=dotenv-model',
+            'RABBITMQ_URL=amqp://dotenv/',
+        ]),
+        encoding='utf-8',
+    )
+
+    _load_env(str(tmp_path))
+    loaded = load_application_config(str(tmp_path))
+    assert loaded['ATLAS_MONGO_URI'] == 'mongodb://dotenv-atlas/'
+    assert loaded['LOCAL_MONGO_URI'] == 'mongodb://dotenv-local/'
+    assert loaded['SECRET_KEY'] == 'dotenv-secret'
+    assert loaded['COMPANY_AI_BASE_URL'] == 'https://dotenv.example'
