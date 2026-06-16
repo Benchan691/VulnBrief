@@ -72,9 +72,11 @@ use `.venv/bin/python` so they work even if the venv is not activated.
 ## 4. Start local MongoDB
 
 The app stores users, subscriptions, report jobs, and schedules in a **local**
-MongoDB instance (separate from Atlas).
+MongoDB instance (separate from Atlas). Docker Compose expects this database on
+the **host** at port 27017 (`web` and `scheduler` connect via
+`host.docker.internal`).
 
-**Option A — Docker (recommended)**
+**Option A — Standalone Docker container on the host port**
 
 ```sh
 docker run -d \
@@ -84,13 +86,7 @@ docker run -d \
   mongo:7
 ```
 
-**Option B — Docker Compose (local Mongo only)**
-
-```sh
-docker compose up -d local-mongo
-```
-
-**Option C — MongoDB installed on the host**
+**Option B — MongoDB installed on the host**
 
 Use your system package manager or [MongoDB install docs](https://www.mongodb.com/docs/manual/installation/).
 Default URI: `mongodb://localhost:27017/`
@@ -100,6 +96,8 @@ Verify connectivity:
 ```sh
 mongosh "mongodb://localhost:27017/" --eval 'db.runCommand({ ping: 1 })'
 ```
+
+Start Docker Compose only after local Mongo responds to the ping above.
 
 ## 5. Create configuration
 
@@ -296,7 +294,16 @@ Generate TLS certs (step 6) or use Gunicorn instead.
 **Cannot connect to MongoDB**
 
 Confirm local Mongo is listening on port 27017 and that Atlas allows your IP in
-the cluster network access list.
+the cluster network access list. For Docker Compose, `web` and `scheduler` use
+`host.docker.internal:27017`; data you inspect with `mongosh localhost:27017` is
+the same database the UI uses (`web.subscriptions`, `report_jobs`, etc.).
+
+**Subscription data not visible in MongoDB**
+
+Subscriptions live in local MongoDB `web.subscriptions`, not Atlas. If the UI
+shows subscribers but `mongosh` does not, you are likely connected to a different
+Mongo instance than the app. With Docker Compose, use host Mongo on port 27017,
+not a separate unpublished compose Mongo container.
 
 **RabbitMQ / preprocessor errors**
 
@@ -310,7 +317,7 @@ Stop the other process or change the bind address in `gunicorn_config.py` /
 
 ## Stopping services
 
-Press `Ctrl+C` in each terminal. To stop the Docker MongoDB container:
+Press `Ctrl+C` in each terminal. To stop a standalone Docker MongoDB container:
 
 ```sh
 docker stop webserver-local-mongo

@@ -89,11 +89,15 @@ TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them lo
 # 1. Create .env (see Configuration above)
 cp .env.example .env
 
+# 2. Start local MongoDB on the host (port 27017) before compose
+mongosh "mongodb://localhost:27017/" --eval 'db.runCommand({ ping: 1 })'
+
 docker compose up -d --build
 ```
 
 - Web UI: http://localhost:6767
-- Services: `webserver-web`, `webserver-preprocessor-scanner`, `webserver-preprocessor-router`, `webserver-company-ai-worker`, `webserver-scheduler`, `webserver-local-mongo`
+- Local app data (auth, subscriptions, report jobs) uses **host** MongoDB at port 27017; Docker `web` and `scheduler` connect via `host.docker.internal`.
+- Services: `webserver-web`, `webserver-preprocessor-scanner`, `webserver-preprocessor-router`, `webserver-company-ai-worker`, `webserver-scheduler`
 
 ## Quick start (local Python)
 

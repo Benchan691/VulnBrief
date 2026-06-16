@@ -1,11 +1,4 @@
 services:
-  local-mongo:
-    image: mongo:7
-    container_name: webserver-local-mongo
-    restart: unless-stopped
-    volumes:
-      - local-mongo-data:/data/db
-
   web:
     build: .
     container_name: webserver-web
@@ -15,9 +8,9 @@ services:
     env_file:
       - .env
     environment:
-      LOCAL_MONGO_URI: mongodb://local-mongo:27017/
-    depends_on:
-      - local-mongo
+      LOCAL_MONGO_URI: mongodb://host.docker.internal:27017/
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./newsletters:/app/newsletters
 
@@ -79,9 +72,6 @@ services:
     env_file:
       - .env
     environment:
-      LOCAL_MONGO_URI: mongodb://local-mongo:27017/
-    depends_on:
-      - local-mongo
-
-volumes:
-  local-mongo-data:
+      LOCAL_MONGO_URI: mongodb://host.docker.internal:27017/
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

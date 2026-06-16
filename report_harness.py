@@ -22,6 +22,7 @@ from jsonschema import ValidationError, validate
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from newsletter_store import normalize_newsletter
 from mongo import get_vulnerabilities_database, get_web_database
 from company_ai_auth_cache import (
     get_tokens,
@@ -125,6 +126,8 @@ HIGHLIGHT_PROPERTIES = {
     'affected': {'type': 'array', 'items': {'type': 'string'}},
     'references': {'type': 'array', 'items': {'type': 'string'}},
     'table': HIGHLIGHT_TABLE_SCHEMA,
+    'source_link': {'type': 'string'},
+    'newsletter': {'type': 'object'},
 }
 AI_HIGHLIGHT_SCHEMA = {
     'type': 'object',
@@ -1087,46 +1090,104 @@ def _source_record_for_item(item):
             get_vulnerabilities_database(),
             item['source_collection'],
             item['selection_id'],
-            {'title': 1, 'code': 1, 'cve': 1, 'cve_code': 1},
+            {
+                'title': 1, 'code': 1, 'cve': 1, 'cve_code': 1, 'severity': 1,
+                'status': 1, 'source': 1, 'type': 1,
+            },
         )
         if document:
-            for field in ('title', 'code', 'cve', 'cve_code'):
+            for field in ('title', 'code', 'cve', 'cve_code', 'severity', 'status', 'source', 'type'):
                 if document.get(field):
                     record.setdefault(field, document[field])
+        record['source_collection'] = item['source_collection']
     return record
 
 
-def generate_template_report_data(records):
-    if not records:
-        raise ValueError('At least one vulnerability record is required.')
+def _source_link_from_record(record, newsletter):
+    source = record.get('source') if isinstance(record.get('source'), dict) else {}
+    for value in (
+        source.get('detail_url'),
+        source.get('url'),
+        *(newsletter.get('references') or []),
+        *(newsletter.get('related_links') or []),
+    ):
+        if value:
+            return str(value)
+    return ''
 
+
+def _newsletter_payload(newsletter):
+    payload = {
+        'overview': str(newsletter.get('overview') or ''),
+        'severity': newsletter.get('severity') or [],
+        'impacts': newsletter.get('impacts') or [],
+        'affected': newsletter.get('affected') or [],
+        'cves': newsletter.get('cves') or [],
+        'recommendations': newsletter.get('recommendations') or [],
+        'references': newsletter.get('references') or [],
+        'related_links': newsletter.get('related_links') or [],
+        'table': newsletter.get('table'),
+        'affected_table': newsletter.get('affected_table'),
+        'show_severity': bool(newsletter.get('show_severity')),
+        'show_impacts': bool(newsletter.get('show_impacts')),
+        'show_affected': bool(newsletter.get('show_affected')),
+        'labels': newsletter.get('labels') or {},
+    }
+    return _clean(payload) or {}
+
+
+def _template_highlights(records):
     highlights = []
+    for position, record in enumerate(records, start=1):
+        details = record.get('details') if isinstance(record.get('details'), dict) else {}
+        source_collection = (
+            record.get('source_collection')
+            or record.get('type')
+            or record.get('collection')
+            or 'generic'
+        )
+        document = {**record, 'details': details}
+        newsletter = normalize_newsletter(document, source_collection)
+        newsletter_title = newsletter.get('title')
+        if newsletter_title == 'Security Advisory':
+            newsletter_title = ''
+        title = (
+            _template_first_value(record, details, 'title', 'vulName', 'advisory_title')
+            or _template_first_value(record, details, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode')
+            or newsletter_title
+            or f'Vulnerability record {position}'
+        )
+        severity = (
+            _template_first_value(record, details, 'severity', 'status', 'risk', 'priority', 'hazardLevel')
+            or next(iter(newsletter.get('severity') or []), '')
+        )
+        highlights.append({
+            'title': title,
+            'code': _template_first_value(
+                record, details, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode',
+            ),
+            'severity': severity,
+            'summary': _strip_html(str(newsletter.get('overview') or '')),
+            'affected': newsletter.get('affected') or [],
+            'references': newsletter.get('references') or [],
+            'source_link': _source_link_from_record(record, newsletter),
+            'newsletter': _newsletter_payload(newsletter),
+        })
+    return highlights
+
+
+def _deterministic_report_sections(records):
     recommendations = []
     severities = {}
     affected_counts = {}
     affected_record_count = 0
     recommendation_record_count = 0
     reference_record_count = 0
-    for position, record in enumerate(records, start=1):
+    for record in records:
         details = record.get('details') if isinstance(record.get('details'), dict) else {}
-        code = _template_first_value(
-            record, details, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode',
-        )
         severity = _template_first_value(
             record, details, 'severity', 'status', 'risk', 'priority', 'hazardLevel',
         )
-        summary = _template_first_value(
-            record, details,
-            'description', 'summary', 'impacts', 'impact', 'vulDesc', 'productDesc',
-        )
-        title = (
-            _template_first_value(record, details, 'title', 'vulName', 'advisory_title')
-            or code
-            or f'Vulnerability record {position}'
-        )
-        if not summary:
-            summary = 'No description or summary was provided in the source record.'
-
         affected = _template_all_values(
             record, details,
             'affected', 'affected_products', 'systems_affected', 'products',
@@ -1141,14 +1202,6 @@ def generate_template_report_data(records):
             'recommendation', 'recommendations', 'solution', 'solutions',
             'remediation', 'mitigation', 'mitigations', 'patch',
         )
-        highlights.append({
-            'title': title,
-            'code': code,
-            'severity': severity,
-            'summary': summary,
-            'affected': affected,
-            'references': references,
-        })
         recommendations.extend(record_recommendations)
         if severity:
             severity_key = severity.casefold()
@@ -1176,7 +1229,7 @@ def generate_template_report_data(records):
             key=lambda item: (-item['count'], item['label'].casefold()),
         )[:5]
     )
-    total = len(highlights)
+    total = len(records)
     severity_record_count = sum(item['count'] for item in severities.values())
     executive_summary = (
         f'This report contains {total} vulnerability '
@@ -1198,14 +1251,22 @@ def generate_template_report_data(records):
     if affected_summary:
         trends[1] += f' Most frequently affected: {affected_summary}.'
 
+    return executive_summary, trends, _unique_strings(recommendations) or [
+        'No recommendations were provided in the source records.',
+    ]
+
+
+def generate_template_report_data(records):
+    if not records:
+        raise ValueError('At least one vulnerability record is required.')
+
     report = {
         'title': _fixed_report_title('en'),
-        'executive_summary': executive_summary,
-        'highlights': highlights,
-        'trends': trends,
-        'recommendations': _unique_strings(recommendations) or [
-            'No recommendations were provided in the source records.',
-        ],
+        'executive_summary': '',
+        'highlights': _template_highlights(records),
+        'trends': [],
+        'recommendations': [],
+        'template_mode': True,
     }
     validate(instance=report, schema=REPORT_SCHEMA)
     return report
@@ -1355,12 +1416,12 @@ def _deterministic_final(item_results, report_language='en'):
         }
         for item in item_results
     ]
-    report = generate_template_report_data(records)
+    executive_summary, trends, recommendations = _deterministic_report_sections(records)
     return {
         'title': _fixed_report_title(report_language),
-        'executive_summary': report['executive_summary'],
-        'trends': report['trends'],
-        'recommendations': report['recommendations'],
+        'executive_summary': executive_summary,
+        'trends': trends,
+        'recommendations': recommendations,
     }
 
 

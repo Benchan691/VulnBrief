@@ -70,7 +70,7 @@ def sample_document(index=1):
                 'raw': {'large': 'must be removed'},
             },
         },
-        'source': {'provider': 'test'},
+        'source': {'provider': 'test', 'detail_url': 'https://example.com/source'},
     }
 
 
@@ -257,6 +257,7 @@ def test_template_generation_maps_source_fields_and_counts():
             'code': 'CVE-TEST-1',
             'title': 'First vulnerability',
             'status': 'HIGH',
+            'source': {'detail_url': 'https://example.com/source-detail'},
             'details': {
                 'summary': 'Source summary.',
                 'affected_products': ['Product A', 'product a'],
@@ -276,33 +277,29 @@ def test_template_generation_maps_source_fields_and_counts():
     ])
 
     assert report['title'] == 'Cybersecurity Report'
-    assert report['highlights'][0] == {
-        'title': 'First vulnerability',
-        'code': 'CVE-TEST-1',
-        'severity': 'HIGH',
-        'summary': 'Source summary.',
-        'affected': ['Product A'],
-        'references': ['https://example.com/advisory'],
-    }
-    assert report['highlights'][1]['title'] == 'CVE-TEST-2'
-    assert report['recommendations'] == ['Apply update.', 'Restrict access.']
-    assert 'Severity or status data is available for 2 of 2 records.' in report['executive_summary']
-    assert 'Affected product or system data is available for 2 of 2 records.' in report['executive_summary']
-    assert 'Remediation guidance is available for 2 of 2 records.' in report['executive_summary']
-    assert report['trends'] == [
-        'Severity or status coverage: 2 of 2 records. Distribution: HIGH: 1, MEDIUM: 1.',
-        (
-            'Affected product or system coverage: 2 of 2 records. '
-            'Most frequently affected: Product A: 1, Product B: 1.'
-        ),
-        'Remediation guidance coverage: 2 of 2 records.',
-        'Reference coverage: 1 of 2 records.',
+    validate(instance=report, schema=report_harness.REPORT_SCHEMA)
+    assert report['template_mode'] is True
+    assert report['executive_summary'] == ''
+    assert report['trends'] == []
+    assert report['recommendations'] == []
+    assert report['highlights'][0]['title'] == 'First vulnerability'
+    assert report['highlights'][0]['code'] == 'CVE-TEST-1'
+    assert report['highlights'][0]['severity'] == 'HIGH'
+    assert report['highlights'][0]['source_link'] == 'https://example.com/source-detail'
+    assert report['highlights'][0]['newsletter']['overview'] == 'Source summary.'
+    assert report['highlights'][0]['newsletter']['affected'] == ['Product A']
+    assert report['highlights'][0]['newsletter']['recommendations'] == ['Apply update.']
+    assert report['highlights'][0]['newsletter']['references'] == [
+        'https://example.com/source-detail',
+        'https://example.com/advisory',
     ]
+    assert report['highlights'][1]['title'] == 'CVE-TEST-2'
 
 
 def test_template_generation_maps_cnnvd_fields():
     report = generate_template_report_data([{
         'title': 'Spring Security 资源管理错误漏洞',
+        'source_collection': 'cnnvd',
         'details': {
             'vulName': 'Spring Security 资源管理错误漏洞',
             'cveCode': 'CVE-2026-40988',
@@ -319,9 +316,9 @@ def test_template_generation_maps_cnnvd_fields():
     assert highlight['code'] == 'CVE-2026-40988'
     assert highlight['severity'] == 'High'
     assert highlight['summary'] == 'Spring Security存在资源管理错误漏洞。'
-    assert highlight['affected'] == ['Spring']
-    assert highlight['references'] == ['链接:https://nvd.nist.gov/vuln/detail/CVE-2026-40988']
-    assert report['recommendations'] == ['https://spring.io/security/cve-2026-40988']
+    assert highlight['newsletter']['affected'] == ['Spring']
+    assert highlight['newsletter']['recommendations'] == ['https://spring.io/security/cve-2026-40988']
+    assert highlight['newsletter'].get('references') is None
 
 
 def test_template_generation_strips_html_from_source_fields():
@@ -342,6 +339,7 @@ def test_template_generation_strips_html_from_source_fields():
     assert '<em>' not in summary
     assert 'root' in summary
     assert 'CVE-2026-20182' in summary
+    assert '<p>' in report['highlights'][0]['newsletter']['overview']
     assert report['highlights'][0]['title'] == 'Cisco Advisory'
 
 
@@ -355,17 +353,10 @@ def test_template_generation_uses_missing_field_fallbacks():
 
     assert report['highlights'][0]['title'] == 'Vulnerability record 1'
     assert report['highlights'][0]['summary'] == (
-        'No description or summary was provided in the source record.'
+        'No overview was provided in the source record.'
     )
-    assert report['recommendations'] == [
-        'No recommendations were provided in the source records.',
-    ]
-    assert report['trends'] == [
-        'Severity or status coverage: 0 of 1 records.',
-        'Affected product or system coverage: 0 of 1 records.',
-        'Remediation guidance coverage: 0 of 1 records.',
-        'Reference coverage: 0 of 1 records.',
-    ]
+    assert report['recommendations'] == []
+    assert report['trends'] == []
 
 
 def company_ai_config():
@@ -1498,6 +1489,40 @@ def test_rendered_report_includes_item_table(tmp_path):
             assert 'Affected versions' in html
             assert '<table class="item-table">' in html
             assert 'Widget' in html
+        finally:
+            app.config['NEWSLETTER_ROOT'] = original_root
+
+
+def test_rendered_template_report_includes_blank_sections_table_and_newsletter(tmp_path):
+    with app.app_context():
+        original_root = app.config['NEWSLETTER_ROOT']
+        app.config['NEWSLETTER_ROOT'] = str(tmp_path)
+        try:
+            report = generate_template_report_data([{
+                'title': 'Template advisory',
+                'status': 'HIGH',
+                'source': {'detail_url': 'https://example.com/source'},
+                'details': {
+                    'summary': 'Newsletter overview.',
+                    'affected_products': ['Product A'],
+                    'solution': 'Apply update.',
+                    'references': ['https://example.com/reference'],
+                },
+            }])
+            html = _render_job_html({
+                'source_count': 1,
+                'effective_report_language': 'en',
+            }, report)
+
+            assert '<h2>Executive Summary</h2>' in html
+            assert '<h2>Trends</h2>' in html
+            assert '<th>Title</th><th>Severity</th><th>Source</th>' in html
+            assert '<a href="https://example.com/source" rel="noopener">' in html
+            assert '<h2>Item Summaries</h2>' in html
+            assert 'Newsletter overview.' in html
+            assert 'Product A' in html
+            assert 'Apply update.' in html
+            assert 'Strategic Recommendations' not in html
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
 
