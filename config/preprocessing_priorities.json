@@ -1,0 +1,28 @@
+{
+  "default": 1,
+  "collections": {
+    "zeroday": 9,
+    "avd": 8,
+    "cisco": 8,
+    "github_advisory": 8,
+    "hikvision": 8,
+    "huawei_sa": 8,
+    "juniper": 8,
+    "paloalto": 8,
+    "splunk": 8,
+    "hkcert": 7,
+    "qianxin": 7,
+    "cve": 6
+  },
+  "field_boosts": {
+    "severity": {
+      "CRITICAL": 3,
+      "HIGH": 2,
+      "MEDIUM": 1
+    },
+    "status": {
+      "CRITICAL": 2,
+      "HIGH": 2
+    }
+  }
+}

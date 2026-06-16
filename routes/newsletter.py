@@ -3,7 +3,7 @@ import shutil
 from . import newsletter_blueprint
 from flask import Response, render_template, request, jsonify, current_app
 from mongo import get_vulnerabilities_database
-from newsletter_store import get_newsletter_collection, render_newsletter
+from newsletter_store import render_newsletter
 from pymongo.errors import PyMongoError
 from review_data import resolve_vulnerability_document
 from .common import login_required
@@ -45,22 +45,10 @@ def set_news():
     return jsonify({'success': True})
 
 
-@newsletter_blueprint.route('/generated-newsletters/<newsletter_id>')
+@newsletter_blueprint.route('/generated-newsletters/<source_collection>/<path:selection_id>/preview')
 @login_required
-def generated_newsletter(newsletter_id):
+def generated_newsletter_preview(source_collection, selection_id):
     try:
-        collection = get_newsletter_collection()
-        record = collection.find_one({'_id': newsletter_id})
-        if record is None:
-            return jsonify({'error': 'Generated newsletter not found.'}), 404
-        source_collection = record.get('source_collection')
-        selection_id = record.get('selection_id')
-        if not source_collection or not selection_id:
-            return jsonify({'error': 'Generated newsletter is missing source metadata.'}), 422
-        collection.update_one(
-            {'_id': newsletter_id},
-            {'$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
-        )
         document = resolve_vulnerability_document(
             get_vulnerabilities_database(),
             source_collection,

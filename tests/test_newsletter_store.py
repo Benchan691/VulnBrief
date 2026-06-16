@@ -1,14 +1,12 @@
 from pathlib import Path
 
 from app import app
-from mongo import get_local_mongo_client
 from newsletter_store import (
     SOURCE_TEMPLATE_KEYS,
     _record_id,
-    get_newsletter_collection,
+    filter_newsletter_feed,
     normalize_newsletter,
     render_newsletter,
-    sync_newsletters,
     template_key_for_source,
 )
 
@@ -259,7 +257,7 @@ def test_similar_source_shapes_are_mapped_without_flattening_metadata():
     assert github['recommendations'] == ['2.0']
 
 
-def test_generated_newsletter_route_renders_latest_source_and_removes_legacy_html(monkeypatch):
+def test_generated_newsletter_preview_route_renders_latest_source(monkeypatch):
     client = app.test_client()
     with client.session_transaction() as session:
         session['username'] = 'test-user'
@@ -268,109 +266,56 @@ def test_generated_newsletter_route_renders_latest_source_and_removes_legacy_htm
         'title': 'Latest source title',
         'details': {'avd': {'summary': 'Latest source summary'}},
     }
-    record_id = _record_id('avd', source['_id'])
-    with app.app_context():
-        collection = get_newsletter_collection()
-        collection.insert_one({
-            '_id': record_id,
-            'source_collection': 'avd',
-            'selection_id': source['_id'],
-            'html': '<p>stale</p>',
-        })
     monkeypatch.setattr('routes.newsletter.get_vulnerabilities_database', lambda: object())
     monkeypatch.setattr(
         'routes.newsletter.resolve_vulnerability_document',
         lambda database, collection, selection_id: source,
     )
-    try:
-        response = client.get(f'/generated-newsletters/{record_id}')
-        assert response.status_code == 200
-        assert b'Latest source summary' in response.data
-        assert b'stale' not in response.data
-        with app.app_context():
-            assert 'html' not in get_newsletter_collection().find_one({'_id': record_id})
-    finally:
-        with app.app_context():
-            get_newsletter_collection().delete_one({'_id': record_id})
+    response = client.get('/generated-newsletters/avd/avd:live/preview')
+    assert response.status_code == 200
+    assert b'Latest source summary' in response.data
 
 
-def test_generated_newsletter_route_rejects_legacy_record_without_source_metadata():
+def test_generated_newsletter_preview_route_returns_404_when_source_missing(monkeypatch):
     client = app.test_client()
     with client.session_transaction() as session:
         session['username'] = 'test-user'
-    with app.app_context():
-        collection = get_newsletter_collection()
-        collection.insert_one({'_id': 'legacy-newsletter'})
-    try:
-        response = client.get('/generated-newsletters/legacy-newsletter')
-        assert response.status_code == 422
-        assert response.get_json()['error'] == 'Generated newsletter is missing source metadata.'
-    finally:
-        with app.app_context():
-            get_newsletter_collection().delete_one({'_id': 'legacy-newsletter'})
+    monkeypatch.setattr('routes.newsletter.get_vulnerabilities_database', lambda: object())
+    monkeypatch.setattr(
+        'routes.newsletter.resolve_vulnerability_document',
+        lambda database, collection, selection_id: None,
+    )
+    response = client.get('/generated-newsletters/avd/missing/preview')
+    assert response.status_code == 404
+    assert response.get_json()['error'] == 'Newsletter source document not found.'
 
 
-def test_newsletter_sync_updates_changed_sources_and_removes_unmatched_records(monkeypatch):
-    source_name = 'newsletter_sync_test'
-    email = 'newsletter-sync-test@example.com'
-    with app.app_context():
-        local = get_local_mongo_client()['newsletter_sync_test_local']
-        local.drop_collection('subscriptions')
-        local.drop_collection('generated_newsletters')
-        source = {
-            '_id': f'{source_name}:1',
-            'title': 'Initial title',
-            'status': 'High',
-            'scraped_at': '2026-06-11T00:00:00+00:00',
-            'source': {'provider': source_name},
-            'details': {source_name: {'summary': 'Initial summary'}},
+def test_filter_newsletter_feed_builds_live_results_from_atlas_matches(monkeypatch):
+    source = {
+        '_id': 'avd-1',
+        'title': 'Live Advisory',
+        'scraped_at': '2026-06-15T12:00:00+00:00',
+        'details': {'avd': {'summary': 'Live summary'}},
+    }
+
+    def fake_query(database, profile, limit=None, include_documents=False):
+        match = {
+            'collection': 'avd_review',
+            'source_collection': 'avd',
+            'selection_id': 'avd-1',
         }
-        matches = [{
-            'collection': f'{source_name}_review',
-            'source_collection': source_name,
-            'selection_id': source['_id'],
-        }]
-        monkeypatch.setattr('newsletter_store.get_web_database', lambda: local)
-        monkeypatch.setattr('newsletter_store.get_vulnerabilities_database', lambda: object())
-        monkeypatch.setattr('newsletter_store.normalize_subscription', lambda database, value: value)
-        monkeypatch.setattr(
-            'newsletter_store.query_profile_matches',
-            lambda database, profile, limit=None: matches,
-        )
-        monkeypatch.setattr(
-            'newsletter_store.resolve_vulnerability_document',
-            lambda database, collection, selection_id: dict(source),
-        )
-        local['subscriptions'].insert_one({
-            'email': email,
-            'team': 'Test',
-            'newsletter_profile': {
-                'enabled': True,
-                'filters': {'collections': [f'{source_name}_review']},
-            },
-            'report_profile': {'enabled': False, 'filters': {}},
-        })
-        try:
-            assert sync_newsletters()['tracked'] == 1
-            first = get_newsletter_collection().find_one({'subscription_emails': email})
-            assert 'html' not in first
-            assert first['title'] == 'Initial title'
-            get_newsletter_collection().update_one(
-                {'_id': first['_id']},
-                {'$set': {'html': '<p>legacy</p>', 'html_path': 'legacy.html'}},
-            )
+        if include_documents:
+            match['document'] = source
+        return [match]
 
-            source['details'][source_name]['summary'] = 'Updated summary'
-            source['title'] = 'Updated title'
-            assert sync_newsletters()['tracked'] == 1
-            updated = get_newsletter_collection().find_one({'_id': first['_id']})
-            assert updated['source_fingerprint'] != first['source_fingerprint']
-            assert updated['title'] == 'Updated title'
-            assert 'html' not in updated
-            assert 'html_path' not in updated
+    monkeypatch.setattr('newsletter_store.query_profile_matches', fake_query)
+    monkeypatch.setattr('newsletter_store.validate_filters', lambda database, value: value or {})
 
-            local['subscriptions'].delete_one({'email': email})
-            assert sync_newsletters()['tracked'] == 0
-            assert get_newsletter_collection().find_one({'_id': first['_id']}) is None
-        finally:
-            get_local_mongo_client().drop_database('newsletter_sync_test_local')
+    items, count = filter_newsletter_feed(None, 'test@example.com', {})
+    assert count == 1
+    assert len(items) == 1
+    assert items[0]['title'] == 'Live Advisory'
+    assert items[0]['source_collection'] == 'avd'
+    assert items[0]['selection_id'] == 'avd-1'
+    assert items[0]['id'] == _record_id('avd', 'avd-1')
+    assert items[0]['generated_at'] == '2026-06-15T12:00:00+00:00'

@@ -1,12 +1,9 @@
-from datetime import datetime, timezone
-
 import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 from zoneinfo import ZoneInfo
 
 from app import app
 from mongo import get_web_database
-from newsletter_store import _record_id, get_newsletter_collection
 
 
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')
@@ -18,12 +15,10 @@ def client():
     app.config.update(TESTING=True)
     with app.app_context():
         get_web_database()['subscriptions'].delete_many({'email': TEST_EMAIL})
-        get_newsletter_collection().delete_many({'subscription_emails': TEST_EMAIL})
     client = app.test_client()
     yield client
     with app.app_context():
         get_web_database()['subscriptions'].delete_many({'email': TEST_EMAIL})
-        get_newsletter_collection().delete_many({'subscription_emails': TEST_EMAIL})
 
 
 def authenticate(client):
@@ -210,37 +205,13 @@ def test_subscription_rejects_invalid_severity_choice(client):
     assert response.get_json()['error'].startswith('Severity/status must be')
 
 
-def _seed_newsletter_feed():
-    now = datetime.now(timezone.utc)
-    get_newsletter_collection().insert_many([
-        {
-            '_id': _record_id('avd', 'avd-1'),
-            'source_collection': 'avd',
-            'selection_id': 'avd-1',
-            'subscription_emails': [TEST_EMAIL],
-            'title': 'Matched Advisory',
-            'template_key': 'generic',
-            'generated_at': now,
-            'html': '<p>matched</p>',
-        },
-        {
-            '_id': _record_id('hkcert', 'hk-1'),
-            'source_collection': 'hkcert',
-            'selection_id': 'hk-1',
-            'subscription_emails': [TEST_EMAIL],
-            'title': 'Other Advisory',
-            'template_key': 'hkcert',
-            'generated_at': now,
-            'html': '<p>other</p>',
-        },
-    ])
-
-
-def test_newsletter_feed_query_requires_authentication(client):
-    assert client.post(
-        f'/api/subscriptions/{TEST_EMAIL}/newsletters/query',
-        json={'filters': {}},
-    ).status_code == 401
+def _newsletter_match(document):
+    return {
+        'collection': 'avd_review',
+        'source_collection': 'avd',
+        'selection_id': document['_id'],
+        'document': document,
+    }
 
 
 def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypatch):
@@ -251,16 +222,21 @@ def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypa
         'newsletter_profile': {'enabled': True, 'filters': {'collections': ['avd_review']}},
     }).status_code == 201
 
-    with app.app_context():
-        _seed_newsletter_feed()
-
+    document = {
+        '_id': 'avd-1',
+        'title': 'Matched Advisory',
+        'scraped_at': '2026-06-15T12:00:00+00:00',
+        'details': {'avd': {'summary': 'Matched summary'}},
+    }
     monkeypatch.setattr(
         'newsletter_store.query_profile_matches',
-        lambda database, profile, limit=None: [{
-            'collection': 'avd_review',
-            'source_collection': 'avd',
-            'selection_id': 'avd-1',
-        }],
+        lambda database, profile, limit=None, include_documents=False: [
+            _newsletter_match(document) if include_documents else {
+                'collection': 'avd_review',
+                'source_collection': 'avd',
+                'selection_id': 'avd-1',
+            },
+        ],
     )
 
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
@@ -271,7 +247,16 @@ def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypa
     assert body['count'] == 1
     assert len(body['data']) == 1
     assert body['data'][0]['title'] == 'Matched Advisory'
+    assert body['data'][0]['source_collection'] == 'avd'
+    assert body['data'][0]['selection_id'] == 'avd-1'
     assert 'html' not in body['data'][0]
+
+
+def test_newsletter_feed_query_requires_authentication(client):
+    assert client.post(
+        f'/api/subscriptions/{TEST_EMAIL}/newsletters/query',
+        json={'filters': {}},
+    ).status_code == 401
 
 
 def test_newsletter_feed_query_returns_empty_when_no_matches(client, monkeypatch):
@@ -281,9 +266,6 @@ def test_newsletter_feed_query_returns_empty_when_no_matches(client, monkeypatch
         'team': 'Test',
         'newsletter_profile': {'enabled': True, 'filters': {}},
     }).status_code == 201
-
-    with app.app_context():
-        _seed_newsletter_feed()
 
     monkeypatch.setattr('newsletter_store.query_profile_matches', lambda *args, **kwargs: [])
 
@@ -303,6 +285,21 @@ def test_newsletter_feed_query_unknown_subscription_returns_404(client):
         json={'filters': {}},
     )
     assert response.status_code == 404
+
+
+def test_newsletter_feed_query_rejects_disabled_profile(client):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {'enabled': False, 'filters': {}},
+    }).status_code == 201
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
+        'filters': {},
+    })
+    assert response.status_code == 400
+    assert response.get_json()['error'] == 'Newsletter feed is disabled for this subscription.'
 
 
 def test_newsletter_feed_query_rejects_invalid_filters(client):

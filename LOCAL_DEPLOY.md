@@ -8,10 +8,12 @@ Python virtual environment. For Docker-based deployment, see [README.md](README.
 | Process | Command | Purpose |
 |---------|---------|---------|
 | Web UI | `app.py` or Gunicorn | Flask app on port **6767** |
-| Preprocessor | `company_ai_preprocessor.py` | RabbitMQ worker for Company AI background tasks |
-| Scheduler | `scheduler.py` | Scheduled reports and newsletter feed sync |
+| Preprocessor scanner | `company_ai_preprocessor.py --role scanner` | Scans Atlas/shared tasks and publishes intake queue work |
+| Preprocessor router | `company_ai_preprocessor.py --role router` | Distributes intake tasks to GPU or Company AI queues |
+| Company AI worker | `company_ai_preprocessor.py --role company-worker` | Consumes Company AI queue tasks |
+| Scheduler | `scheduler.py` | Scheduled report generation |
 
-All three processes read the same **`.env`** file (loaded automatically on startup).
+All processes read the same **`.env`** file (loaded automatically on startup).
 The web UI is usable for browsing newsletters and reviews with only MongoDB
 configured; AI reports and background preprocessing also need RabbitMQ and
 Company AI credentials.
@@ -128,6 +130,10 @@ not need to run `source .env` manually.
 names used by the review UI. Its path is controlled by `SOURCES_CONFIG`
 (default `config/sources.json`).
 
+`config/preprocessing_priorities.json` controls background AI preprocessing
+priority by collection and document field boosts. Override with
+`PREPROCESSING_PRIORITIES_CONFIG`.
+
 ### Multiline values
 
 Long prompts (`COMPANY_AI_START_PROMPT`, `COMPANY_AI_SUMMARY_PROMPT`,
@@ -177,19 +183,39 @@ require these files.
 
 ## 7. Run the application
 
-Open **three terminals** from the project root. Activate the venv in each (or use
+Open separate terminals from the project root. Activate the venv in each (or use
 the `.venv/bin/python` paths shown).
 
-### Terminal 1 — preprocessor worker
+### Terminal 1 — preprocessor scanner
 
 ```sh
-.venv/bin/python company_ai_preprocessor.py
+.venv/bin/python company_ai_preprocessor.py --role scanner
 ```
 
-Leave this running. It connects to RabbitMQ and Atlas to process AI background
-tasks.
+Leave this running. It scans Atlas and shared report tasks, then publishes
+pending work to `RABBITMQ_INTAKE_QUEUE`.
 
-### Terminal 2 — web server
+### Terminal 2 — preprocessor router
+
+```sh
+.venv/bin/python company_ai_preprocessor.py --role router
+```
+
+Leave this running. It consumes `RABBITMQ_INTAKE_QUEUE` and distributes work to
+`RABBITMQ_GPU_QUEUE` or `RABBITMQ_COMPANY_QUEUE`.
+
+### Terminal 3 — Company AI worker
+
+```sh
+.venv/bin/python company_ai_preprocessor.py --role company-worker
+```
+
+Leave this running when `COMPANY_AI_ENABLED=true`. It consumes
+`RABBITMQ_COMPANY_QUEUE` with `COMPANY_AI_PARALLEL_CHATS` workers. The legacy
+`.venv/bin/python company_ai_preprocessor.py` command still runs scanner,
+router, and Company AI worker together for local development.
+
+### Terminal 4 — web server
 
 **Development (Flask built-in server, HTTPS on 6767)**
 
@@ -207,13 +233,13 @@ Open: **https://localhost:6767**
 
 Open: **http://localhost:6767**
 
-### Terminal 3 — scheduler
+### Terminal 5 — scheduler
 
 ```sh
 .venv/bin/python scheduler.py
 ```
 
-Handles cron-based report generation and newsletter feed synchronization.
+Handles cron-based scheduled report generation. Newsletter feeds query Atlas live from the web app and do not require the scheduler.
 
 ## 8. Sign in
 

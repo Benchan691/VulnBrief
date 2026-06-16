@@ -79,9 +79,28 @@ are preserved across restarts; the scanner republishes pending or stale Atlas
 tasks. Queue purging is an explicit `company_ai_preprocessor.py --purge-queues`
 maintenance action.
 
+Background scans assign RabbitMQ priority per vulnerability using
+`config/preprocessing_priorities.json` (override with
+`PREPROCESSING_PRIORITIES_CONFIG`). Each collection can define a base priority;
+document fields such as `severity` and `status` can add boosts. The computed value
+is clamped to `RABBITMQ_MAX_PRIORITY`. Interactive report jobs still use
+`RABBITMQ_REPORT_PRIORITY`; failed background retries keep
+`RABBITMQ_BACKGROUND_PRIORITY`.
+
 ### Preprocessor logs
 
-`company_ai_preprocessor.py` writes operational lines to stdout (visible in Docker via `docker logs webserver-preprocessor`). On startup it logs configuration, Company AI login success (`mode=cached` or `mode=fresh`), RabbitMQ queue depths (`intake`, `gpu`, `company`), and worker counts. Each scan cycle logs `Scan complete published=N`. Each Company AI task logs session ready, room creation, `Stored AI JSON` after results are written to Atlas, completion, and `Company AI chat deleted` after room cleanup. Chat delete failures log as `ERROR Company AI chat delete failed`. Other errors and reconnects use the `ERROR` prefix.
+`company_ai_preprocessor.py` writes operational lines to stdout. In Docker, scan
+logs are visible in `webserver-preprocessor-scanner`, routing logs in
+`webserver-preprocessor-router`, and Company AI consumption logs in
+`webserver-company-ai-worker`. On startup each role logs configuration, RabbitMQ
+queue depths (`intake`, `gpu`, `company`), and worker counts. Company AI worker
+startup also logs login success (`mode=cached` or `mode=fresh`). Each scan cycle
+logs `Scan complete published=N`; this only means work was published to the
+intake queue, not that provider queues are drained. Each Company AI task logs
+session ready, room creation, `Stored AI JSON` after results are written to
+Atlas, completion, and `Company AI chat deleted` after room cleanup. Chat delete
+failures log as `ERROR Company AI chat delete failed`. Other errors and
+reconnects use the `ERROR` prefix.
 
 The password is RSA-encrypted for the signed `/api/sys/login` request, then
 `/api/sys/getBotToken` supplies the bot token. SmartBot requests use the bot
@@ -110,8 +129,8 @@ remove legacy stored HTML fields.
 
 ## Independent processes
 
-The web server, Company AI preprocessor/router, optional standalone GPU
-preprocessor, and scheduler are separate processes.
+The web server, preprocessing scanner, preprocessing router, Company AI worker,
+optional standalone GPU preprocessor, and scheduler are separate processes.
 Web processes use `bootstrap.configure_application()`. The isolated Company AI
 worker uses `bootstrap.configure_worker()` and requires Atlas but not local MongoDB.
 
@@ -129,20 +148,25 @@ RabbitMQ is hosted on CloudAMQP. Set `RABBITMQ_URL` in `.env` to your
 dashboard). Queue names and priorities use `RABBITMQ_*` variables in the same
 file. See [`.env.example`](.env.example) for the full list.
 
-Start the preprocessing worker and the web server in separate terminals:
+Start the preprocessing roles and the web server in separate terminals:
 
 ```sh
-.venv/bin/python company_ai_preprocessor.py
+.venv/bin/python company_ai_preprocessor.py --role scanner
+.venv/bin/python company_ai_preprocessor.py --role router
+.venv/bin/python company_ai_preprocessor.py --role company-worker
 .venv/bin/python scheduler.py
 .venv/bin/python app.py
 ```
+
+The legacy `.venv/bin/python company_ai_preprocessor.py` command still runs all
+preprocessing roles in one process for local development.
 
 Or start everything with Docker Compose (MongoDB must be reachable from containers,
 for example via `host.docker.internal` on Docker Desktop):
 
 ```sh
 docker compose up -d
-docker compose up -d preprocessor
+docker compose up -d preprocessor-scanner preprocessor-router company-ai-worker
 docker compose up -d web
 ```
 

@@ -4,7 +4,7 @@ from flask import abort, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from mongo import get_vulnerabilities_database, get_web_database
-from newsletter_store import filter_newsletter_feed, get_newsletter_collection
+from newsletter_store import filter_newsletter_feed
 from subscription_data import (
     next_cron_run,
     normalize_subscription,
@@ -141,11 +141,6 @@ def remove_subscription(email):
         result = get_collection().delete_one({'email': email})
         if not result.deleted_count:
             return jsonify({'error': 'Subscription not found.'}), 404
-        get_newsletter_collection().update_many(
-            {'subscription_emails': email},
-            {'$pull': {'subscription_emails': email}},
-        )
-        get_newsletter_collection().delete_many({'subscription_emails': {'$size': 0}})
         return jsonify({'success': True})
     except PyMongoError:
         return jsonify({'error': 'Unable to remove subscription.'}), 503
@@ -179,39 +174,18 @@ def run_subscription(email):
         return jsonify({'error': 'Unable to run subscription.'}), 503
 
 
-@subscription_blueprint.route('/api/subscriptions/<path:email>/newsletters')
-@login_required
-def get_newsletter_feed(email):
-    try:
-        if get_collection().find_one({'email': email}, {'_id': 1}) is None:
-            return jsonify({'error': 'Subscription not found.'}), 404
-        newsletter_collection = get_newsletter_collection()
-        query = {'subscription_emails': email}
-        newsletter_collection.update_many(
-            query,
-            {'$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
-        )
-        documents = newsletter_collection.find(
-            query,
-            {'html': 0, 'subscription_emails': 0, 'source_fingerprint': 0},
-        ).sort('generated_at', -1)
-        data = []
-        for document in documents:
-            document['id'] = str(document.pop('_id'))
-            data.append(document)
-        return jsonify({'data': data})
-    except PyMongoError:
-        return jsonify({'error': 'Unable to load newsletter feed.'}), 503
-
-
 @subscription_blueprint.route('/api/subscriptions/<path:email>/newsletters/query', methods=['POST'])
 @login_required
 def query_newsletter_feed(email):
     data = request.get_json(silent=True) or {}
     try:
-        if get_collection().find_one({'email': email}, {'_id': 1}) is None:
-            return jsonify({'error': 'Subscription not found.'}), 404
         database = get_vulnerabilities_database()
+        raw = get_collection().find_one({'email': email})
+        if raw is None:
+            return jsonify({'error': 'Subscription not found.'}), 404
+        subscription = normalize_subscription(database, raw)
+        if not subscription['newsletter_profile']['enabled']:
+            return jsonify({'error': 'Newsletter feed is disabled for this subscription.'}), 400
         filters = validate_filters(database, data.get('filters'))
         items, count = filter_newsletter_feed(database, email, filters)
         return jsonify({'data': items, 'count': count})

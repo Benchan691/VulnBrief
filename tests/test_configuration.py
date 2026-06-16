@@ -4,6 +4,12 @@ from bootstrap import _load_env
 from configuration import DEFAULT_JSON_ERROR_MESSAGE, load_application_config
 
 
+def _write_preprocessing_priorities(tmp_path, content='{}'):
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / 'preprocessing_priorities.json').write_text(content, encoding='utf-8')
+
+
 def _set_required_env(monkeypatch, **overrides):
     values = {
         'ATLAS_MONGO_URI': 'mongodb://example/',
@@ -57,6 +63,7 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         REPORT_PREVIEW_AFTER_EACH_ITEM='false',
     )
 
+    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://example/'
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
@@ -137,6 +144,7 @@ def test_separate_mongo_connections(tmp_path, monkeypatch):
         LOCAL_DATABASE='local_app',
     )
 
+    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb+srv://atlas.example/'
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
@@ -153,6 +161,7 @@ def test_mongo_connections_are_required(tmp_path, monkeypatch):
     monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
     monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
 
+    _write_preprocessing_priorities(tmp_path)
     with pytest.raises(ValueError, match='Missing required environment variable'):
         load_application_config(str(tmp_path))
 
@@ -162,6 +171,7 @@ def test_worker_configuration_requires_atlas_but_not_local_mongo(tmp_path, monke
     monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
     monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
 
+    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path), require_local=False)
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://atlas.example/'
     assert loaded['LOCAL_MONGO_URI'] == ''
@@ -188,6 +198,7 @@ def test_environment_list_and_report_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv('REPORT_MAX_STRING_CHARS', '5000')
     monkeypatch.setenv('REPORT_PREVIEW_AFTER_EACH_ITEM', 'false')
 
+    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path))
     assert loaded['COMPANY_AI_START_PROMPT'] == 'from-env'
     assert loaded['COMPANY_AI_PUBLIC_KEY_B64'] == 'env-key'
@@ -236,6 +247,7 @@ def test_load_dotenv_from_file(tmp_path, monkeypatch):
         encoding='utf-8',
     )
 
+    _write_preprocessing_priorities(tmp_path)
     _load_env(str(tmp_path))
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://dotenv-atlas/'

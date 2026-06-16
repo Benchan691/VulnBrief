@@ -24,23 +24,28 @@ flowchart LR
   Web --> CloudAMQP
   Scheduler["scheduler.py"] --> Atlas
   Scheduler --> LocalMongo
-  Preprocessor["Company AI preprocessor + router"] --> CloudAMQP
+  Scanner["preprocessor scanner"] --> CloudAMQP
+  Router["preprocessor router"] --> CloudAMQP
+  CompanyWorker["Company AI worker"] --> CloudAMQP
   GPU["GPU_server worker"] --> CloudAMQP
   GPU --> Atlas
-  Preprocessor --> Atlas
-  Preprocessor --> LocalMongo
-  Preprocessor --> CompanyAI["Company AI API"]
+  Scanner --> Atlas
+  CompanyWorker --> Atlas
+  CompanyWorker --> LocalMongo
+  CompanyWorker --> CompanyAI["Company AI API"]
   Web --> CompanyAI
 ```
 
 | Process | Role |
 |---------|------|
 | `web` | Flask UI, report job orchestration |
-| `preprocessor` | Isolated RabbitMQ worker/router; scans Atlas and generates item/final summaries |
+| `preprocessor-scanner` | Scans Atlas/shared tasks and publishes pending work to the intake queue |
+| `preprocessor-router` | Distributes intake queue work to GPU or Company AI provider queues |
+| `company-ai-worker` | Consumes the Company AI queue and generates item/final summaries |
 | `GPU_server` | Optional isolated local-model worker for source/shared AI tasks |
-| `scheduler` | Claims cron schedules, generates scheduled reports, and synchronizes newsletter feed metadata |
+| `scheduler` | Claims cron schedules and generates scheduled reports |
 | Atlas MongoDB | Vulnerability source data, review views, source AI cache, and shared AI tasks |
-| Local MongoDB | Auth, subscriptions, newsletter metadata, structured report jobs/results, schedules, and locks |
+| Local MongoDB | Auth, subscriptions, structured report jobs/results, schedules, and locks |
 | CloudAMQP | Priority-backed intake, GPU, and Company AI queues |
 
 ## Prerequisites
@@ -88,7 +93,7 @@ docker compose up -d --build
 ```
 
 - Web UI: http://localhost:6767
-- Services: `webserver-web`, `webserver-preprocessor`, `webserver-scheduler`, `webserver-local-mongo`
+- Services: `webserver-web`, `webserver-preprocessor-scanner`, `webserver-preprocessor-router`, `webserver-company-ai-worker`, `webserver-scheduler`, `webserver-local-mongo`
 
 ## Quick start (local Python)
 
@@ -98,15 +103,24 @@ See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full virtual-environment setup (M
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 
-# Terminal 1 — preprocessor worker
-.venv/bin/python company_ai_preprocessor.py
+# Terminal 1 — scan database and publish intake tasks
+.venv/bin/python company_ai_preprocessor.py --role scanner
 
-# Terminal 2 — web server
+# Terminal 2 — route intake tasks to provider queues
+.venv/bin/python company_ai_preprocessor.py --role router
+
+# Terminal 3 — consume Company AI provider queue
+.venv/bin/python company_ai_preprocessor.py --role company-worker
+
+# Terminal 4 — web server
 .venv/bin/python app.py
 
-# Terminal 3 — report/newsletter scheduler
+# Terminal 5 — report scheduler
 .venv/bin/python scheduler.py
 ```
+
+For local development, `.venv/bin/python company_ai_preprocessor.py` still runs
+the backward-compatible all-in-one scanner/router/Company AI worker.
 
 Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`).
 
@@ -121,10 +135,10 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 | Path | Description |
 |------|-------------|
 | `app.py` | Flask application entry |
-| `company_ai_preprocessor.py` | RabbitMQ worker |
+| `company_ai_preprocessor.py` | RabbitMQ scanner, router, and Company AI worker entrypoint |
 | `company_ai_auth_cache.py` | Process-wide Company AI token cache |
-| `scheduler.py` | Scheduled report and newsletter synchronization worker |
-| `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and feed metadata synchronization |
+| `scheduler.py` | Scheduled report generation worker |
+| `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and live feed queries |
 | `report_harness.py` | Report generation pipeline |
 | `routes/` | HTTP blueprints (auth, newsletter, subscription, review, report) |
 | `templates/` | Jinja HTML templates |

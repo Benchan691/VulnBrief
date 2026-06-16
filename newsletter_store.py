@@ -1,15 +1,12 @@
 import hashlib
-from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import bleach
-from bson import json_util
 from flask import render_template
 from markupsafe import Markup
 
-from mongo import get_vulnerabilities_database, get_web_database
 from review_data import resolve_vulnerability_document
-from subscription_data import normalize_subscription, query_profile_matches, validate_filters
+from subscription_data import query_profile_matches, validate_filters
 
 
 ALLOWED_TAGS = {
@@ -55,10 +52,6 @@ CHINESE_LABELS = {
     'default_recommendation': '请参考供应商指南并应用可用修复。',
     'footer': '如有任何疑问，请联系安全运营中心。谢谢。',
 }
-
-
-def get_newsletter_collection():
-    return get_web_database()['generated_newsletters']
 
 
 def _details(document, source_collection=None):
@@ -505,13 +498,6 @@ def render_newsletter(document, source_collection):
     return render_template(template, newsletter=newsletter), newsletter
 
 
-def _fingerprint(document):
-    document = dict(document)
-    document.pop('html_json', None)
-    payload = json_util.dumps(document, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
-
-
 def _record_id(source_collection, selection_id):
     value = f'{source_collection}\0{selection_id}'.encode('utf-8')
     return hashlib.sha256(value).hexdigest()
@@ -522,76 +508,35 @@ DEFAULT_FEED_LIMIT = 100
 
 def filter_newsletter_feed(database, email, filters, limit=DEFAULT_FEED_LIMIT, offset=0):
     validated = validate_filters(database, filters)
-    matches = query_profile_matches(database, {'filters': validated}, limit=None)
-    record_ids = [_record_id(match['source_collection'], match['selection_id']) for match in matches]
-    if not record_ids:
-        return [], 0
-
-    query = {'_id': {'$in': record_ids}, 'subscription_emails': email}
-    collection = get_newsletter_collection()
-    collection.update_many(
-        query,
-        {'$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
+    matches = query_profile_matches(
+        database,
+        {'filters': validated},
+        limit=None,
+        include_documents=True,
     )
-    total = collection.count_documents(query)
-    cursor = collection.find(
-        query,
-        {'html': 0, 'subscription_emails': 0, 'source_fingerprint': 0},
-    ).sort('generated_at', -1).skip(offset)
-    if limit is not None:
-        cursor = cursor.limit(limit)
-
-    data = []
-    for document in cursor:
-        document['id'] = str(document.pop('_id'))
-        data.append(document)
-    return data, total
-
-
-def sync_newsletters():
-    local = get_web_database()
-    atlas = get_vulnerabilities_database()
-    tracked = {}
-    errors = []
-    for raw_subscription in local['subscriptions'].find({}):
-        try:
-            subscription = normalize_subscription(atlas, raw_subscription)
-            profile = subscription['newsletter_profile']
-            if not profile['enabled']:
-                continue
-            for match in query_profile_matches(atlas, profile, limit=None):
-                key = (match['source_collection'], match['selection_id'])
-                tracked.setdefault(key, set()).add(subscription['email'])
-        except (ValueError, TypeError) as exc:
-            errors.append({'email': raw_subscription.get('email'), 'error': str(exc)})
-
-    active_ids = []
-    now = datetime.now(timezone.utc)
-    collection = get_newsletter_collection()
-    for (source_collection, selection_id), emails in tracked.items():
-        document = resolve_vulnerability_document(atlas, source_collection, selection_id)
+    items = []
+    for match in matches:
+        source_collection = match['source_collection']
+        selection_id = match['selection_id']
+        document = match.get('document')
+        if document is None:
+            document = resolve_vulnerability_document(database, source_collection, selection_id)
         if document is None:
             continue
-        record_id = _record_id(source_collection, selection_id)
-        active_ids.append(record_id)
-        fingerprint = _fingerprint(document)
-        existing = collection.find_one({'_id': record_id}, {'source_fingerprint': 1})
         normalized = normalize_newsletter(document, source_collection)
-        update = {
+        generated_at = document.get('scraped_at') or document.get('disclosure_date') or ''
+        items.append({
+            'id': _record_id(source_collection, selection_id),
             'source_collection': source_collection,
             'selection_id': selection_id,
-            'subscription_emails': sorted(emails),
-            'source_fingerprint': fingerprint,
-            'template_key': template_key_for_source(source_collection),
             'title': normalized['title'],
-            'updated_at': now,
-        }
-        if not existing or existing.get('source_fingerprint') != fingerprint:
-            update['generated_at'] = now
-        collection.update_one(
-            {'_id': record_id},
-            {'$set': update, '$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
-            upsert=True,
-        )
-    collection.delete_many({'_id': {'$nin': active_ids}})
-    return {'tracked': len(active_ids), 'errors': errors}
+            'template_key': normalized['template_key'],
+            'generated_at': generated_at,
+        })
+    items.sort(key=lambda item: (item['generated_at'], item['id']), reverse=True)
+    total = len(items)
+    if offset:
+        items = items[offset:]
+    if limit is not None:
+        items = items[:limit]
+    return items, total

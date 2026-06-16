@@ -13,6 +13,7 @@ from company_ai_preprocessor import (
     _now,
     _process_company_task,
     _queue_status,
+    _route_loop,
     _route_task,
     _routed_queue_declare,
     _release_processing_task,
@@ -22,6 +23,9 @@ from company_ai_preprocessor import (
     enqueue_final_summary,
     enqueue_report_items,
     enqueue_summary,
+    main,
+    run_worker,
+    scan_unprocessed,
     store_completed_summary,
     summary_content_hash,
     wait_for_summaries,
@@ -778,6 +782,114 @@ def test_router_never_sends_to_disabled_providers(monkeypatch):
     assert routed == [config['RABBITMQ_COMPANY_QUEUE']]
 
 
+def test_router_requeues_when_no_provider_is_enabled(monkeypatch):
+    import company_ai_preprocessor as preprocessor
+
+    acks = []
+    nacks = []
+
+    class Method:
+        delivery_tag = 'tag-1'
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return type('Status', (), {'method': type('Method', (), {'message_count': 1})()})()
+
+        def confirm_delivery(self):
+            return None
+
+        def basic_qos(self, prefetch_count):
+            return None
+
+        def consume(self, queue, inactivity_timeout):
+            yield (
+                Method(),
+                type('Properties', (), {'priority': 4})(),
+                preprocessor.json_util.dumps({'storage': 'source', 'source_id': 'id'}).encode('utf-8'),
+            )
+
+        def basic_ack(self, delivery_tag):
+            acks.append(delivery_tag)
+
+        def basic_nack(self, delivery_tag, requeue):
+            nacks.append((delivery_tag, requeue))
+
+    class FakeConnection:
+        is_open = True
+
+        def channel(self):
+            return FakeChannel()
+
+        def close(self):
+            return None
+
+    def stop_after_requeue(seconds):
+        preprocessor.STOP_EVENT.set()
+        return True
+
+    preprocessor.STOP_EVENT.clear()
+    monkeypatch.setattr(
+        'company_ai_preprocessor.pika.BlockingConnection',
+        lambda parameters: FakeConnection(),
+    )
+    monkeypatch.setattr('company_ai_preprocessor._route_task', lambda *args: None)
+    monkeypatch.setattr(preprocessor.STOP_EVENT, 'wait', stop_after_requeue)
+    try:
+        _route_loop({**dict(app.config), 'GPU_ENABLED': False, 'COMPANY_AI_ENABLED': False})
+    finally:
+        preprocessor.STOP_EVENT.clear()
+
+    assert acks == []
+    assert nacks == [('tag-1', True)]
+
+
+def test_role_runners_start_only_requested_threads(monkeypatch):
+    import company_ai_preprocessor as preprocessor
+
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args=(), daemon=None):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+    def capture_threads(threads):
+        started[:] = [(thread.target, thread.args) for thread in threads]
+
+    monkeypatch.setattr(preprocessor, 'ensure_cache_indexes', lambda: None)
+    monkeypatch.setattr(preprocessor, '_reset_all_processing', lambda config: None)
+    monkeypatch.setattr(preprocessor, '_startup_worker', lambda config, role='all': None)
+    monkeypatch.setattr(preprocessor, '_run_threads', capture_threads)
+    monkeypatch.setattr(preprocessor.threading, 'Thread', FakeThread)
+
+    config = {**dict(app.config), 'COMPANY_AI_ENABLED': True, 'GPU_ENABLED': True, 'COMPANY_AI_PARALLEL_CHATS': 2}
+
+    run_worker(config, 'scanner')
+    assert started == [(preprocessor._scan_loop, (config,))]
+
+    run_worker(config, 'router')
+    assert started == [(preprocessor._route_loop, (config,))]
+
+    run_worker(config, 'company-worker')
+    assert started == [
+        (preprocessor._consume, (config, 0)),
+        (preprocessor._consume, (config, 1)),
+    ]
+
+
+def test_main_passes_selected_role(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr('company_ai_preprocessor.configure_worker', lambda base_dir: {'config': True})
+    monkeypatch.setattr('company_ai_preprocessor.run_worker', lambda config, role='all': calls.append((config, role)))
+    monkeypatch.setattr('sys.argv', ['company_ai_preprocessor.py', '--role', 'router'])
+
+    main()
+
+    assert calls == [({'config': True}, 'router')]
+
+
 def test_clear_queues_purges_intake_gpu_and_company(monkeypatch):
     purged = []
 
@@ -894,3 +1006,121 @@ def test_queue_status_skips_gpu_queue_when_gpu_disabled(monkeypatch):
     counts = _queue_status(config)
     assert counts[config['RABBITMQ_GPU_QUEUE']] == 0
     assert config['RABBITMQ_GPU_QUEUE'] not in declarations
+
+
+def test_scan_unprocessed_uses_collection_and_field_priority(monkeypatch):
+    published = []
+
+    class FakeConnection:
+        is_open = True
+
+        def channel(self):
+            return FakeChannel()
+
+        def close(self):
+            return None
+
+    class FakeChannel:
+        def confirm_delivery(self):
+            return None
+
+    class FakeCollection:
+        def __init__(self, documents):
+            self._documents = documents
+
+        def find(self, query, projection):
+            return list(self._documents)
+
+    class FakeDatabase:
+        def __init__(self):
+            self._collections = {
+                TEST_COLLECTION: FakeCollection([
+                    {
+                        '_id': 'low',
+                        'details': {'source': {'description': 'low'}},
+                    },
+                    {
+                        '_id': 'high',
+                        'severity': 'CRITICAL',
+                        'details': {'source': {'description': 'high'}},
+                    },
+                ]),
+                'cve': FakeCollection([
+                    {
+                        '_id': 'cve-item',
+                        'severity': 'HIGH',
+                        'details': {'source': {'description': 'cve'}},
+                    },
+                ]),
+            }
+
+        def list_collections(self, filter=None):
+            return [
+                {'name': name, 'type': 'collection'}
+                for name in self._collections
+            ]
+
+        def __getitem__(self, name):
+            return self._collections[name]
+
+    def fake_enqueue_summary(
+        details,
+        language,
+        config,
+        priority,
+        source_collection=None,
+        source_id=None,
+        channel=None,
+    ):
+        published.append(priority)
+        return (
+            {
+                'storage': 'source',
+                'task_type': 'item',
+                'source_collection': source_collection,
+                'source_id': source_id,
+                'language': language,
+                'content_hash': 'hash',
+            },
+            True,
+        )
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor.pika.BlockingConnection',
+        lambda parameters: FakeConnection(),
+    )
+    monkeypatch.setattr('company_ai_preprocessor._queue_declare', lambda channel, config: None)
+    monkeypatch.setattr('company_ai_preprocessor.enqueue_summary', fake_enqueue_summary)
+    monkeypatch.setattr(
+        'company_ai_preprocessor.ensure_cache_indexes',
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor.get_vulnerabilities_database',
+        lambda: FakeDatabase(),
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor._shared_task_collection',
+        lambda: type('Tasks', (), {'find': lambda self, query: []})(),
+    )
+
+    with app.app_context():
+        config = {
+            **dict(app.config),
+            'AI_TASK_COLLECTION': 'ai_generation_tasks',
+            'PREPROCESSING_PRIORITIES': {
+                'default': 1,
+                'collections': {'cve': 7},
+                'field_boosts': {
+                    'severity': {'critical': 3, 'high': 2},
+                },
+            },
+        }
+        try:
+            queued = scan_unprocessed(config)
+            assert queued == 9
+            assert 1 in published
+            assert 4 in published
+            assert 9 in published
+        finally:
+            pass

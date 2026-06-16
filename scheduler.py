@@ -7,7 +7,6 @@ from pymongo import ReturnDocument
 
 from app import create_app
 from mongo import get_vulnerabilities_database, get_web_database
-from newsletter_store import sync_newsletters
 from report_harness import create_job, run_job
 from subscription_data import next_cron_run, normalize_subscription, query_profile_matches
 
@@ -17,32 +16,6 @@ LEASE_SECONDS = 3600
 
 def _subscriptions():
     return get_web_database()['subscriptions']
-
-
-def _locks():
-    return get_web_database()['scheduler_locks']
-
-
-def _claim_lock(name, owner, seconds):
-    now = datetime.now(timezone.utc)
-    lock = _locks().find_one_and_update(
-        {
-            '_id': name,
-            '$or': [
-                {'expires_at': {'$lte': now}},
-                {'owner': owner},
-                {'expires_at': {'$exists': False}},
-            ],
-        },
-        {'$set': {'owner': owner, 'expires_at': now + timedelta(seconds=seconds)}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    return lock and lock.get('owner') == owner
-
-
-def _release_lock(name, owner):
-    _locks().delete_one({'_id': name, 'owner': owner})
 
 
 def initialize_schedules():
@@ -128,11 +101,6 @@ def run_once(app):
     owner = str(uuid.uuid4())
     with app.app_context():
         initialize_schedules()
-        if _claim_lock('newsletter_sync', owner, LEASE_SECONDS):
-            try:
-                sync_newsletters()
-            finally:
-                _release_lock('newsletter_sync', owner)
         while run_due_report(app, owner):
             pass
 
@@ -148,6 +116,6 @@ def run_scheduler(app):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run report schedules and newsletter synchronization.')
+    parser = argparse.ArgumentParser(description='Run scheduled report generation.')
     parser.parse_args()
     run_scheduler(create_app())

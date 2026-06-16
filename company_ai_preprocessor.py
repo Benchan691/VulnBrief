@@ -15,6 +15,11 @@ from pymongo.errors import PyMongoError
 from bootstrap import BASE_DIR, configure_worker
 from mongo import get_config, get_vulnerabilities_database
 from preprocessor_log import log_error, log_info
+from preprocessing_priorities import (
+    resolve_preprocessing_priority,
+    scan_projection,
+    sorted_scan_collections,
+)
 from report_harness import (
     CompanyAIProvider,
     CompanyAILoginLimitExceeded,
@@ -26,6 +31,8 @@ from report_harness import (
 
 
 STOP_EVENT = threading.Event()
+NO_PROVIDER_LOG_INTERVAL_SECONDS = 30
+_LAST_NO_PROVIDER_LOG_AT = 0
 
 
 def _now():
@@ -135,23 +142,36 @@ def _queue_status(config):
         connection.close()
 
 
-def _startup_worker(config):
-    scan_count = router_count = 0
-    company_count = 0
-    if config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']:
-        scan_count = router_count = 1
-    if config['COMPANY_AI_ENABLED']:
-        company_count = config['COMPANY_AI_PARALLEL_CHATS']
+def _role_worker_counts(config, role):
+    scan_count = 1 if role in {'all', 'scanner'} and (
+        role == 'scanner' or config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']
+    ) else 0
+    router_count = 1 if role in {'all', 'router'} and (
+        role == 'router' or config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']
+    ) else 0
+    company_count = (
+        config['COMPANY_AI_PARALLEL_CHATS']
+        if role in {'all', 'company-worker'} and config['COMPANY_AI_ENABLED']
+        else 0
+    )
+    return scan_count, router_count, company_count
+
+
+def _startup_worker(config, role='all'):
+    scan_count, router_count, company_count = _role_worker_counts(config, role)
 
     log_info(
         'Starting Company AI preprocessor',
+        role=role,
         parallel_chats=config['COMPANY_AI_PARALLEL_CHATS'],
         scan_interval=f"{config['COMPANY_AI_SCAN_INTERVAL_SECONDS']}s",
         company_ai=config['COMPANY_AI_ENABLED'],
         gpu=config['GPU_ENABLED'],
+        priority_collections=len((config.get('PREPROCESSING_PRIORITIES') or {}).get('collections', {})),
+        priority_boost_fields=list((config.get('PREPROCESSING_PRIORITIES') or {}).get('field_boosts', {})),
     )
 
-    if config['COMPANY_AI_ENABLED']:
+    if company_count:
         provider = CompanyAIProvider(config)
         session_mode = provider.ensure_session()
         log_info(
@@ -324,23 +344,28 @@ def scan_unprocessed(config):
     ensure_cache_indexes()
     database = get_vulnerabilities_database()
     queued = 0
+    projection = scan_projection(config)
+    collection_names = []
+    for metadata in database.list_collections(filter={'type': 'collection'}):
+        collection_name = metadata['name']
+        if collection_name.startswith('system.') or collection_name == config['AI_TASK_COLLECTION']:
+            continue
+        collection_names.append(collection_name)
     connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
     try:
         channel = _publisher_channel(connection, config)
-        for metadata in database.list_collections(filter={'type': 'collection'}):
-            collection_name = metadata['name']
-            if collection_name.startswith('system.') or collection_name == config['AI_TASK_COLLECTION']:
-                continue
-            for document in database[collection_name].find({}, {'details': 1}):
+        for collection_name in sorted_scan_collections(collection_names, config):
+            for document in database[collection_name].find({}, projection):
                 details = document.get('details')
                 if not isinstance(details, dict):
                     continue
+                priority = resolve_preprocessing_priority(collection_name, document, config)
                 for language in REPORT_LANGUAGES:
                     _, published = enqueue_summary(
                         details,
                         language,
                         config,
-                        config['RABBITMQ_BACKGROUND_PRIORITY'],
+                        priority,
                         collection_name,
                         document['_id'],
                         channel,
@@ -905,9 +930,6 @@ def _consume(config, worker_number):
 
 def _scan_loop(config):
     while not STOP_EVENT.is_set():
-        if not config['COMPANY_AI_ENABLED'] and not config['GPU_ENABLED']:
-            STOP_EVENT.wait(config['COMPANY_AI_SCAN_INTERVAL_SECONDS'])
-            continue
         try:
             queued = scan_unprocessed(config)
             log_info('Scan complete', published=queued)
@@ -934,6 +956,18 @@ def _route_task(task, priority, config, channel):
         return None
     _publish_to_queue(task, priority, config, queue_name, channel)
     return queue_name
+
+
+def _nack_unroutable_task(channel, method, task):
+    global _LAST_NO_PROVIDER_LOG_AT
+    now = time.monotonic()
+    if now - _LAST_NO_PROVIDER_LOG_AT >= NO_PROVIDER_LOG_INTERVAL_SECONDS:
+        log_error(
+            'No preprocessing provider enabled; leaving intake task queued',
+            target=_task_target(task),
+        )
+        _LAST_NO_PROVIDER_LOG_AT = now
+    channel.basic_nack(method.delivery_tag, requeue=True)
 
 
 def _route_loop(config):
@@ -963,7 +997,11 @@ def _route_loop(config):
                 priority = getattr(properties, 'priority', None)
                 if priority is None:
                     priority = config['RABBITMQ_BACKGROUND_PRIORITY']
-                _route_task(task, priority, config, channel)
+                queue_name = _route_task(task, priority, config, channel)
+                if queue_name is None:
+                    _nack_unroutable_task(channel, method, task)
+                    STOP_EVENT.wait(5)
+                    continue
                 channel.basic_ack(method.delivery_tag)
         except Exception as exc:
             log_error('Preprocessing router reconnecting after error', error=str(exc))
@@ -973,25 +1011,7 @@ def _route_loop(config):
                 connection.close()
 
 
-def run_worker(config):
-    ensure_cache_indexes()
-    STOP_EVENT.clear()
-    _reset_all_processing(config)
-    threads = []
-    if config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']:
-        threads.extend([
-            threading.Thread(target=_scan_loop, args=(config,), daemon=True),
-            threading.Thread(target=_route_loop, args=(config,), daemon=True),
-        ])
-    if config['COMPANY_AI_ENABLED']:
-        threads.extend(
-            threading.Thread(target=_consume, args=(config, number), daemon=True)
-            for number in range(config['COMPANY_AI_PARALLEL_CHATS'])
-        )
-    if not threads:
-        log_info('All preprocessing providers are disabled; waiting for shutdown')
-    else:
-        _startup_worker(config)
+def _run_threads(threads):
     try:
         for thread in threads:
             thread.start()
@@ -1000,7 +1020,41 @@ def run_worker(config):
         for thread in threads:
             thread.join()
     finally:
+        pass
+
+
+def run_worker(config, role='all'):
+    STOP_EVENT.clear()
+    threads = []
+    if role not in {'all', 'scanner', 'router', 'company-worker'}:
+        raise ValueError(f'Unsupported preprocessor role: {role}')
+    if role != 'router':
+        ensure_cache_indexes()
         _reset_all_processing(config)
+    if role == 'scanner':
+        threads.append(threading.Thread(target=_scan_loop, args=(config,), daemon=True))
+    elif role == 'router':
+        threads.append(threading.Thread(target=_route_loop, args=(config,), daemon=True))
+    elif role == 'all':
+        if config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']:
+            threads.extend([
+                threading.Thread(target=_scan_loop, args=(config,), daemon=True),
+                threading.Thread(target=_route_loop, args=(config,), daemon=True),
+            ])
+    if role in {'all', 'company-worker'} and config['COMPANY_AI_ENABLED']:
+        threads.extend([
+            threading.Thread(target=_consume, args=(config, number), daemon=True)
+            for number in range(config['COMPANY_AI_PARALLEL_CHATS'])
+        ])
+    if not threads:
+        log_info('No workers enabled for preprocessor role; waiting for shutdown', role=role)
+    else:
+        _startup_worker(config, role)
+    try:
+        _run_threads(threads)
+    finally:
+        if role != 'router':
+            _reset_all_processing(config)
 
 
 def main():
@@ -1010,6 +1064,12 @@ def main():
         action='store_true',
         help='Purge intake, GPU, and Company AI queues, then exit.',
     )
+    parser.add_argument(
+        '--role',
+        choices=['all', 'scanner', 'router', 'company-worker'],
+        default='all',
+        help='Run all workers, or only the scanner, intake router, or Company AI queue worker.',
+    )
     args = parser.parse_args()
     signal.signal(signal.SIGINT, lambda *_: STOP_EVENT.set())
     signal.signal(signal.SIGTERM, lambda *_: STOP_EVENT.set())
@@ -1017,7 +1077,7 @@ def main():
     if args.purge_queues:
         _clear_queues(config)
         return
-    run_worker(config)
+    run_worker(config, args.role)
 
 
 if __name__ == '__main__':
