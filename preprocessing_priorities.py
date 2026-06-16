@@ -116,6 +116,12 @@ def resolve_preprocessing_priority(collection_name, document, config):
     return max(0, min(priority, config['RABBITMQ_MAX_PRIORITY']))
 
 
+def review_document_sort_key(collection_name, document, config):
+    priority = resolve_preprocessing_priority(collection_name, document, config)
+    scraped_at = document.get('scraped_at') or ''
+    return (priority, scraped_at, str(document.get('_id', '')))
+
+
 def scan_projection(config):
     projection = {'details': 1}
     priorities = config.get('PREPROCESSING_PRIORITIES') or {}

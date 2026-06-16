@@ -87,11 +87,42 @@ def _env_list(name, default):
     return [item.strip() for item in value.split(',') if item.strip()]
 
 
+def load_inference_base_urls():
+    explicit = os.environ.get('GPU_INFERENCE_BASE_URLS', '').strip()
+    if explicit:
+        return [url.strip().rstrip('/') for url in explicit.split(',') if url.strip()]
+
+    instance_count = _env_int('GPU_INSTANCE_COUNT', 1)
+    if instance_count <= 1:
+        return [
+            os.environ.get(
+                'GPU_INFERENCE_BASE_URL',
+                'http://llama-server:8080/v1',
+            ).rstrip('/'),
+        ]
+    return [f'http://llama-server-{index}:8080/v1' for index in range(instance_count)]
+
+
+def inference_base_url_for_worker(config, worker_number):
+    urls = config['GPU_INFERENCE_BASE_URLS']
+    return urls[worker_number % len(urls)]
+
+
 def load_config():
     required = ['ATLAS_MONGO_URI', 'RABBITMQ_URL']
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
         raise ValueError(f'Missing required environment variables: {", ".join(missing)}')
+
+    inference_urls = load_inference_base_urls()
+    concurrency_default = len(inference_urls) if len(inference_urls) > 1 else 1
+    concurrency_raw = os.environ.get('GPU_WORKER_CONCURRENCY')
+    worker_concurrency = (
+        int(concurrency_raw)
+        if concurrency_raw is not None and concurrency_raw != ''
+        else concurrency_default
+    )
+
     return {
         'ATLAS_MONGO_URI': os.environ['ATLAS_MONGO_URI'],
         'VULNERABILITIES_DATABASE': os.environ.get(
@@ -110,12 +141,11 @@ def load_config():
         'RABBITMQ_BACKGROUND_PRIORITY': _env_int('RABBITMQ_BACKGROUND_PRIORITY', 1),
         'GPU_ENABLED': _env_bool('GPU_ENABLED', True),
         'COMPANY_AI_ENABLED': _env_bool('COMPANY_AI_ENABLED', True),
-        'GPU_WORKER_CONCURRENCY': _env_int('GPU_WORKER_CONCURRENCY', 1),
+        'GPU_INSTANCE_COUNT': len(inference_urls),
+        'GPU_INFERENCE_BASE_URLS': inference_urls,
+        'GPU_WORKER_CONCURRENCY': worker_concurrency,
         'GPU_MAX_TASK_ATTEMPTS': _env_int('GPU_MAX_TASK_ATTEMPTS', 2),
-        'GPU_INFERENCE_BASE_URL': os.environ.get(
-            'GPU_INFERENCE_BASE_URL',
-            'http://llama-server:8080/v1',
-        ).rstrip('/'),
+        'GPU_INFERENCE_BASE_URL': inference_urls[0],
         'GPU_MODEL_NAME': os.environ.get('GPU_MODEL_NAME', 'qwen-local'),
         'GPU_REQUEST_TIMEOUT_SECONDS': _env_int('GPU_REQUEST_TIMEOUT_SECONDS', 300),
         'GPU_JSON_RETRIES': _env_int('GPU_JSON_RETRIES', 2),
@@ -281,8 +311,8 @@ def publish(channel, queue_name, task, priority, config):
 
 
 class LocalGPUProvider:
-    def __init__(self, config):
-        self.base_url = config['GPU_INFERENCE_BASE_URL']
+    def __init__(self, config, base_url=None):
+        self.base_url = (base_url or config['GPU_INFERENCE_BASE_URL']).rstrip('/')
         self.model = config['GPU_MODEL_NAME']
         self.timeout = config['GPU_REQUEST_TIMEOUT_SECONDS']
         self.retries = config['GPU_JSON_RETRIES']
@@ -563,9 +593,15 @@ def reset_gpu_processing(database, config):
 
 def consume(config, worker_number):
     owner = f'gpu:{uuid.uuid4()}:{worker_number}'
+    base_url = inference_base_url_for_worker(config, worker_number)
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
-    provider = LocalGPUProvider(config)
+    provider = LocalGPUProvider(config, base_url=base_url)
+    print(
+        f'GPU worker {worker_number} bound to {base_url} '
+        f'({worker_number + 1}/{config["GPU_WORKER_CONCURRENCY"]})',
+        flush=True,
+    )
     while not STOP_EVENT.is_set():
         connection = None
         try:
@@ -607,6 +643,13 @@ def main():
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
     reset_gpu_processing(database, config)
+    print(
+        'GPU worker configuration',
+        f'instances={config["GPU_INSTANCE_COUNT"]}',
+        f'concurrency={config["GPU_WORKER_CONCURRENCY"]}',
+        f'urls={",".join(config["GPU_INFERENCE_BASE_URLS"])}',
+        flush=True,
+    )
     if not config['GPU_ENABLED']:
         print('GPU processing is disabled; waiting for shutdown.', flush=True)
         try:

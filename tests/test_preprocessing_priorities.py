@@ -6,6 +6,7 @@ from preprocessing_priorities import (
     document_field_value,
     load_preprocessing_priorities,
     resolve_preprocessing_priority,
+    review_document_sort_key,
     scan_projection,
     sorted_scan_collections,
 )
@@ -125,3 +126,52 @@ def test_sorted_scan_collections_orders_by_base_priority():
     names = ['cnnvd', 'zeroday', 'cve', 'avd']
 
     assert sorted_scan_collections(names, config) == ['zeroday', 'cve', 'cnnvd', 'avd']
+
+
+def test_review_document_sort_key_prefers_higher_collection_priority():
+    config = _base_config()
+    newer_low = {
+        '_id': 'cnnvd:1',
+        'scraped_at': '2026-06-15T00:00:00+00:00',
+    }
+    older_high = {
+        '_id': 'zeroday:1',
+        'scraped_at': '2026-06-01T00:00:00+00:00',
+    }
+
+    assert review_document_sort_key('zeroday', older_high, config) > review_document_sort_key(
+        'cnnvd',
+        newer_low,
+        config,
+    )
+
+
+def test_review_document_sort_key_falls_back_to_scraped_at():
+    config = _base_config()
+    newer = {'_id': 'a:2', 'scraped_at': '2026-06-10T00:00:00+00:00'}
+    older = {'_id': 'a:1', 'scraped_at': '2026-06-01T00:00:00+00:00'}
+
+    assert review_document_sort_key('cnnvd', newer, config) > review_document_sort_key(
+        'cnnvd',
+        older,
+        config,
+    )
+
+
+def test_review_document_sort_key_applies_field_boosts():
+    config = _base_config()
+    boosted = {
+        '_id': 'cve:1',
+        'scraped_at': '2026-06-01T00:00:00+00:00',
+        'severity': 'critical',
+    }
+    unboosted = {
+        '_id': 'cve:2',
+        'scraped_at': '2026-06-15T00:00:00+00:00',
+    }
+
+    assert review_document_sort_key('cve', boosted, config) > review_document_sort_key(
+        'cve',
+        unboosted,
+        config,
+    )

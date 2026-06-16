@@ -6,6 +6,11 @@ from flask import Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from mongo import get_vulnerabilities_database
+from preprocessing_priorities import (
+    collection_base_priority,
+    review_document_sort_key,
+    scan_projection,
+)
 from review_data import (
     MAX_EXPORT_SELECTIONS,
     canonical_selection_id,
@@ -89,6 +94,18 @@ def _source_projection(view):
     return [first_stage, *pipeline[1:]]
 
 
+def _search_projection(view, config):
+    pipeline = _source_projection(view)
+    first_stage = dict(pipeline[0])
+    projection = dict(first_stage['$project'])
+    for field, value in scan_projection(config).items():
+        if field not in projection:
+            projection[field] = value
+    first_stage['$project'] = projection
+    pipeline[0] = first_stage
+    return pipeline
+
+
 def _query_review_documents(database, view, mongo_filter, page, page_size):
     return _query_review_slice(
         database,
@@ -99,9 +116,22 @@ def _query_review_documents(database, view, mongo_filter, page, page_size):
     )
 
 
-def _review_sort_key(document):
-    scraped_at = document.get('scraped_at') or ''
-    return (scraped_at, str(document.get('_id', '')))
+def _query_review_matches(database, view, mongo_filter, config):
+    source_name = view['options']['viewOn']
+    pipeline = _search_projection(view, config)
+    pipeline.extend([
+        {'$match': mongo_filter},
+        {
+            '$facet': {
+                'documents': [],
+                'metadata': [{'$count': 'total'}],
+            },
+        },
+    ])
+    result = next(database[source_name].aggregate(pipeline), None) or {}
+    total = (result.get('metadata') or [{}])[0].get('total', 0)
+    documents = result.get('documents', [])
+    return total, documents
 
 
 def _query_review_slice(database, view, mongo_filter, skip, limit):
@@ -190,30 +220,30 @@ def search_review_documents():
                 return jsonify({'error': 'Review collection not found.'}), 400
             view_names = [collection_name]
         else:
-            view_names = sorted(views)
+            view_names = sorted(
+                views,
+                key=lambda name: collection_base_priority(views[name]['options']['viewOn'], current_app.config),
+                reverse=True,
+            )
 
         page = max(request.args.get('page', 1, type=int), 1)
         page_size = min(max(request.args.get('page_size', 25, type=int), 1), 100)
         global_skip = (page - 1) * page_size
-        fetch_limit = global_skip + page_size
+        config = current_app.config
         total = 0
         merged = []
 
         for name in view_names:
-            view_total = database[name].count_documents(mongo_filter)
-            total += view_total
-            if fetch_limit <= 0 or view_total == 0:
-                continue
-
-            _, documents = _query_review_slice(
+            view_total, documents = _query_review_matches(
                 database,
                 views[name],
                 mongo_filter,
-                0,
-                min(fetch_limit, view_total),
+                config,
             )
+            total += view_total
+            source_collection = views[name]['options']['viewOn']
             for document in documents:
-                sort_key = _review_sort_key(document)
+                sort_key = review_document_sort_key(source_collection, document, config)
                 merged.append({
                     'collection': name,
                     'selection_id': str(document.pop('_id')),

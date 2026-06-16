@@ -4,6 +4,9 @@ from GPU_server.gpu_worker import (
     LocalGPUProvider,
     compact_details,
     declare_queues,
+    inference_base_url_for_worker,
+    load_config,
+    load_inference_base_urls,
     process_task,
     publish,
     summary_content_hash,
@@ -282,3 +285,46 @@ def test_gpu_processes_shared_final_task(monkeypatch):
     assert updates[-1]['status'] == 'completed'
     assert updates[-1]['provider'] == 'gpu_local'
     assert updates[-1]['result']['executive_summary'] == 'GPU final'
+
+
+def test_load_inference_base_urls_from_instance_count(monkeypatch):
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
+    monkeypatch.setenv('GPU_INSTANCE_COUNT', '3')
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URL', raising=False)
+
+    assert load_inference_base_urls() == [
+        'http://llama-server-0:8080/v1',
+        'http://llama-server-1:8080/v1',
+        'http://llama-server-2:8080/v1',
+    ]
+
+
+def test_load_inference_base_urls_explicit_list(monkeypatch):
+    monkeypatch.setenv(
+        'GPU_INFERENCE_BASE_URLS',
+        'http://a:8080/v1, http://b:8080/v1',
+    )
+
+    assert load_inference_base_urls() == ['http://a:8080/v1', 'http://b:8080/v1']
+
+
+def test_load_config_defaults_worker_concurrency_to_instance_count(monkeypatch):
+    monkeypatch.setenv('ATLAS_MONGO_URI', 'mongodb://localhost:27017')
+    monkeypatch.setenv('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672')
+    monkeypatch.setenv('GPU_INSTANCE_COUNT', '3')
+    monkeypatch.delenv('GPU_WORKER_CONCURRENCY', raising=False)
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
+
+    config = load_config()
+
+    assert config['GPU_INSTANCE_COUNT'] == 3
+    assert config['GPU_WORKER_CONCURRENCY'] == 3
+    assert inference_base_url_for_worker(config, 0) == 'http://llama-server-0:8080/v1'
+    assert inference_base_url_for_worker(config, 2) == 'http://llama-server-2:8080/v1'
+    assert inference_base_url_for_worker(config, 3) == 'http://llama-server-0:8080/v1'
+
+
+def test_local_gpu_provider_uses_worker_specific_base_url():
+    config = _config()
+    provider = LocalGPUProvider(config, base_url='http://llama-server-1:8080/v1')
+    assert provider.base_url == 'http://llama-server-1:8080/v1'

@@ -112,25 +112,18 @@ def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
         ],
     }
 
-    class FakeCollection:
-        def __init__(self, name):
-            self.name = name
-
-        def count_documents(self, mongo_filter):
-            return len(documents[self.name])
-
     class FakeDatabase:
         def __getitem__(self, name):
-            return FakeCollection(name)
+            return None
 
-    def query_slice(database, view, mongo_filter, skip, limit):
+    def query_matches(database, view, mongo_filter, config):
         name = next(name for name, candidate in views.items() if candidate is view)
-        selected = [dict(document) for document in documents[name][skip:skip + limit]]
+        selected = [dict(document) for document in documents[name]]
         return len(documents[name]), selected
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    monkeypatch.setattr('routes.review._query_review_slice', query_slice)
+    monkeypatch.setattr('routes.review._query_review_matches', query_matches)
 
     response = client.get('/api/reviews/search?title=test&page=1&page_size=2')
     assert response.status_code == 200
@@ -147,6 +140,54 @@ def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
     response = client.get('/api/reviews/search?collection=a_review&page_size=1')
     assert response.status_code == 200
     assert response.get_json()['total'] == 2
+
+
+def test_global_review_search_orders_by_preprocessing_priority(client, monkeypatch):
+    authenticate(client)
+    views = {
+        'low_review': {'options': {'viewOn': 'low', 'pipeline': [{'$project': {'title': 1}}]}},
+        'high_review': {'options': {'viewOn': 'high', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+    documents = {
+        'low_review': [
+            {
+                '_id': 'low:1',
+                'title': 'Newer low priority',
+                'scraped_at': '2026-06-15T00:00:00+00:00',
+            },
+        ],
+        'high_review': [
+            {
+                '_id': 'high:1',
+                'title': 'Older high priority',
+                'scraped_at': '2026-06-01T00:00:00+00:00',
+            },
+        ],
+    }
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    def query_matches(database, view, mongo_filter, config):
+        name = next(name for name, candidate in views.items() if candidate is view)
+        selected = [dict(document) for document in documents[name]]
+        return len(documents[name]), selected
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    monkeypatch.setattr('routes.review._query_review_matches', query_matches)
+    app.config['PREPROCESSING_PRIORITIES'] = {
+        'default': 1,
+        'collections': {'high': 9, 'low': 1},
+        'field_boosts': {},
+    }
+
+    response = client.get('/api/reviews/search?title=test&page=1&page_size=2')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['total'] == 2
+    assert [item['selection_id'] for item in body['data']] == ['high:1', 'low:1']
 
 
 def test_review_documents_sort_newest_first(client, monkeypatch):

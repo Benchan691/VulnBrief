@@ -39,6 +39,40 @@ from mongo import get_vulnerabilities_database
 TEST_COLLECTION = 'company_ai_preprocessor_test'
 
 
+def _fake_queue_declare(connection, channel, config):
+    status = type('Status', (), {'method': type('Method', (), {'message_count': 0})()})()
+    return channel, status
+
+
+def _routing_channel(message_counts=None):
+    message_counts = message_counts or {}
+
+    class FakeConnection:
+        def channel(self):
+            return channel
+
+    class FakeChannel:
+        def __init__(self):
+            self.connection = FakeConnection()
+
+        def queue_declare(self, **kwargs):
+            queue = kwargs.get('queue')
+            count = message_counts.get(queue, 0)
+            return type(
+                'QueueStatus',
+                (),
+                {'method': type('Method', (), {'message_count': count})()},
+            )()
+
+    channel = FakeChannel()
+    return channel
+
+
+def _route_queue_name(task, priority, config, channel):
+    queue_name, _channel = _route_task(task, priority, config, channel)
+    return queue_name
+
+
 def _source():
     return get_vulnerabilities_database()[TEST_COLLECTION]
 
@@ -202,7 +236,7 @@ def test_report_items_publish_at_report_priority_and_preserve_wait_order(monkeyp
         'company_ai_preprocessor.pika.BlockingConnection',
         lambda parameters: FakeConnection(),
     )
-    monkeypatch.setattr('company_ai_preprocessor._queue_declare', lambda channel, config: None)
+    monkeypatch.setattr('company_ai_preprocessor._queue_declare', _fake_queue_declare)
     monkeypatch.setattr(
         'company_ai_preprocessor._publish',
         lambda task, priority, config, channel=None: priorities.append(priority),
@@ -452,7 +486,7 @@ def test_worker_failure_requeues_task_to_background_priority(monkeypatch):
                 'worker-1',
                 ValueError('temporary failure'),
                 retry_config,
-                FakeChannel(),
+                _routing_channel(),
                 claimed,
             )
             document = source.find_one({'_id': 'retry'})
@@ -807,10 +841,10 @@ def test_router_sends_source_and_shared_tasks_to_gpu_until_backlog_limit(monkeyp
         'GPU_ENABLED': True,
         'COMPANY_AI_ENABLED': True,
     }
-    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
+    assert _route_queue_name({'storage': 'source'}, 1, config, _routing_channel()) == config[
         'RABBITMQ_GPU_QUEUE'
     ]
-    assert _route_task({'storage': 'shared'}, 1, config, FakeChannel()) == config[
+    assert _route_queue_name({'storage': 'shared'}, 1, config, _routing_channel()) == config[
         'RABBITMQ_GPU_QUEUE'
     ]
     assert routed == [config['RABBITMQ_GPU_QUEUE'], config['RABBITMQ_GPU_QUEUE']]
@@ -818,13 +852,6 @@ def test_router_sends_source_and_shared_tasks_to_gpu_until_backlog_limit(monkeyp
 
 def test_router_sends_source_overflow_to_company(monkeypatch):
     routed = []
-
-    class QueueStatus:
-        method = type('Method', (), {'message_count': 3})()
-
-    class FakeChannel:
-        def queue_declare(self, **kwargs):
-            return QueueStatus()
 
     monkeypatch.setattr(
         'company_ai_preprocessor._publish_to_queue',
@@ -836,7 +863,8 @@ def test_router_sends_source_overflow_to_company(monkeypatch):
         'GPU_ENABLED': True,
         'COMPANY_AI_ENABLED': True,
     }
-    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
+    channel = _routing_channel({config['RABBITMQ_GPU_QUEUE']: 3})
+    assert _route_queue_name({'storage': 'source'}, 1, config, channel) == config[
         'RABBITMQ_COMPANY_QUEUE'
     ]
     assert routed == [config['RABBITMQ_COMPANY_QUEUE']]
@@ -844,21 +872,6 @@ def test_router_sends_source_overflow_to_company(monkeypatch):
 
 def test_router_uses_dynamic_provider_score(monkeypatch):
     routed = []
-    counts = {
-        'gpu_preprocessing': 20,
-        'deepseek_processing': 3,
-        'gemini_processing': 2,
-        'company_ai_processing': 0,
-    }
-
-    class FakeChannel:
-        def queue_declare(self, **kwargs):
-            queue = kwargs['queue']
-            return type(
-                'QueueStatus',
-                (),
-                {'method': type('Method', (), {'message_count': counts[queue]})()},
-            )()
 
     monkeypatch.setattr(
         'company_ai_preprocessor._publish_to_queue',
@@ -884,22 +897,39 @@ def test_router_uses_dynamic_provider_score(monkeypatch):
         'GEMINI_WORKER_CONCURRENCY': 1,
         'COMPANY_AI_ENABLED': True,
     }
+    counts = {
+        config['RABBITMQ_GPU_QUEUE']: 20,
+        config['RABBITMQ_DEEPSEEK_QUEUE']: 3,
+        config['RABBITMQ_GEMINI_QUEUE']: 2,
+        config['RABBITMQ_COMPANY_QUEUE']: 0,
+    }
 
-    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
-        'RABBITMQ_DEEPSEEK_QUEUE'
-    ]
+    assert _route_queue_name(
+        {'storage': 'source'},
+        1,
+        config,
+        _routing_channel(counts),
+    ) == config['RABBITMQ_DEEPSEEK_QUEUE']
     assert routed == [config['RABBITMQ_DEEPSEEK_QUEUE']]
 
 
 def test_gpu_queue_has_no_automatic_dead_letter_to_disabled_provider():
     declarations = []
 
+    class FakeConnection:
+        pass
+
     class FakeChannel:
+        def __init__(self):
+            self.connection = FakeConnection()
+
         def queue_declare(self, **kwargs):
             declarations.append(kwargs)
+            return type('Status', (), {'method': type('Method', (), {'message_count': 0})()})()
 
     config = dict(app.config)
-    _gpu_queue_declare(FakeChannel(), config)
+    channel = FakeChannel()
+    _gpu_queue_declare(channel.connection, channel, config)
     gpu = next(item for item in declarations if item['queue'] == config['RABBITMQ_GPU_QUEUE'])
     assert gpu['arguments'] == {
         'x-max-priority': config['RABBITMQ_MAX_PRIORITY'],
@@ -985,12 +1015,12 @@ def test_router_never_sends_to_disabled_providers(monkeypatch):
         'GPU_ENABLED': False,
         'COMPANY_AI_ENABLED': True,
     }
-    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
+    assert _route_queue_name({'storage': 'source'}, 1, config, _routing_channel()) == config[
         'RABBITMQ_COMPANY_QUEUE'
     ]
     config['COMPANY_AI_ENABLED'] = False
-    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) is None
-    assert _route_task({'storage': 'shared'}, 1, config, FakeChannel()) is None
+    assert _route_queue_name({'storage': 'source'}, 1, config, _routing_channel()) is None
+    assert _route_queue_name({'storage': 'shared'}, 1, config, _routing_channel()) is None
     assert routed == [config['RABBITMQ_COMPANY_QUEUE']]
 
 
@@ -1030,7 +1060,9 @@ def test_router_requeues_when_no_provider_is_enabled(monkeypatch):
         is_open = True
 
         def channel(self):
-            return FakeChannel()
+            channel = FakeChannel()
+            channel.connection = self
+            return channel
 
         def close(self):
             return None
@@ -1044,7 +1076,10 @@ def test_router_requeues_when_no_provider_is_enabled(monkeypatch):
         'company_ai_preprocessor.pika.BlockingConnection',
         lambda parameters: FakeConnection(),
     )
-    monkeypatch.setattr('company_ai_preprocessor._route_task', lambda *args: None)
+    monkeypatch.setattr(
+        'company_ai_preprocessor._route_task',
+        lambda *args: (None, args[3]),
+    )
     monkeypatch.setattr(preprocessor.STOP_EVENT, 'wait', stop_after_requeue)
     try:
         _route_loop({**dict(app.config), 'GPU_ENABLED': False, 'COMPANY_AI_ENABLED': False})
@@ -1125,7 +1160,7 @@ def test_clear_queues_purges_intake_enabled_provider_queues_and_company(monkeypa
 
     class FakeChannel:
         def queue_declare(self, **kwargs):
-            return None
+            return type('Status', (), {'method': type('Method', (), {'message_count': 0})()})()
 
         def queue_purge(self, queue):
             purged.append(queue)
@@ -1326,7 +1361,7 @@ def test_scan_unprocessed_uses_collection_and_field_priority(monkeypatch):
         'company_ai_preprocessor.pika.BlockingConnection',
         lambda parameters: FakeConnection(),
     )
-    monkeypatch.setattr('company_ai_preprocessor._queue_declare', lambda channel, config: None)
+    monkeypatch.setattr('company_ai_preprocessor._queue_declare', _fake_queue_declare)
     monkeypatch.setattr('company_ai_preprocessor.enqueue_summary', fake_enqueue_summary)
     monkeypatch.setattr(
         'company_ai_preprocessor.ensure_cache_indexes',

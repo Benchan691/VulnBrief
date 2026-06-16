@@ -36,6 +36,26 @@ NO_PROVIDER_LOG_INTERVAL_SECONDS = 30
 QUEUE_CAPACITY_WAIT_SECONDS = 1
 _LAST_NO_PROVIDER_LOG_AT = 0
 PROVIDER_METRIC_ALPHA = 0.3
+_DEBUG_LOG_PATH = '/Users/chankokpan/Documents/webserver/.cursor/debug-bffc5d.log'
+
+
+def _agent_debug_log(hypothesis_id, location, message, data=None):
+    # #region agent log
+    try:
+        with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps({
+                'sessionId': 'bffc5d',
+                'hypothesisId': hypothesis_id,
+                'location': location,
+                'message': message,
+                'data': data or {},
+                'timestamp': int(time.time() * 1000),
+            }) + '\n')
+    except OSError:
+        pass
+    # #endregion
+
+
 OPENAI_COMPATIBLE_PROVIDERS = {
     'deepseek': {
         'prefix': 'DEEPSEEK',
@@ -128,62 +148,94 @@ def _queue_arguments(config):
     }
 
 
-def _queue_declare(channel, config):
-    return channel.queue_declare(
-        queue=config['RABBITMQ_INTAKE_QUEUE'],
-        durable=True,
-        arguments=_queue_arguments(config),
-    )
+def _declare_durable_queue(connection, channel, queue_name, config):
+    arguments = _queue_arguments(config)
+    try:
+        result = channel.queue_declare(
+            queue=queue_name,
+            durable=True,
+            arguments=arguments,
+        )
+        # #region agent log
+        _agent_debug_log(
+            'H3',
+            'company_ai_preprocessor.py:_declare_durable_queue:declare_ok',
+            'queue declare succeeded',
+            {'queue': queue_name, 'messages': result.method.message_count},
+        )
+        # #endregion
+        return channel, result
+    except pika.exceptions.ChannelClosedByBroker as exc:
+        reply_code = getattr(exc, 'reply_code', None)
+        # #region agent log
+        _agent_debug_log(
+            'H1',
+            'company_ai_preprocessor.py:_declare_durable_queue:declare_failed',
+            'queue declare precondition failed',
+            {
+                'queue': queue_name,
+                'desired_arguments': arguments,
+                'error': str(exc),
+                'reply_code': reply_code,
+            },
+        )
+        # #endregion
+        if reply_code != 406:
+            raise
+        log_error(
+            'Existing queue arguments differ from configuration; using passive declare',
+            queue=queue_name,
+            desired_arguments=arguments,
+        )
+        channel = connection.channel()
+        result = channel.queue_declare(queue=queue_name, passive=True)
+        # #region agent log
+        _agent_debug_log(
+            'H2',
+            'company_ai_preprocessor.py:_declare_durable_queue:passive_ok',
+            'passive declare succeeded for mismatched queue',
+            {
+                'queue': queue_name,
+                'messages': result.method.message_count,
+                'consumer_count': result.method.consumer_count,
+            },
+        )
+        # #endregion
+        return channel, result
 
 
-def _company_queue_declare(channel, config):
-    return channel.queue_declare(
-        queue=config['RABBITMQ_COMPANY_QUEUE'],
-        durable=True,
-        arguments=_queue_arguments(config),
-    )
+def _queue_declare(connection, channel, config):
+    return _declare_durable_queue(connection, channel, config['RABBITMQ_INTAKE_QUEUE'], config)
 
 
-def _gpu_queue_declare(channel, config):
-    return channel.queue_declare(
-        queue=config['RABBITMQ_GPU_QUEUE'],
-        durable=True,
-        arguments=_queue_arguments(config),
-    )
+def _company_queue_declare(connection, channel, config):
+    return _declare_durable_queue(connection, channel, config['RABBITMQ_COMPANY_QUEUE'], config)
 
 
-def _deepseek_queue_declare(channel, config):
-    return channel.queue_declare(
-        queue=config['RABBITMQ_DEEPSEEK_QUEUE'],
-        durable=True,
-        arguments=_queue_arguments(config),
-    )
+def _gpu_queue_declare(connection, channel, config):
+    return _declare_durable_queue(connection, channel, config['RABBITMQ_GPU_QUEUE'], config)
 
 
-def _gemini_queue_declare(channel, config):
-    return channel.queue_declare(
-        queue=config['RABBITMQ_GEMINI_QUEUE'],
-        durable=True,
-        arguments=_queue_arguments(config),
-    )
+def _deepseek_queue_declare(connection, channel, config):
+    return _declare_durable_queue(connection, channel, config['RABBITMQ_DEEPSEEK_QUEUE'], config)
 
 
-def _provider_queue_declare(channel, config, queue_name):
+def _gemini_queue_declare(connection, channel, config):
+    return _declare_durable_queue(connection, channel, config['RABBITMQ_GEMINI_QUEUE'], config)
+
+
+def _provider_queue_declare(connection, channel, config, queue_name):
     if queue_name == config['RABBITMQ_INTAKE_QUEUE']:
-        return _queue_declare(channel, config)
+        return _queue_declare(connection, channel, config)
     if queue_name == config['RABBITMQ_COMPANY_QUEUE']:
-        return _company_queue_declare(channel, config)
+        return _company_queue_declare(connection, channel, config)
     if queue_name == config['RABBITMQ_GPU_QUEUE']:
-        return _gpu_queue_declare(channel, config)
+        return _gpu_queue_declare(connection, channel, config)
     if queue_name == config['RABBITMQ_DEEPSEEK_QUEUE']:
-        return _deepseek_queue_declare(channel, config)
+        return _deepseek_queue_declare(connection, channel, config)
     if queue_name == config['RABBITMQ_GEMINI_QUEUE']:
-        return _gemini_queue_declare(channel, config)
-    return channel.queue_declare(
-        queue=queue_name,
-        durable=True,
-        arguments=_queue_arguments(config),
-    )
+        return _gemini_queue_declare(connection, channel, config)
+    return _declare_durable_queue(connection, channel, queue_name, config)
 
 
 def _enabled_provider_names(config):
@@ -193,10 +245,11 @@ def _enabled_provider_names(config):
     ]
 
 
-def _routed_queue_declare(channel, config):
+def _routed_queue_declare(connection, channel, config):
     for provider_name in _enabled_provider_names(config):
         queue_name = config[ROUTABLE_PROVIDERS[provider_name]['queue']]
-        _provider_queue_declare(channel, config, queue_name)
+        channel, _ = _provider_queue_declare(connection, channel, config, queue_name)
+    return channel
 
 
 def _task_target(task):
@@ -256,11 +309,26 @@ def _record_provider_metric(config, provider_name, seconds, success):
 
 
 def _queue_status(config):
+    # #region agent log
+    _agent_debug_log(
+        'H4',
+        'company_ai_preprocessor.py:_queue_status:entry',
+        'queue declare config',
+        {
+            'intake_queue': repr(config['RABBITMQ_INTAKE_QUEUE']),
+            'company_queue': repr(config['RABBITMQ_COMPANY_QUEUE']),
+            'gpu_queue': repr(config['RABBITMQ_GPU_QUEUE']),
+            'max_priority': config['RABBITMQ_MAX_PRIORITY'],
+            'max_queue_size': config['RABBITMQ_MAX_QUEUE_SIZE'],
+            'desired_arguments': _queue_arguments(config),
+        },
+    )
+    # #endregion
     connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
     try:
         channel = connection.channel()
-        intake_status = _queue_declare(channel, config)
-        company_status = _company_queue_declare(channel, config)
+        channel, intake_status = _queue_declare(connection, channel, config)
+        channel, company_status = _company_queue_declare(connection, channel, config)
         counts = {
             config['RABBITMQ_INTAKE_QUEUE']: intake_status.method.message_count,
             config['RABBITMQ_COMPANY_QUEUE']: company_status.method.message_count,
@@ -270,7 +338,7 @@ def _queue_status(config):
             if queue_name in counts:
                 continue
             if config.get(definition['enabled']):
-                status = _provider_queue_declare(channel, config, queue_name)
+                channel, status = _provider_queue_declare(connection, channel, config, queue_name)
                 counts[queue_name] = status.method.message_count
             else:
                 counts[queue_name] = 0
@@ -357,8 +425,8 @@ def _clear_queues(config, queue_names=None):
     connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
     try:
         channel = connection.channel()
-        _queue_declare(channel, config)
-        _routed_queue_declare(channel, config)
+        channel, _ = _queue_declare(connection, channel, config)
+        channel = _routed_queue_declare(connection, channel, config)
         default_queues = [config['RABBITMQ_INTAKE_QUEUE']]
         for provider_name in _enabled_provider_names(config):
             default_queues.append(config[ROUTABLE_PROVIDERS[provider_name]['queue']])
@@ -381,7 +449,7 @@ def _try_clear_queues(config, queue_names=None):
 
 def _publisher_channel(connection, config):
     channel = connection.channel()
-    _queue_declare(channel, config)
+    channel, _ = _queue_declare(connection, channel, config)
     channel.confirm_delivery()
     return channel
 
@@ -416,7 +484,7 @@ def _publish_to_queue(task, priority, config, queue_name, channel=None):
     if channel is None:
         connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
         channel = connection.channel()
-        _provider_queue_declare(channel, config, queue_name)
+        channel, _ = _provider_queue_declare(connection, channel, config, queue_name)
         channel.confirm_delivery()
     try:
         if not _wait_for_queue_capacity(channel, queue_name, config):
@@ -812,7 +880,7 @@ def _requeue_task(task, owner, error, config, channel, claimed):
         {'status': 'pending', 'error': str(error), 'updated_at': _now()},
         ['processing_owner', 'processing_started_at'],
     )
-    queue_name = _route_destination(task, config, channel)
+    queue_name, channel = _route_destination(task, config, channel)
     if queue_name:
         _publish_to_queue(
             task,
@@ -911,7 +979,7 @@ def _release_processing_task(task, owner, config=None, channel=None):
         ['processing_owner', 'processing_started_at', 'error'],
     )
     if config is not None:
-        queue_name = _route_destination(task, config, channel)
+        queue_name, channel = _route_destination(task, config, channel)
         if queue_name:
             _publish_to_queue(
                 task,
@@ -1050,11 +1118,7 @@ def _consume(config, worker_number):
         try:
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
-            company_status = channel.queue_declare(
-                queue=config['RABBITMQ_COMPANY_QUEUE'],
-                durable=True,
-                arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
-            )
+            channel, company_status = _company_queue_declare(connection, channel, config)
             log_info(
                 'Company AI worker connected',
                 worker=worker_number,
@@ -1178,7 +1242,7 @@ def _consume_openai(config, provider_name, worker_number):
         try:
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
-            status = _provider_queue_declare(channel, config, queue_name)
+            channel, status = _provider_queue_declare(connection, channel, config, queue_name)
             log_info(
                 f"{definition['label']} worker connected",
                 worker=worker_number,
@@ -1257,13 +1321,14 @@ def _route_destination(task, config, channel):
         if config.get(definition['enabled'])
     ]
     if not enabled:
-        return None
+        return None, channel
     if channel is None or not hasattr(channel, 'queue_declare'):
-        return config[enabled[0][1]['queue']]
+        return config[enabled[0][1]['queue']], channel
     candidates = []
+    connection = channel.connection
     for provider_name, definition in enabled:
         queue_name = config[definition['queue']]
-        status = _provider_queue_declare(channel, config, queue_name)
+        channel, status = _provider_queue_declare(connection, channel, config, queue_name)
         message_count = status.method.message_count
         if (
             provider_name == 'gpu_local'
@@ -1274,17 +1339,17 @@ def _route_destination(task, config, channel):
         score = (message_count / workers) + _provider_ewma_seconds(config, provider_name)
         candidates.append((score, message_count, provider_name, queue_name))
     if not candidates:
-        return None
+        return None, channel
     candidates.sort()
-    return candidates[0][3]
+    return candidates[0][3], channel
 
 
 def _route_task(task, priority, config, channel):
-    queue_name = _route_destination(task, config, channel)
+    queue_name, channel = _route_destination(task, config, channel)
     if queue_name is None:
-        return None
+        return None, channel
     _publish_to_queue(task, priority, config, queue_name, channel)
-    return queue_name
+    return queue_name, channel
 
 
 def _nack_unroutable_task(channel, method, task):
@@ -1305,8 +1370,8 @@ def _route_loop(config):
         try:
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
-            intake_status = _queue_declare(channel, config)
-            _routed_queue_declare(channel, config)
+            channel, intake_status = _queue_declare(connection, channel, config)
+            channel = _routed_queue_declare(connection, channel, config)
             log_info(
                 'Router connected to intake queue',
                 queue=config['RABBITMQ_INTAKE_QUEUE'],
@@ -1326,7 +1391,7 @@ def _route_loop(config):
                 priority = getattr(properties, 'priority', None)
                 if priority is None:
                     priority = config['RABBITMQ_BACKGROUND_PRIORITY']
-                queue_name = _route_task(task, priority, config, channel)
+                queue_name, channel = _route_task(task, priority, config, channel)
                 if queue_name is None:
                     _nack_unroutable_task(channel, method, task)
                     STOP_EVENT.wait(5)

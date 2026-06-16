@@ -1,20 +1,19 @@
+x-llama-server: &llama-server
+  image: ghcr.io/ggml-org/llama.cpp:server-cuda
+  restart: unless-stopped
+  env_file:
+    - .env
+  volumes:
+    - ./models:/models:ro
+
 services:
   llama-server:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    <<: *llama-server
+    profiles: ["tensor-split"]
     container_name: gpu-preprocessor-llama
-    restart: unless-stopped
-
-    env_file:
-      - .env
-
     ports:
       - "127.0.0.1:8080:8080"
-
-    volumes:
-      - ./models:/models:ro
-
     gpus: all
-
     command:
       - "-m"
       - "${GPU_MODEL_PATH}"
@@ -26,24 +25,87 @@ services:
       - "99"
       - "-c"
       - "${GPU_CONTEXT_SIZE:-4096}"
+      - "--parallel"
+      - "1"
       - "--tensor-split"
       - "${GPU_TENSOR_SPLIT:-1,1,1}"
+
+  llama-server-0:
+    <<: *llama-server
+    profiles: ["per-gpu"]
+    container_name: gpu-preprocessor-llama-0
+    ports:
+      - "127.0.0.1:8080:8080"
+    gpus:
+      - device: "0"
+    command:
+      - "-m"
+      - "${GPU_MODEL_PATH}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "${GPU_CONTEXT_SIZE:-4096}"
+      - "--parallel"
+      - "1"
+
+  llama-server-1:
+    <<: *llama-server
+    profiles: ["per-gpu"]
+    container_name: gpu-preprocessor-llama-1
+    ports:
+      - "127.0.0.1:8081:8080"
+    gpus:
+      - device: "1"
+    command:
+      - "-m"
+      - "${GPU_MODEL_PATH}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "${GPU_CONTEXT_SIZE:-4096}"
+      - "--parallel"
+      - "1"
+
+  llama-server-2:
+    <<: *llama-server
+    profiles: ["per-gpu"]
+    container_name: gpu-preprocessor-llama-2
+    ports:
+      - "127.0.0.1:8082:8080"
+    gpus:
+      - device: "2"
+    command:
+      - "-m"
+      - "${GPU_MODEL_PATH}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "${GPU_CONTEXT_SIZE:-4096}"
+      - "--parallel"
+      - "1"
 
   gpu-worker:
     build:
       context: .
       dockerfile: Dockerfile
-
     container_name: gpu-preprocessor-worker
     restart: unless-stopped
-
     env_file:
       - .env
-
     depends_on:
       - llama-server
-
-    environment:
-      GPU_INFERENCE_BASE_URL: "http://llama-server:8080/v1"
-      LLAMA_SERVER_URL: "http://llama-server:8080"
-      GPU_SERVER_URL: "http://llama-server:8080"
+      - llama-server-0
+      - llama-server-1
+      - llama-server-2
