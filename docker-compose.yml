@@ -51,6 +51,26 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
 
+  deepseek-worker:
+    build: .
+    container_name: webserver-deepseek-worker
+    restart: unless-stopped
+    command: ["python", "company_ai_preprocessor.py", "--role", "deepseek-worker"]
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+  gemini-worker:
+    build: .
+    container_name: webserver-gemini-worker
+    restart: unless-stopped
+    command: ["python", "company_ai_preprocessor.py", "--role", "gemini-worker"]
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+
   scheduler:
     build: .
     container_name: webserver-scheduler

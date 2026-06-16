@@ -12,6 +12,7 @@ from company_ai_preprocessor import (
     _gpu_queue_declare,
     _now,
     _process_company_task,
+    _process_openai_task,
     _publish_to_queue,
     _queue_status,
     _route_loop,
@@ -559,6 +560,98 @@ def test_company_worker_processes_final_summary_task(monkeypatch):
     assert events == [('open', ''), ('store', 'company_ai', result), 'close']
 
 
+def test_openai_compatible_provider_calls_chat_completions(monkeypatch):
+    from report_harness import OpenAICompatibleProvider
+
+    requests = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'choices': [{'message': {'content': '{"answer":"ok"}'}}]}
+
+    def fake_post(url, headers, json, timeout):
+        import copy
+        requests.append((url, dict(headers), copy.deepcopy(json), timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr('report_harness.requests.post', fake_post)
+    config = {
+        **dict(app.config),
+        'DEEPSEEK_BASE_URL': 'https://deepseek.example',
+        'DEEPSEEK_API_KEY': 'secret-key',
+        'DEEPSEEK_MODEL': 'deepseek-chat',
+        'DEEPSEEK_TIMEOUT_SECONDS': 12,
+        'DEEPSEEK_MAX_OUTPUT_TOKENS': 100,
+        'DEEPSEEK_JSON_RETRIES': 0,
+    }
+
+    provider = OpenAICompatibleProvider(config, 'DEEPSEEK', 'DeepSeek')
+    result, usage = provider.complete_json('system prompt', 'user prompt')
+
+    assert result == {'answer': 'ok'}
+    assert usage == {}
+    assert requests[0][0] == 'https://deepseek.example/chat/completions'
+    assert requests[0][1]['Authorization'] == 'Bearer secret-key'
+    assert requests[0][2]['model'] == 'deepseek-chat'
+    assert requests[0][2]['messages'] == [
+        {'role': 'system', 'content': 'system prompt'},
+        {'role': 'user', 'content': 'user prompt'},
+    ]
+    assert requests[0][3] == 12
+
+
+def test_openai_worker_processes_item_and_records_provider(monkeypatch):
+    events = []
+    result = {'highlight': {'summary': 'done'}, 'recommendations': []}
+
+    class FakeProvider:
+        def __init__(self, config, prefix, provider_label):
+            events.append(('provider', prefix, provider_label))
+
+    monkeypatch.setattr('company_ai_preprocessor.OpenAICompatibleProvider', FakeProvider)
+    monkeypatch.setattr(
+        'company_ai_preprocessor._task_details',
+        lambda task, config: {'description': 'evidence'},
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor.summary_content_hash',
+        lambda details, language, config: 'hash',
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor.generate_item_data',
+        lambda provider, details, source_key, language, retries: (
+            events.append(('process', source_key, language, retries)) or result,
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor._complete_task',
+        lambda task, owner, value, provider: events.append(('store', provider, value)),
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor._record_provider_metric',
+        lambda config, provider, seconds, success: events.append(('metric', provider, success)),
+    )
+    config = {
+        **dict(app.config),
+        'DEEPSEEK_ENABLED': True,
+        'DEEPSEEK_API_KEY': 'key',
+        'DEEPSEEK_MODEL': 'model',
+    }
+    task = {'content_hash': 'hash', 'language': 'en'}
+
+    assert _process_openai_task(task, {'source_key': 'source'}, 'owner', config, 'deepseek', 0) == result
+    assert events == [
+        ('provider', 'DEEPSEEK', 'DeepSeek'),
+        ('process', 'source', 'en', config['REPORT_ITEM_JSON_RETRIES']),
+        ('store', 'deepseek', result),
+        ('metric', 'deepseek', True),
+    ]
+
+
 def test_reset_processing_for_owner_resets_source_entry_to_pending(monkeypatch):
     monkeypatch.setattr('company_ai_preprocessor._publish', lambda *args, **kwargs: None)
     with app.app_context():
@@ -704,6 +797,10 @@ def test_router_sends_source_and_shared_tasks_to_gpu_until_backlog_limit(monkeyp
         'company_ai_preprocessor._publish_to_queue',
         lambda task, priority, config, queue_name, channel=None: routed.append(queue_name),
     )
+    monkeypatch.setattr(
+        'company_ai_preprocessor._provider_ewma_seconds',
+        lambda config, provider_name: {'gpu_local': 1, 'company_ai': 10}[provider_name],
+    )
     config = {
         **dict(app.config),
         'GPU_QUEUE_BACKLOG_LIMIT': 1,
@@ -743,6 +840,55 @@ def test_router_sends_source_overflow_to_company(monkeypatch):
         'RABBITMQ_COMPANY_QUEUE'
     ]
     assert routed == [config['RABBITMQ_COMPANY_QUEUE']]
+
+
+def test_router_uses_dynamic_provider_score(monkeypatch):
+    routed = []
+    counts = {
+        'gpu_preprocessing': 20,
+        'deepseek_processing': 3,
+        'gemini_processing': 2,
+        'company_ai_processing': 0,
+    }
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            queue = kwargs['queue']
+            return type(
+                'QueueStatus',
+                (),
+                {'method': type('Method', (), {'message_count': counts[queue]})()},
+            )()
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: routed.append(queue_name),
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor._provider_ewma_seconds',
+        lambda config, provider_name: {
+            'gpu_local': 1,
+            'deepseek': 2,
+            'gemini': 3,
+            'company_ai': 10,
+        }[provider_name],
+    )
+    config = {
+        **dict(app.config),
+        'GPU_ENABLED': True,
+        'GPU_QUEUE_BACKLOG_LIMIT': 99,
+        'GPU_WORKER_CONCURRENCY': 1,
+        'DEEPSEEK_ENABLED': True,
+        'DEEPSEEK_WORKER_CONCURRENCY': 3,
+        'GEMINI_ENABLED': True,
+        'GEMINI_WORKER_CONCURRENCY': 1,
+        'COMPANY_AI_ENABLED': True,
+    }
+
+    assert _route_task({'storage': 'source'}, 1, config, FakeChannel()) == config[
+        'RABBITMQ_DEEPSEEK_QUEUE'
+    ]
+    assert routed == [config['RABBITMQ_DEEPSEEK_QUEUE']]
 
 
 def test_gpu_queue_has_no_automatic_dead_letter_to_disabled_provider():
@@ -929,7 +1075,16 @@ def test_role_runners_start_only_requested_threads(monkeypatch):
     monkeypatch.setattr(preprocessor, '_run_threads', capture_threads)
     monkeypatch.setattr(preprocessor.threading, 'Thread', FakeThread)
 
-    config = {**dict(app.config), 'COMPANY_AI_ENABLED': True, 'GPU_ENABLED': True, 'COMPANY_AI_PARALLEL_CHATS': 2}
+    config = {
+        **dict(app.config),
+        'COMPANY_AI_ENABLED': True,
+        'GPU_ENABLED': True,
+        'DEEPSEEK_ENABLED': True,
+        'GEMINI_ENABLED': True,
+        'COMPANY_AI_PARALLEL_CHATS': 2,
+        'DEEPSEEK_WORKER_CONCURRENCY': 2,
+        'GEMINI_WORKER_CONCURRENCY': 1,
+    }
 
     run_worker(config, 'scanner')
     assert started == [(preprocessor._scan_loop, (config,))]
@@ -942,6 +1097,15 @@ def test_role_runners_start_only_requested_threads(monkeypatch):
         (preprocessor._consume, (config, 0)),
         (preprocessor._consume, (config, 1)),
     ]
+
+    run_worker(config, 'deepseek-worker')
+    assert started == [
+        (preprocessor._consume_openai, (config, 'deepseek', 0)),
+        (preprocessor._consume_openai, (config, 'deepseek', 1)),
+    ]
+
+    run_worker(config, 'gemini-worker')
+    assert started == [(preprocessor._consume_openai, (config, 'gemini', 0))]
 
 
 def test_main_passes_selected_role(monkeypatch):
@@ -956,7 +1120,7 @@ def test_main_passes_selected_role(monkeypatch):
     assert calls == [({'config': True}, 'router')]
 
 
-def test_clear_queues_purges_intake_gpu_and_company(monkeypatch):
+def test_clear_queues_purges_intake_enabled_provider_queues_and_company(monkeypatch):
     purged = []
 
     class FakeChannel:
@@ -977,11 +1141,18 @@ def test_clear_queues_purges_intake_gpu_and_company(monkeypatch):
         'company_ai_preprocessor.pika.BlockingConnection',
         lambda parameters: FakeConnection(),
     )
-    config = {**dict(app.config), 'GPU_ENABLED': True}
+    config = {
+        **dict(app.config),
+        'GPU_ENABLED': True,
+        'DEEPSEEK_ENABLED': True,
+        'GEMINI_ENABLED': True,
+    }
     _clear_queues(config)
     assert purged == [
         config['RABBITMQ_INTAKE_QUEUE'],
         config['RABBITMQ_GPU_QUEUE'],
+        config['RABBITMQ_DEEPSEEK_QUEUE'],
+        config['RABBITMQ_GEMINI_QUEUE'],
         config['RABBITMQ_COMPANY_QUEUE'],
     ]
 

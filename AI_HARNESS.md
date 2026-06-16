@@ -56,11 +56,11 @@ Report profile Run actions prepare the browser's Vulnerability Reviews selection
 list. Enabled five-field cron schedules are executed in `Asia/Hong_Kong` by the
 dedicated `scheduler.py` process and generate report jobs automatically.
 
-Company AI settings live in `.env` (`COMPANY_AI_*` variables). See
-[`.env.example`](.env.example).
-`COMPANY_AI_ENABLED` and `GPU_ENABLED` are the router's provider status
-flags. Set a provider false before stopping it; the router never publishes work
-to a disabled provider.
+Company AI, DeepSeek, Gemini, GPU, and RabbitMQ settings live in the same `.env`
+file. See [`.env.example`](.env.example). `COMPANY_AI_ENABLED`,
+`DEEPSEEK_ENABLED`, `GEMINI_ENABLED`, and `GPU_ENABLED` are the router's provider
+status flags. Set a provider false before stopping it; the router never
+publishes work to a disabled provider.
 `start_prompt` primes preprocessor rooms for per-item vulnerability JSON work.
 `summary_prompt` drives the report final executive summary. It supports
 `${language}` placeholders and must return `executive_summary`, `trends`, and
@@ -79,6 +79,11 @@ are preserved across restarts; the scanner republishes pending or stale Atlas
 tasks. Queue purging is an explicit `company_ai_preprocessor.py --purge-queues`
 maintenance action.
 
+DeepSeek and Gemini use OpenAI-compatible chat-completions endpoints. Configure
+`DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` and `GEMINI_API_KEY` / `GEMINI_MODEL` when
+enabling those workers. Their base URLs default to `https://api.deepseek.com`
+and `https://generativelanguage.googleapis.com/v1beta/openai`.
+
 Background scans assign RabbitMQ priority per vulnerability using
 `config/preprocessing_priorities.json` (override with
 `PREPROCESSING_PRIORITIES_CONFIG`). Each collection can define a base priority;
@@ -91,10 +96,12 @@ is clamped to `RABBITMQ_MAX_PRIORITY`. Interactive report jobs still use
 
 `company_ai_preprocessor.py` writes operational lines to stdout. In Docker, scan
 logs are visible in `webserver-preprocessor-scanner`, routing logs in
-`webserver-preprocessor-router`, and Company AI consumption logs in
-`webserver-company-ai-worker`. On startup each role logs configuration, RabbitMQ
-queue depths (`intake`, `gpu`, `company`), and worker counts. Company AI worker
-startup also logs login success (`mode=cached` or `mode=fresh`). Each scan cycle
+`webserver-preprocessor-router`, and provider consumption logs in
+`webserver-company-ai-worker`, `webserver-deepseek-worker`, and
+`webserver-gemini-worker`. On startup each role logs configuration, RabbitMQ
+queue depths (`intake`, `gpu`, `company`, `deepseek`, `gemini`), and worker
+counts. Company AI worker startup also logs login success (`mode=cached` or
+`mode=fresh`). Each scan cycle
 logs `Scan complete published=N`; this only means work was published to the
 intake queue, not that provider queues are drained. Each Company AI task logs
 session ready, room creation, `Stored AI JSON` after results are written to
@@ -130,9 +137,10 @@ remove legacy stored HTML fields.
 ## Independent processes
 
 The web server, preprocessing scanner, preprocessing router, Company AI worker,
-optional standalone GPU preprocessor, and scheduler are separate processes.
-Web processes use `bootstrap.configure_application()`. The isolated Company AI
-worker uses `bootstrap.configure_worker()` and requires Atlas but not local MongoDB.
+DeepSeek worker, Gemini worker, optional standalone GPU preprocessor, and
+scheduler are separate processes. Web processes use
+`bootstrap.configure_application()`. Isolated provider workers use
+`bootstrap.configure_worker()` and require Atlas but not local MongoDB.
 
 ## Local startup
 
@@ -154,6 +162,8 @@ Start the preprocessing roles and the web server in separate terminals:
 .venv/bin/python company_ai_preprocessor.py --role scanner
 .venv/bin/python company_ai_preprocessor.py --role router
 .venv/bin/python company_ai_preprocessor.py --role company-worker
+.venv/bin/python company_ai_preprocessor.py --role deepseek-worker
+.venv/bin/python company_ai_preprocessor.py --role gemini-worker
 .venv/bin/python scheduler.py
 .venv/bin/python app.py
 ```
@@ -166,14 +176,15 @@ for example via `host.docker.internal` on Docker Desktop):
 
 ```sh
 docker compose up -d
-docker compose up -d preprocessor-scanner preprocessor-router company-ai-worker
+docker compose up -d preprocessor-scanner preprocessor-router company-ai-worker deepseek-worker gemini-worker
 docker compose up -d web
 ```
 
-Use the CloudAMQP dashboard to monitor the intake, GPU, and Company AI queues.
-`GPU_ENABLED` and `COMPANY_AI_ENABLED` are the source of truth for provider
-availability. The router never publishes to a disabled provider. With both
-enabled, Atlas source tasks use GPU capacity first and overflow goes to Company
-AI; uploads always require Company AI. Missing report items use the highest
-priority. Reports wait for the configured timeout, then use the fixed factual
-template for unavailable items.
+Use the CloudAMQP dashboard to monitor the intake, GPU, Company AI, DeepSeek,
+and Gemini queues. The router scores enabled providers with
+`(queue depth / worker concurrency) + EWMA processing seconds`, then publishes
+to the lowest score. GPU keeps `GPU_QUEUE_BACKLOG_LIMIT` as a hard cap before it
+is eligible. Provider speed metrics are stored in
+`AI_PROVIDER_METRICS_COLLECTION` (default `ai_provider_metrics`). Missing report
+items use the highest priority. Reports wait for the configured timeout, then
+use the fixed factual template for unavailable items.

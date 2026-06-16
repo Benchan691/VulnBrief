@@ -23,6 +23,7 @@ from preprocessing_priorities import (
 from report_harness import (
     CompanyAIProvider,
     CompanyAILoginLimitExceeded,
+    OpenAICompatibleProvider,
     REPORT_LANGUAGES,
     compact_details,
     generate_final_data,
@@ -34,6 +35,41 @@ STOP_EVENT = threading.Event()
 NO_PROVIDER_LOG_INTERVAL_SECONDS = 30
 QUEUE_CAPACITY_WAIT_SECONDS = 1
 _LAST_NO_PROVIDER_LOG_AT = 0
+PROVIDER_METRIC_ALPHA = 0.3
+OPENAI_COMPATIBLE_PROVIDERS = {
+    'deepseek': {
+        'prefix': 'DEEPSEEK',
+        'label': 'DeepSeek',
+        'enabled': 'DEEPSEEK_ENABLED',
+        'queue': 'RABBITMQ_DEEPSEEK_QUEUE',
+        'workers': 'DEEPSEEK_WORKER_CONCURRENCY',
+        'default_ewma': 'DEEPSEEK_DEFAULT_EWMA_SECONDS',
+    },
+    'gemini': {
+        'prefix': 'GEMINI',
+        'label': 'Gemini',
+        'enabled': 'GEMINI_ENABLED',
+        'queue': 'RABBITMQ_GEMINI_QUEUE',
+        'workers': 'GEMINI_WORKER_CONCURRENCY',
+        'default_ewma': 'GEMINI_DEFAULT_EWMA_SECONDS',
+    },
+}
+ROUTABLE_PROVIDERS = {
+    'gpu_local': {
+        'enabled': 'GPU_ENABLED',
+        'queue': 'RABBITMQ_GPU_QUEUE',
+        'workers': 'GPU_WORKER_CONCURRENCY',
+        'default_ewma': 'GPU_DEFAULT_EWMA_SECONDS',
+    },
+    'deepseek': OPENAI_COMPATIBLE_PROVIDERS['deepseek'],
+    'gemini': OPENAI_COMPATIBLE_PROVIDERS['gemini'],
+    'company_ai': {
+        'enabled': 'COMPANY_AI_ENABLED',
+        'queue': 'RABBITMQ_COMPANY_QUEUE',
+        'workers': 'COMPANY_AI_PARALLEL_CHATS',
+        'default_ewma': 'COMPANY_AI_DEFAULT_EWMA_SECONDS',
+    },
+}
 
 
 def _now():
@@ -53,6 +89,10 @@ def ensure_cache_indexes():
         name='task_source_language',
     )
     collection.create_index([('status', 1), ('updated_at', 1)], name='status_updated')
+    get_vulnerabilities_database()[get_config()['AI_PROVIDER_METRICS_COLLECTION']].create_index(
+        [('updated_at', 1)],
+        name='updated_at',
+    )
 
 
 def cache_source_key(source_collection=None, source_id=None, details=None):
@@ -112,10 +152,51 @@ def _gpu_queue_declare(channel, config):
     )
 
 
+def _deepseek_queue_declare(channel, config):
+    return channel.queue_declare(
+        queue=config['RABBITMQ_DEEPSEEK_QUEUE'],
+        durable=True,
+        arguments=_queue_arguments(config),
+    )
+
+
+def _gemini_queue_declare(channel, config):
+    return channel.queue_declare(
+        queue=config['RABBITMQ_GEMINI_QUEUE'],
+        durable=True,
+        arguments=_queue_arguments(config),
+    )
+
+
+def _provider_queue_declare(channel, config, queue_name):
+    if queue_name == config['RABBITMQ_INTAKE_QUEUE']:
+        return _queue_declare(channel, config)
+    if queue_name == config['RABBITMQ_COMPANY_QUEUE']:
+        return _company_queue_declare(channel, config)
+    if queue_name == config['RABBITMQ_GPU_QUEUE']:
+        return _gpu_queue_declare(channel, config)
+    if queue_name == config['RABBITMQ_DEEPSEEK_QUEUE']:
+        return _deepseek_queue_declare(channel, config)
+    if queue_name == config['RABBITMQ_GEMINI_QUEUE']:
+        return _gemini_queue_declare(channel, config)
+    return channel.queue_declare(
+        queue=queue_name,
+        durable=True,
+        arguments=_queue_arguments(config),
+    )
+
+
+def _enabled_provider_names(config):
+    return [
+        name for name, definition in ROUTABLE_PROVIDERS.items()
+        if config.get(definition['enabled'])
+    ]
+
+
 def _routed_queue_declare(channel, config):
-    _company_queue_declare(channel, config)
-    if config['GPU_ENABLED']:
-        _gpu_queue_declare(channel, config)
+    for provider_name in _enabled_provider_names(config):
+        queue_name = config[ROUTABLE_PROVIDERS[provider_name]['queue']]
+        _provider_queue_declare(channel, config, queue_name)
 
 
 def _task_target(task):
@@ -124,6 +205,54 @@ def _task_target(task):
     if task.get('task_id') is not None:
         return f"shared/{task['task_id']}"
     return 'unknown'
+
+
+def _provider_metrics_collection(config):
+    return get_vulnerabilities_database()[config['AI_PROVIDER_METRICS_COLLECTION']]
+
+
+def _provider_metric(config, provider_name):
+    try:
+        return _provider_metrics_collection(config).find_one({'_id': provider_name}) or {}
+    except PyMongoError as exc:
+        log_error('Unable to read provider metrics', provider=provider_name, error=str(exc))
+        return {}
+
+
+def _provider_ewma_seconds(config, provider_name):
+    definition = ROUTABLE_PROVIDERS[provider_name]
+    metric = _provider_metric(config, provider_name)
+    return float(metric.get('ewma_seconds') or config[definition['default_ewma']])
+
+
+def _record_provider_metric(config, provider_name, seconds, success):
+    try:
+        collection = _provider_metrics_collection(config)
+        existing = collection.find_one({'_id': provider_name}) or {}
+        previous = existing.get('ewma_seconds')
+        if previous is None:
+            ewma = float(seconds)
+        else:
+            ewma = (PROVIDER_METRIC_ALPHA * float(seconds)) + (
+                (1 - PROVIDER_METRIC_ALPHA) * float(previous)
+            )
+        collection.update_one(
+            {'_id': provider_name},
+            {
+                '$set': {
+                    'provider': provider_name,
+                    'ewma_seconds': ewma,
+                    'last_seconds': float(seconds),
+                    'last_success': bool(success),
+                    'updated_at': _now(),
+                },
+                '$inc': {'successes' if success else 'failures': 1},
+                '$setOnInsert': {'created_at': _now()},
+            },
+            upsert=True,
+        )
+    except PyMongoError as exc:
+        log_error('Unable to update provider metrics', provider=provider_name, error=str(exc))
 
 
 def _queue_status(config):
@@ -136,11 +265,15 @@ def _queue_status(config):
             config['RABBITMQ_INTAKE_QUEUE']: intake_status.method.message_count,
             config['RABBITMQ_COMPANY_QUEUE']: company_status.method.message_count,
         }
-        if config['GPU_ENABLED']:
-            gpu_status = _gpu_queue_declare(channel, config)
-            counts[config['RABBITMQ_GPU_QUEUE']] = gpu_status.method.message_count
-        else:
-            counts[config['RABBITMQ_GPU_QUEUE']] = 0
+        for provider_name, definition in ROUTABLE_PROVIDERS.items():
+            queue_name = config[definition['queue']]
+            if queue_name in counts:
+                continue
+            if config.get(definition['enabled']):
+                status = _provider_queue_declare(channel, config, queue_name)
+                counts[queue_name] = status.method.message_count
+            else:
+                counts[queue_name] = 0
         return counts
     finally:
         connection.close()
@@ -148,21 +281,31 @@ def _queue_status(config):
 
 def _role_worker_counts(config, role):
     scan_count = 1 if role in {'all', 'scanner'} and (
-        role == 'scanner' or config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']
+        role == 'scanner' or _enabled_provider_names(config)
     ) else 0
     router_count = 1 if role in {'all', 'router'} and (
-        role == 'router' or config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']
+        role == 'router' or _enabled_provider_names(config)
     ) else 0
     company_count = (
         config['COMPANY_AI_PARALLEL_CHATS']
         if role in {'all', 'company-worker'} and config['COMPANY_AI_ENABLED']
         else 0
     )
-    return scan_count, router_count, company_count
+    deepseek_count = (
+        config['DEEPSEEK_WORKER_CONCURRENCY']
+        if role in {'all', 'deepseek-worker'} and config['DEEPSEEK_ENABLED']
+        else 0
+    )
+    gemini_count = (
+        config['GEMINI_WORKER_CONCURRENCY']
+        if role in {'all', 'gemini-worker'} and config['GEMINI_ENABLED']
+        else 0
+    )
+    return scan_count, router_count, company_count, deepseek_count, gemini_count
 
 
 def _startup_worker(config, role='all'):
-    scan_count, router_count, company_count = _role_worker_counts(config, role)
+    scan_count, router_count, company_count, deepseek_count, gemini_count = _role_worker_counts(config, role)
 
     log_info(
         'Starting Company AI preprocessor',
@@ -171,6 +314,8 @@ def _startup_worker(config, role='all'):
         scan_interval=f"{config['COMPANY_AI_SCAN_INTERVAL_SECONDS']}s",
         company_ai=config['COMPANY_AI_ENABLED'],
         gpu=config['GPU_ENABLED'],
+        deepseek=config['DEEPSEEK_ENABLED'],
+        gemini=config['GEMINI_ENABLED'],
         priority_collections=len((config.get('PREPROCESSING_PRIORITIES') or {}).get('collections', {})),
         priority_boost_fields=list((config.get('PREPROCESSING_PRIORITIES') or {}).get('field_boosts', {})),
     )
@@ -191,6 +336,8 @@ def _startup_worker(config, role='all'):
             intake=counts[config['RABBITMQ_INTAKE_QUEUE']],
             gpu=counts[config['RABBITMQ_GPU_QUEUE']],
             company=counts[config['RABBITMQ_COMPANY_QUEUE']],
+            deepseek=counts[config['RABBITMQ_DEEPSEEK_QUEUE']],
+            gemini=counts[config['RABBITMQ_GEMINI_QUEUE']],
         )
     except pika.exceptions.AMQPError as exc:
         log_error('Failed to connect to RabbitMQ', error=str(exc))
@@ -201,6 +348,8 @@ def _startup_worker(config, role='all'):
         scan=scan_count,
         router=router_count,
         company_ai=company_count,
+        deepseek=deepseek_count,
+        gemini=gemini_count,
     )
 
 
@@ -210,9 +359,11 @@ def _clear_queues(config, queue_names=None):
         channel = connection.channel()
         _queue_declare(channel, config)
         _routed_queue_declare(channel, config)
-        default_queues = [config['RABBITMQ_INTAKE_QUEUE'], config['RABBITMQ_COMPANY_QUEUE']]
-        if config['GPU_ENABLED']:
-            default_queues.insert(1, config['RABBITMQ_GPU_QUEUE'])
+        default_queues = [config['RABBITMQ_INTAKE_QUEUE']]
+        for provider_name in _enabled_provider_names(config):
+            default_queues.append(config[ROUTABLE_PROVIDERS[provider_name]['queue']])
+        if config['RABBITMQ_COMPANY_QUEUE'] not in default_queues:
+            default_queues.append(config['RABBITMQ_COMPANY_QUEUE'])
         for queue_name in queue_names or default_queues:
             channel.queue_purge(queue=queue_name)
     finally:
@@ -265,14 +416,7 @@ def _publish_to_queue(task, priority, config, queue_name, channel=None):
     if channel is None:
         connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
         channel = connection.channel()
-        if queue_name == config['RABBITMQ_INTAKE_QUEUE']:
-            _queue_declare(channel, config)
-        elif queue_name == config['RABBITMQ_COMPANY_QUEUE']:
-            _company_queue_declare(channel, config)
-        elif queue_name == config['RABBITMQ_GPU_QUEUE']:
-            _gpu_queue_declare(channel, config)
-        else:
-            _company_queue_declare(channel, config)
+        _provider_queue_declare(channel, config, queue_name)
         channel.confirm_delivery()
     try:
         if not _wait_for_queue_capacity(channel, queue_name, config):
@@ -376,7 +520,10 @@ def scan_unprocessed(config):
     collection_names = []
     for metadata in database.list_collections(filter={'type': 'collection'}):
         collection_name = metadata['name']
-        if collection_name.startswith('system.') or collection_name == config['AI_TASK_COLLECTION']:
+        if collection_name.startswith('system.') or collection_name in {
+            config['AI_TASK_COLLECTION'],
+            config['AI_PROVIDER_METRICS_COLLECTION'],
+        }:
             continue
         collection_names.append(collection_name)
     connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
@@ -665,12 +812,13 @@ def _requeue_task(task, owner, error, config, channel, claimed):
         {'status': 'pending', 'error': str(error), 'updated_at': _now()},
         ['processing_owner', 'processing_started_at'],
     )
-    if config['COMPANY_AI_ENABLED']:
+    queue_name = _route_destination(task, config, channel)
+    if queue_name:
         _publish_to_queue(
             task,
             config['RABBITMQ_BACKGROUND_PRIORITY'],
             config,
-            config['RABBITMQ_COMPANY_QUEUE'],
+            queue_name,
             channel,
         )
 
@@ -700,7 +848,10 @@ def _reset_processing_for_owner(owner):
     database = get_vulnerabilities_database()
     for metadata in database.list_collections(filter={'type': 'collection'}):
         collection_name = metadata['name']
-        if collection_name.startswith('system.') or collection_name == get_config()['AI_TASK_COLLECTION']:
+        if collection_name.startswith('system.') or collection_name in {
+            get_config()['AI_TASK_COLLECTION'],
+            get_config()['AI_PROVIDER_METRICS_COLLECTION'],
+        }:
             continue
         for language in REPORT_LANGUAGES:
             path = _language_path(language)
@@ -726,7 +877,10 @@ def _reset_all_processing(config):
     database = get_vulnerabilities_database()
     for metadata in database.list_collections(filter={'type': 'collection'}):
         collection_name = metadata['name']
-        if collection_name.startswith('system.') or collection_name == get_config()['AI_TASK_COLLECTION']:
+        if collection_name.startswith('system.') or collection_name in {
+            get_config()['AI_TASK_COLLECTION'],
+            get_config()['AI_PROVIDER_METRICS_COLLECTION'],
+        }:
             continue
         for language in REPORT_LANGUAGES:
             path = _language_path(language)
@@ -860,6 +1014,7 @@ def _process_company_task(task, claimed, owner, config, worker_number):
                 config['REPORT_ITEM_JSON_RETRIES'],
             )
         _complete_task(task, owner, result, provider='company_ai')
+        _record_provider_metric(config, 'company_ai', time.monotonic() - started, True)
         log_info(
             'Task completed',
             worker=worker_number,
@@ -876,6 +1031,10 @@ def _process_company_task(task, claimed, owner, config, worker_number):
             error=str(exc),
         )
         STOP_EVENT.set()
+        _record_provider_metric(config, 'company_ai', time.monotonic() - started, False)
+        raise
+    except Exception:
+        _record_provider_metric(config, 'company_ai', time.monotonic() - started, False)
         raise
     finally:
         _delete_company_chat(provider, worker=worker_number, target=target)
@@ -956,6 +1115,131 @@ def _consume(config, worker_number):
                 connection.close()
 
 
+def _process_openai_task(task, claimed, owner, config, provider_name, worker_number):
+    definition = OPENAI_COMPATIBLE_PROVIDERS[provider_name]
+    provider = OpenAICompatibleProvider(config, definition['prefix'], definition['label'])
+    task_type = task.get('task_type', 'item')
+    target = _task_target(task)
+    started = time.monotonic()
+    try:
+        log_info(
+            'Processing task',
+            provider=provider_name,
+            worker=worker_number,
+            task_type=task_type,
+            language=task['language'],
+            target=target,
+        )
+        details = _task_details(task, config)
+        if summary_content_hash(details, task['language'], config) != task['content_hash']:
+            raise ValueError('Source details changed while the task was queued.')
+        if task_type == 'final':
+            result, _ = generate_final_data(
+                provider,
+                details['item_results'],
+                task['language'],
+                config['REPORT_FINAL_JSON_RETRIES'],
+                config,
+            )
+        else:
+            result, _ = generate_item_data(
+                provider,
+                details,
+                claimed['source_key'],
+                task['language'],
+                config['REPORT_ITEM_JSON_RETRIES'],
+            )
+        _complete_task(task, owner, result, provider=provider_name)
+        _record_provider_metric(config, provider_name, time.monotonic() - started, True)
+        log_info(
+            'Task completed',
+            provider=provider_name,
+            worker=worker_number,
+            task_type=task_type,
+            language=task['language'],
+            target=target,
+            seconds=round(time.monotonic() - started, 1),
+        )
+        return result
+    except Exception:
+        _record_provider_metric(config, provider_name, time.monotonic() - started, False)
+        raise
+
+
+def _consume_openai(config, provider_name, worker_number):
+    definition = OPENAI_COMPATIBLE_PROVIDERS[provider_name]
+    queue_name = config[definition['queue']]
+    owner = f'{provider_name}:{uuid.uuid4()}:{worker_number}'
+    while not STOP_EVENT.is_set():
+        connection = None
+        channel = None
+        active_task = None
+        active_method = None
+        try:
+            connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
+            channel = connection.channel()
+            status = _provider_queue_declare(channel, config, queue_name)
+            log_info(
+                f"{definition['label']} worker connected",
+                worker=worker_number,
+                queue=queue_name,
+                messages=status.method.message_count,
+            )
+            channel.basic_qos(prefetch_count=1)
+            for method, _, body in channel.consume(queue_name, inactivity_timeout=1):
+                if STOP_EVENT.is_set():
+                    break
+                if method is None:
+                    continue
+                task = json_util.loads(body.decode('utf-8'))
+                claimed = _claim_task(task, owner, config)
+                if claimed is None:
+                    log_info(
+                        'Skipped stale task',
+                        provider=provider_name,
+                        worker=worker_number,
+                        target=_task_target(task),
+                    )
+                    channel.basic_ack(method.delivery_tag)
+                    continue
+                active_task = task
+                active_method = method
+                if STOP_EVENT.is_set():
+                    break
+                try:
+                    _process_openai_task(
+                        task,
+                        claimed,
+                        owner,
+                        config,
+                        provider_name,
+                        worker_number,
+                    )
+                except Exception as exc:
+                    log_error(
+                        'Task failed',
+                        provider=provider_name,
+                        worker=worker_number,
+                        target=_task_target(task),
+                        error=str(exc),
+                    )
+                    _requeue_task(task, owner, exc, config, channel, claimed)
+                active_task = None
+                active_method = None
+                channel.basic_ack(method.delivery_tag)
+        except Exception as exc:
+            log_error(
+                f"{definition['label']} worker reconnecting after error",
+                worker=worker_number,
+                error=str(exc),
+            )
+            STOP_EVENT.wait(5)
+        finally:
+            _shutdown_worker(owner, None, config, channel, active_task, active_method)
+            if connection is not None and connection.is_open:
+                connection.close()
+
+
 def _scan_loop(config):
     while not STOP_EVENT.is_set():
         try:
@@ -967,15 +1251,32 @@ def _scan_loop(config):
 
 
 def _route_destination(task, config, channel):
-    company_enabled = config['COMPANY_AI_ENABLED']
-    gpu_enabled = config['GPU_ENABLED']
-    if gpu_enabled:
-        status = _gpu_queue_declare(channel, config)
-        if not company_enabled or status.method.message_count < config['GPU_QUEUE_BACKLOG_LIMIT']:
-            return config['RABBITMQ_GPU_QUEUE']
-    if company_enabled:
-        return config['RABBITMQ_COMPANY_QUEUE']
-    return None
+    enabled = [
+        (provider_name, definition)
+        for provider_name, definition in ROUTABLE_PROVIDERS.items()
+        if config.get(definition['enabled'])
+    ]
+    if not enabled:
+        return None
+    if channel is None or not hasattr(channel, 'queue_declare'):
+        return config[enabled[0][1]['queue']]
+    candidates = []
+    for provider_name, definition in enabled:
+        queue_name = config[definition['queue']]
+        status = _provider_queue_declare(channel, config, queue_name)
+        message_count = status.method.message_count
+        if (
+            provider_name == 'gpu_local'
+            and message_count >= config['GPU_QUEUE_BACKLOG_LIMIT']
+        ):
+            continue
+        workers = max(1, int(config[definition['workers']]))
+        score = (message_count / workers) + _provider_ewma_seconds(config, provider_name)
+        candidates.append((score, message_count, provider_name, queue_name))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][3]
 
 
 def _route_task(task, priority, config, channel):
@@ -1005,7 +1306,7 @@ def _route_loop(config):
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
             intake_status = _queue_declare(channel, config)
-            _company_queue_declare(channel, config)
+            _routed_queue_declare(channel, config)
             log_info(
                 'Router connected to intake queue',
                 queue=config['RABBITMQ_INTAKE_QUEUE'],
@@ -1054,7 +1355,7 @@ def _run_threads(threads):
 def run_worker(config, role='all'):
     STOP_EVENT.clear()
     threads = []
-    if role not in {'all', 'scanner', 'router', 'company-worker'}:
+    if role not in {'all', 'scanner', 'router', 'company-worker', 'deepseek-worker', 'gemini-worker'}:
         raise ValueError(f'Unsupported preprocessor role: {role}')
     if role != 'router':
         ensure_cache_indexes()
@@ -1064,7 +1365,7 @@ def run_worker(config, role='all'):
     elif role == 'router':
         threads.append(threading.Thread(target=_route_loop, args=(config,), daemon=True))
     elif role == 'all':
-        if config['COMPANY_AI_ENABLED'] or config['GPU_ENABLED']:
+        if _enabled_provider_names(config):
             threads.extend([
                 threading.Thread(target=_scan_loop, args=(config,), daemon=True),
                 threading.Thread(target=_route_loop, args=(config,), daemon=True),
@@ -1073,6 +1374,24 @@ def run_worker(config, role='all'):
         threads.extend([
             threading.Thread(target=_consume, args=(config, number), daemon=True)
             for number in range(config['COMPANY_AI_PARALLEL_CHATS'])
+        ])
+    if role in {'all', 'deepseek-worker'} and config['DEEPSEEK_ENABLED']:
+        threads.extend([
+            threading.Thread(
+                target=_consume_openai,
+                args=(config, 'deepseek', number),
+                daemon=True,
+            )
+            for number in range(config['DEEPSEEK_WORKER_CONCURRENCY'])
+        ])
+    if role in {'all', 'gemini-worker'} and config['GEMINI_ENABLED']:
+        threads.extend([
+            threading.Thread(
+                target=_consume_openai,
+                args=(config, 'gemini', number),
+                daemon=True,
+            )
+            for number in range(config['GEMINI_WORKER_CONCURRENCY'])
         ])
     if not threads:
         log_info('No workers enabled for preprocessor role; waiting for shutdown', role=role)
@@ -1090,13 +1409,13 @@ def main():
     parser.add_argument(
         '--purge-queues',
         action='store_true',
-        help='Purge intake, GPU, and Company AI queues, then exit.',
+        help='Purge intake and enabled provider queues, then exit.',
     )
     parser.add_argument(
         '--role',
-        choices=['all', 'scanner', 'router', 'company-worker'],
+        choices=['all', 'scanner', 'router', 'company-worker', 'deepseek-worker', 'gemini-worker'],
         default='all',
-        help='Run all workers, or only the scanner, intake router, or Company AI queue worker.',
+        help='Run all workers, scanner, intake router, or a provider queue worker.',
     )
     args = parser.parse_args()
     signal.signal(signal.SIGINT, lambda *_: STOP_EVENT.set())
