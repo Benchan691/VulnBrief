@@ -3,8 +3,11 @@ import json
 from GPU_server.gpu_worker import (
     LocalGPUProvider,
     compact_details,
+    declare_queues,
     process_task,
+    publish,
     summary_content_hash,
+    wait_for_queue_capacity,
 )
 from company_ai_preprocessor import summary_content_hash as application_summary_content_hash
 
@@ -21,6 +24,8 @@ def _config():
         'AI_TASK_COLLECTION': 'ai_generation_tasks',
         'GPU_ENABLED': True,
         'COMPANY_AI_ENABLED': True,
+        'RABBITMQ_MAX_PRIORITY': 10,
+        'RABBITMQ_MAX_QUEUE_SIZE': 19999,
         'PREPROCESSING_CACHE_VERSION': '1',
         'REPORT_DENY_KEYS': ['raw'],
         'REPORT_DENY_PREFIXES': ['raw_'],
@@ -72,6 +77,67 @@ def test_local_gpu_provider_requests_schema_constrained_json(monkeypatch):
     assert requests[1][1]['response_format']['type'] == 'json_schema'
     assert requests[1][1]['messages'][0]['content'] == _config()['GPU_START_PROMPT']
     assert provider.messages is None
+
+
+def test_gpu_queue_declarations_include_max_length():
+    declarations = []
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            declarations.append(kwargs)
+            return type('Status', (), {'method': type('Method', (), {'message_count': 0})()})()
+
+    config = {
+        **_config(),
+        'RABBITMQ_COMPANY_QUEUE': 'company',
+        'RABBITMQ_GPU_QUEUE': 'gpu',
+    }
+    declare_queues(FakeChannel(), config)
+    assert declarations == [
+        {
+            'queue': 'company',
+            'durable': True,
+            'arguments': {'x-max-priority': 10, 'x-max-length': 19999},
+        },
+        {
+            'queue': 'gpu',
+            'durable': True,
+            'arguments': {'x-max-priority': 10, 'x-max-length': 19999},
+        },
+    ]
+
+
+def test_gpu_publish_waits_for_queue_capacity(monkeypatch):
+    waits = []
+    published = []
+    counts = [19999, 19998]
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return type(
+                'Status',
+                (),
+                {'method': type('Method', (), {'message_count': counts.pop(0)})()},
+            )()
+
+        def basic_publish(self, **kwargs):
+            published.append(kwargs)
+
+    monkeypatch.setattr(
+        'GPU_server.gpu_worker.STOP_EVENT.wait',
+        lambda seconds: waits.append(seconds) and False,
+    )
+    config = {
+        **_config(),
+        'RABBITMQ_COMPANY_QUEUE': 'company',
+        'RABBITMQ_GPU_QUEUE': 'gpu',
+    }
+    assert wait_for_queue_capacity(FakeChannel(), 'company', config) is True
+    assert waits == [1]
+
+    counts[:] = [19998]
+    assert publish(FakeChannel(), 'company', {'storage': 'source'}, 1, config) is True
+    assert published
 
 
 def test_local_gpu_provider_corrects_invalid_json_in_same_chat(monkeypatch):

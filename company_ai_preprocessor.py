@@ -32,6 +32,7 @@ from report_harness import (
 
 STOP_EVENT = threading.Event()
 NO_PROVIDER_LOG_INTERVAL_SECONDS = 30
+QUEUE_CAPACITY_WAIT_SECONDS = 1
 _LAST_NO_PROVIDER_LOG_AT = 0
 
 
@@ -80,19 +81,26 @@ def summary_content_hash(details, language, config):
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
+def _queue_arguments(config):
+    return {
+        'x-max-priority': config['RABBITMQ_MAX_PRIORITY'],
+        'x-max-length': config['RABBITMQ_MAX_QUEUE_SIZE'],
+    }
+
+
 def _queue_declare(channel, config):
     return channel.queue_declare(
         queue=config['RABBITMQ_INTAKE_QUEUE'],
         durable=True,
-        arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+        arguments=_queue_arguments(config),
     )
 
 
 def _company_queue_declare(channel, config):
-    channel.queue_declare(
+    return channel.queue_declare(
         queue=config['RABBITMQ_COMPANY_QUEUE'],
         durable=True,
-        arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+        arguments=_queue_arguments(config),
     )
 
 
@@ -100,7 +108,7 @@ def _gpu_queue_declare(channel, config):
     return channel.queue_declare(
         queue=config['RABBITMQ_GPU_QUEUE'],
         durable=True,
-        arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+        arguments=_queue_arguments(config),
     )
 
 
@@ -123,11 +131,7 @@ def _queue_status(config):
     try:
         channel = connection.channel()
         intake_status = _queue_declare(channel, config)
-        company_status = channel.queue_declare(
-            queue=config['RABBITMQ_COMPANY_QUEUE'],
-            durable=True,
-            arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
-        )
+        company_status = _company_queue_declare(channel, config)
         counts = {
             config['RABBITMQ_INTAKE_QUEUE']: intake_status.method.message_count,
             config['RABBITMQ_COMPANY_QUEUE']: company_status.method.message_count,
@@ -235,6 +239,27 @@ def _publish(task, priority, config, channel=None):
     return _publish_to_queue(task, priority, config, config['RABBITMQ_INTAKE_QUEUE'], channel)
 
 
+def _queue_message_count(channel, queue_name):
+    status = channel.queue_declare(queue=queue_name, passive=True)
+    return status.method.message_count
+
+
+def _wait_for_queue_capacity(channel, queue_name, config):
+    max_size = config['RABBITMQ_MAX_QUEUE_SIZE']
+    logged = False
+    while _queue_message_count(channel, queue_name) >= max_size:
+        if not logged:
+            log_info(
+                'Queue at max size; waiting before publish',
+                queue=queue_name,
+                max_size=max_size,
+            )
+            logged = True
+        if STOP_EVENT.wait(QUEUE_CAPACITY_WAIT_SECONDS):
+            return False
+    return True
+
+
 def _publish_to_queue(task, priority, config, queue_name, channel=None):
     connection = None
     if channel is None:
@@ -250,6 +275,8 @@ def _publish_to_queue(task, priority, config, queue_name, channel=None):
             _company_queue_declare(channel, config)
         channel.confirm_delivery()
     try:
+        if not _wait_for_queue_capacity(channel, queue_name, config):
+            return False
         channel.basic_publish(
             exchange='',
             routing_key=queue_name,
@@ -260,6 +287,7 @@ def _publish_to_queue(task, priority, config, queue_name, channel=None):
                 priority=max(0, min(priority, config['RABBITMQ_MAX_PRIORITY'])),
             ),
         )
+        return True
     finally:
         if connection is not None:
             connection.close()

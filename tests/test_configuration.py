@@ -51,6 +51,7 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         COMPANY_AI_PARALLEL_CHATS='6',
         COMPANY_AI_ENABLED='true',
         RABBITMQ_MAX_PRIORITY='8',
+        RABBITMQ_MAX_QUEUE_SIZE='19999',
         RABBITMQ_BACKGROUND_PRIORITY='2',
         RABBITMQ_REPORT_PRIORITY='8',
         COMPANY_AI_SCAN_INTERVAL_SECONDS='30',
@@ -99,6 +100,7 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['RABBITMQ_GPU_QUEUE'] == 'gpu_preprocessing'
     assert loaded['RABBITMQ_COMPANY_QUEUE'] == 'company_ai_processing'
     assert loaded['RABBITMQ_MAX_PRIORITY'] == 8
+    assert loaded['RABBITMQ_MAX_QUEUE_SIZE'] == 19999
     assert loaded['RABBITMQ_BACKGROUND_PRIORITY'] == 2
     assert loaded['RABBITMQ_REPORT_PRIORITY'] == 8
     assert loaded['COMPANY_AI_SCAN_INTERVAL_SECONDS'] == 30

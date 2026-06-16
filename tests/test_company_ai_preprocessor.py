@@ -12,10 +12,12 @@ from company_ai_preprocessor import (
     _gpu_queue_declare,
     _now,
     _process_company_task,
+    _publish_to_queue,
     _queue_status,
     _route_loop,
     _route_task,
     _routed_queue_declare,
+    _wait_for_queue_capacity,
     _release_processing_task,
     _requeue_task,
     _reset_processing_for_owner,
@@ -753,7 +755,71 @@ def test_gpu_queue_has_no_automatic_dead_letter_to_disabled_provider():
     config = dict(app.config)
     _gpu_queue_declare(FakeChannel(), config)
     gpu = next(item for item in declarations if item['queue'] == config['RABBITMQ_GPU_QUEUE'])
-    assert gpu['arguments'] == {'x-max-priority': config['RABBITMQ_MAX_PRIORITY']}
+    assert gpu['arguments'] == {
+        'x-max-priority': config['RABBITMQ_MAX_PRIORITY'],
+        'x-max-length': config['RABBITMQ_MAX_QUEUE_SIZE'],
+    }
+
+
+def test_publish_proceeds_when_queue_has_capacity():
+    published = []
+    declarations = []
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            declarations.append(kwargs)
+            return type('Status', (), {'method': type('Method', (), {'message_count': 10})()})()
+
+        def basic_publish(self, **kwargs):
+            published.append(kwargs)
+
+    config = {**dict(app.config), 'RABBITMQ_MAX_QUEUE_SIZE': 19999}
+    assert _publish_to_queue(
+        {'storage': 'source'},
+        1,
+        config,
+        config['RABBITMQ_INTAKE_QUEUE'],
+        FakeChannel(),
+    ) is True
+    assert published
+    assert declarations[-1] == {'queue': config['RABBITMQ_INTAKE_QUEUE'], 'passive': True}
+
+
+def test_wait_for_queue_capacity_retries_until_below_limit(monkeypatch):
+    waits = []
+    counts = [19999, 19999, 19998]
+
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return type(
+                'Status',
+                (),
+                {'method': type('Method', (), {'message_count': counts.pop(0)})()},
+            )()
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor.STOP_EVENT.wait',
+        lambda seconds: waits.append(seconds) and False,
+    )
+    assert _wait_for_queue_capacity(
+        FakeChannel(),
+        app.config['RABBITMQ_INTAKE_QUEUE'],
+        {**dict(app.config), 'RABBITMQ_MAX_QUEUE_SIZE': 19999},
+    ) is True
+    assert waits == [1, 1]
+
+
+def test_wait_for_queue_capacity_stops_on_shutdown(monkeypatch):
+    class FakeChannel:
+        def queue_declare(self, **kwargs):
+            return type('Status', (), {'method': type('Method', (), {'message_count': 19999})()})()
+
+    monkeypatch.setattr('company_ai_preprocessor.STOP_EVENT.wait', lambda seconds: True)
+    assert _wait_for_queue_capacity(
+        FakeChannel(),
+        app.config['RABBITMQ_INTAKE_QUEUE'],
+        {**dict(app.config), 'RABBITMQ_MAX_QUEUE_SIZE': 19999},
+    ) is False
 
 
 def test_router_never_sends_to_disabled_providers(monkeypatch):

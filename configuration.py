@@ -144,6 +144,7 @@ def load_application_config(base_dir, require_local=True):
             'company_ai_processing',
         ),
         'RABBITMQ_MAX_PRIORITY': min(255, _env_int('RABBITMQ_MAX_PRIORITY', 10)),
+        'RABBITMQ_MAX_QUEUE_SIZE': _env_int('RABBITMQ_MAX_QUEUE_SIZE', 19999),
         'RABBITMQ_BACKGROUND_PRIORITY': _env_int('RABBITMQ_BACKGROUND_PRIORITY', 1),
         'RABBITMQ_REPORT_PRIORITY': _env_int('RABBITMQ_REPORT_PRIORITY', 10),
         'COMPANY_AI_SCAN_INTERVAL_SECONDS': _env_int('COMPANY_AI_SCAN_INTERVAL_SECONDS', 60),

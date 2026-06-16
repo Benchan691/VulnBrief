@@ -16,6 +16,7 @@ from pymongo import MongoClient, ReturnDocument
 
 
 STOP_EVENT = threading.Event()
+QUEUE_CAPACITY_WAIT_SECONDS = 1
 REPORT_LANGUAGES = {
     'en': 'English',
     'zh': 'Traditional Chinese',
@@ -105,6 +106,7 @@ def load_config():
             'company_ai_processing',
         ),
         'RABBITMQ_MAX_PRIORITY': _env_int('RABBITMQ_MAX_PRIORITY', 10),
+        'RABBITMQ_MAX_QUEUE_SIZE': _env_int('RABBITMQ_MAX_QUEUE_SIZE', 19999),
         'RABBITMQ_BACKGROUND_PRIORITY': _env_int('RABBITMQ_BACKGROUND_PRIORITY', 1),
         'GPU_ENABLED': _env_bool('GPU_ENABLED', True),
         'COMPANY_AI_ENABLED': _env_bool('COMPANY_AI_ENABLED', True),
@@ -203,16 +205,23 @@ def _language_path(language, field=None):
     return f'{path}.{field}' if field else path
 
 
+def queue_arguments(config):
+    return {
+        'x-max-priority': config['RABBITMQ_MAX_PRIORITY'],
+        'x-max-length': config['RABBITMQ_MAX_QUEUE_SIZE'],
+    }
+
+
 def declare_queues(channel, config):
     channel.queue_declare(
         queue=config['RABBITMQ_COMPANY_QUEUE'],
         durable=True,
-        arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+        arguments=queue_arguments(config),
     )
     return channel.queue_declare(
         queue=config['RABBITMQ_GPU_QUEUE'],
         durable=True,
-        arguments={'x-max-priority': config['RABBITMQ_MAX_PRIORITY']},
+        arguments=queue_arguments(config),
     )
 
 
@@ -235,7 +244,29 @@ def try_clear_gpu_queue(config):
         return False
 
 
+def queue_message_count(channel, queue_name):
+    status = channel.queue_declare(queue=queue_name, passive=True)
+    return status.method.message_count
+
+
+def wait_for_queue_capacity(channel, queue_name, config):
+    max_size = config['RABBITMQ_MAX_QUEUE_SIZE']
+    logged = False
+    while queue_message_count(channel, queue_name) >= max_size:
+        if not logged:
+            print(
+                f'Queue {queue_name} at max size {max_size}; waiting before publish.',
+                flush=True,
+            )
+            logged = True
+        if STOP_EVENT.wait(QUEUE_CAPACITY_WAIT_SECONDS):
+            return False
+    return True
+
+
 def publish(channel, queue_name, task, priority, config):
+    if not wait_for_queue_capacity(channel, queue_name, config):
+        return False
     channel.basic_publish(
         exchange='',
         routing_key=queue_name,
@@ -246,6 +277,7 @@ def publish(channel, queue_name, task, priority, config):
             priority=max(0, min(priority, config['RABBITMQ_MAX_PRIORITY'])),
         ),
     )
+    return True
 
 
 class LocalGPUProvider:
