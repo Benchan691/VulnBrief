@@ -231,7 +231,7 @@ def test_gpu_failure_resets_task_and_routes_to_company(monkeypatch):
         'language': 'en',
         'content_hash': summary_content_hash({'description': 'evidence'}, 'en', config),
     }
-    process_task(FakeDatabase(), object(), task, 'gpu-owner', FailingProvider(), config)
+    process_task(FakeDatabase(), object(), task, 'gpu-owner', FailingProvider(), config, 0)
     assert updates[-1]['status'] == 'pending'
     assert updates[-1]['error'] == 'GPU unavailable'
     assert published == ['company']
@@ -281,7 +281,7 @@ def test_gpu_processes_shared_final_task(monkeypatch):
         'language': 'en',
         'content_hash': summary_content_hash(payload, 'en', config),
     }
-    process_task(FakeDatabase(), object(), task, 'gpu-owner', Provider(), config)
+    process_task(FakeDatabase(), object(), task, 'gpu-owner', Provider(), config, 0)
     assert updates[-1]['status'] == 'completed'
     assert updates[-1]['provider'] == 'gpu_local'
     assert updates[-1]['result']['executive_summary'] == 'GPU final'

@@ -22,6 +22,30 @@ REPORT_LANGUAGES = {
     'zh': 'Traditional Chinese',
     'ch': 'Simplified Chinese',
 }
+
+
+def _format_log_fields(fields):
+    if not fields:
+        return ''
+    return ' ' + ' '.join(f'{key}={value}' for key, value in fields.items())
+
+
+def log_info(message, **fields):
+    print(f'[preprocessor] {message}{_format_log_fields(fields)}', flush=True)
+
+
+def log_error(message, **fields):
+    print(f'[preprocessor] ERROR {message}{_format_log_fields(fields)}', flush=True)
+
+
+def _task_target(task):
+    if task.get('source_collection') and task.get('source_id') is not None:
+        return f"{task['source_collection']}/{task['source_id']}"
+    if task.get('task_id') is not None:
+        return f"shared/{task['task_id']}"
+    return 'unknown'
+
+
 ITEM_SCHEMA = {
     'type': 'object',
     'required': ['highlight', 'recommendations'],
@@ -270,7 +294,7 @@ def try_clear_gpu_queue(config):
         clear_gpu_queue(config)
         return True
     except pika.exceptions.AMQPError as exc:
-        print(f'Unable to clear GPU preprocessing queue: {exc}', flush=True)
+        log_error('Unable to clear GPU preprocessing queue', error=str(exc))
         return False
 
 
@@ -284,9 +308,10 @@ def wait_for_queue_capacity(channel, queue_name, config):
     logged = False
     while queue_message_count(channel, queue_name) >= max_size:
         if not logged:
-            print(
-                f'Queue {queue_name} at max size {max_size}; waiting before publish.',
-                flush=True,
+            log_info(
+                'Queue at max size; waiting before publish',
+                queue=queue_name,
+                max_size=max_size,
             )
             logged = True
         if STOP_EVENT.wait(QUEUE_CAPACITY_WAIT_SECONDS):
@@ -495,8 +520,10 @@ def update_shared_task(collection, task, owner, values, unset_fields):
     )
 
 
-def process_task(database, channel, task, owner, provider, config):
+def process_task(database, channel, task, owner, provider, config, worker_number):
     shared = task.get('storage') == 'shared'
+    task_type = task.get('task_type', 'item')
+    target = _task_target(task)
     collection = database[
         config['AI_TASK_COLLECTION'] if shared else task['source_collection']
     ]
@@ -505,8 +532,27 @@ def process_task(database, channel, task, owner, provider, config):
         if shared else claim_task(collection, task, owner, config)
     )
     if claimed is None:
+        log_info(
+            'Skipped stale task',
+            worker=worker_number,
+            provider='gpu_local',
+            task_type=task_type,
+            language=task.get('language'),
+            target=target,
+        )
         return
+    started = time.monotonic()
     try:
+        log_info(
+            'Processing task',
+            worker=worker_number,
+            provider='gpu_local',
+            inference=getattr(provider, 'base_url', None),
+            task_type=task_type,
+            language=task['language'],
+            target=target,
+            attempt=claimed.get('attempts'),
+        )
         provider.open_chat()
         if shared:
             details = claimed.get('payload')
@@ -515,7 +561,7 @@ def process_task(database, channel, task, owner, provider, config):
             details = compact_details((document or {}).get('details'), config)
         if summary_content_hash(details, task['language'], config) != task['content_hash']:
             raise ValueError('Source details changed while the task was queued.')
-        if task.get('task_type', 'item') == 'final':
+        if task_type == 'final':
             result = provider.generate_final(
                 details['item_results'],
                 REPORT_LANGUAGES[task['language']],
@@ -537,6 +583,15 @@ def process_task(database, channel, task, owner, provider, config):
             },
             ['processing_owner', 'processing_started_at', 'error'],
         )
+        log_info(
+            'Task completed',
+            worker=worker_number,
+            provider='gpu_local',
+            task_type=task_type,
+            language=task['language'],
+            target=target,
+            seconds=round(time.monotonic() - started, 1),
+        )
     except Exception as exc:
         updater = update_shared_task if shared else update_task
         updater(
@@ -546,14 +601,38 @@ def process_task(database, channel, task, owner, provider, config):
             {'status': 'pending', 'error': str(exc), 'updated_at': _now()},
             ['processing_owner', 'processing_started_at'],
         )
-        target = None
+        republish_queue = None
         if claimed.get('attempts', 0) >= config['GPU_MAX_TASK_ATTEMPTS']:
             if config['COMPANY_AI_ENABLED']:
-                target = config['RABBITMQ_COMPANY_QUEUE']
+                republish_queue = config['RABBITMQ_COMPANY_QUEUE']
         elif config['GPU_ENABLED']:
-            target = config['RABBITMQ_GPU_QUEUE']
-        if target:
-            publish(channel, target, task, config['RABBITMQ_BACKGROUND_PRIORITY'], config)
+            republish_queue = config['RABBITMQ_GPU_QUEUE']
+        if republish_queue:
+            publish(channel, republish_queue, task, config['RABBITMQ_BACKGROUND_PRIORITY'], config)
+            log_error(
+                'Task failed; republished',
+                worker=worker_number,
+                provider='gpu_local',
+                task_type=task_type,
+                language=task.get('language'),
+                target=target,
+                attempt=claimed.get('attempts'),
+                queue=republish_queue,
+                error=str(exc),
+                seconds=round(time.monotonic() - started, 1),
+            )
+        else:
+            log_error(
+                'Task failed',
+                worker=worker_number,
+                provider='gpu_local',
+                task_type=task_type,
+                language=task.get('language'),
+                target=target,
+                attempt=claimed.get('attempts'),
+                error=str(exc),
+                seconds=round(time.monotonic() - started, 1),
+            )
     finally:
         provider.close_chat()
 
@@ -597,17 +676,24 @@ def consume(config, worker_number):
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
     provider = LocalGPUProvider(config, base_url=base_url)
-    print(
-        f'GPU worker {worker_number} bound to {base_url} '
-        f'({worker_number + 1}/{config["GPU_WORKER_CONCURRENCY"]})',
-        flush=True,
+    log_info(
+        'GPU worker bound to inference endpoint',
+        worker=worker_number,
+        inference=base_url,
+        slot=f'{worker_number + 1}/{config["GPU_WORKER_CONCURRENCY"]}',
     )
     while not STOP_EVENT.is_set():
         connection = None
         try:
             connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
             channel = connection.channel()
-            declare_queues(channel, config)
+            gpu_status = declare_queues(channel, config)
+            log_info(
+                'GPU worker connected',
+                worker=worker_number,
+                queue=config['RABBITMQ_GPU_QUEUE'],
+                messages=gpu_status.method.message_count,
+            )
             channel.confirm_delivery()
             channel.basic_qos(prefetch_count=1)
             for method, _, body in channel.consume(
@@ -625,10 +711,15 @@ def consume(config, worker_number):
                     owner,
                     provider,
                     config,
+                    worker_number,
                 )
                 channel.basic_ack(method.delivery_tag)
         except Exception as exc:
-            print(f'GPU worker {worker_number} reconnecting after error: {exc}', flush=True)
+            log_error(
+                'GPU worker reconnecting after error',
+                worker=worker_number,
+                error=str(exc),
+            )
             STOP_EVENT.wait(5)
         finally:
             if connection is not None and connection.is_open:
@@ -643,15 +734,14 @@ def main():
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
     reset_gpu_processing(database, config)
-    print(
+    log_info(
         'GPU worker configuration',
-        f'instances={config["GPU_INSTANCE_COUNT"]}',
-        f'concurrency={config["GPU_WORKER_CONCURRENCY"]}',
-        f'urls={",".join(config["GPU_INFERENCE_BASE_URLS"])}',
-        flush=True,
+        instances=config['GPU_INSTANCE_COUNT'],
+        concurrency=config['GPU_WORKER_CONCURRENCY'],
+        urls=','.join(config['GPU_INFERENCE_BASE_URLS']),
     )
     if not config['GPU_ENABLED']:
-        print('GPU processing is disabled; waiting for shutdown.', flush=True)
+        log_info('GPU processing is disabled; waiting for shutdown')
         try:
             while not STOP_EVENT.wait(1):
                 pass
