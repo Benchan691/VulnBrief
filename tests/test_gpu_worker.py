@@ -287,15 +287,43 @@ def test_gpu_processes_shared_final_task(monkeypatch):
     assert updates[-1]['result']['executive_summary'] == 'GPU final'
 
 
-def test_load_inference_base_urls_from_instance_count(monkeypatch):
+def test_load_inference_base_urls_from_instance_count_docker(monkeypatch):
     monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
     monkeypatch.setenv('GPU_INSTANCE_COUNT', '3')
     monkeypatch.delenv('GPU_INFERENCE_BASE_URL', raising=False)
+    monkeypatch.delenv('GPU_INFERENCE_HOST', raising=False)
+    monkeypatch.setenv('GPU_INFERENCE_NETWORK', 'docker')
 
     assert load_inference_base_urls() == [
         'http://llama-server-0:8080/v1',
         'http://llama-server-1:8080/v1',
         'http://llama-server-2:8080/v1',
+    ]
+
+
+def test_load_inference_base_urls_from_instance_count_host(monkeypatch):
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
+    monkeypatch.setenv('GPU_INSTANCE_COUNT', '3')
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URL', raising=False)
+    monkeypatch.delenv('GPU_INFERENCE_HOST', raising=False)
+    monkeypatch.delenv('GPU_INFERENCE_NETWORK', raising=False)
+
+    assert load_inference_base_urls() == [
+        'http://127.0.0.1:8080/v1',
+        'http://127.0.0.1:8081/v1',
+        'http://127.0.0.1:8082/v1',
+    ]
+
+
+def test_load_inference_base_urls_host_override(monkeypatch):
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
+    monkeypatch.setenv('GPU_INSTANCE_COUNT', '2')
+    monkeypatch.setenv('GPU_INFERENCE_HOST', '10.0.0.5')
+    monkeypatch.setenv('GPU_INFERENCE_BASE_PORT', '9000')
+
+    assert load_inference_base_urls() == [
+        'http://10.0.0.5:9000/v1',
+        'http://10.0.0.5:9001/v1',
     ]
 
 
@@ -314,6 +342,7 @@ def test_load_config_defaults_worker_concurrency_to_instance_count(monkeypatch):
     monkeypatch.setenv('GPU_INSTANCE_COUNT', '3')
     monkeypatch.delenv('GPU_WORKER_CONCURRENCY', raising=False)
     monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
+    monkeypatch.setenv('GPU_INFERENCE_NETWORK', 'docker')
 
     config = load_config()
 

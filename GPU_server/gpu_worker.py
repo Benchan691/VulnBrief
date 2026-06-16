@@ -3,10 +3,12 @@ import html
 import json
 import os
 import signal
+import socket
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import pika
 import requests
@@ -36,6 +38,58 @@ def log_info(message, **fields):
 
 def log_error(message, **fields):
     print(f'[preprocessor] ERROR {message}{_format_log_fields(fields)}', flush=True)
+
+
+_DEBUG_LOG_PATH = os.environ.get(
+    'DEBUG_AGENT_LOG_PATH',
+    '/Users/chankokpan/Documents/webserver/.cursor/debug-bffc5d.log',
+)
+
+
+def _agent_debug_log(location, message, data, hypothesis_id, run_id='pre-fix'):
+    # #region agent log
+    payload = {
+        'sessionId': 'bffc5d',
+        'runId': run_id,
+        'hypothesisId': hypothesis_id,
+        'location': location,
+        'message': message,
+        'data': data,
+        'timestamp': int(time.time() * 1000),
+    }
+    try:
+        with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps(payload, default=str) + '\n')
+    except OSError:
+        pass
+    # #endregion
+
+
+def _running_in_docker():
+    if os.environ.get('GPU_INFERENCE_NETWORK', '').strip().lower() == 'docker':
+        return True
+    return os.path.exists('/.dockerenv')
+
+
+def _hostname_resolves(hostname):
+    if not hostname:
+        return False
+    if hostname in {'127.0.0.1', 'localhost', '::1'}:
+        return True
+    try:
+        socket.getaddrinfo(hostname, None)
+        return True
+    except socket.gaierror:
+        return False
+
+
+def validate_inference_urls(urls):
+    issues = []
+    for index, url in enumerate(urls):
+        hostname = urlparse(url).hostname or ''
+        if not _hostname_resolves(hostname):
+            issues.append({'worker': index, 'url': url, 'hostname': hostname})
+    return issues
 
 
 def _task_target(task):
@@ -124,6 +178,22 @@ def load_inference_base_urls():
                 'http://llama-server:8080/v1',
             ).rstrip('/'),
         ]
+
+    host_override = os.environ.get('GPU_INFERENCE_HOST', '').strip()
+    if host_override:
+        base_port = _env_int('GPU_INFERENCE_BASE_PORT', 8080)
+        return [
+            f'http://{host_override}:{base_port + index}/v1'
+            for index in range(instance_count)
+        ]
+
+    if not _running_in_docker():
+        base_port = _env_int('GPU_INFERENCE_BASE_PORT', 8080)
+        return [
+            f'http://127.0.0.1:{base_port + index}/v1'
+            for index in range(instance_count)
+        ]
+
     return [f'http://llama-server-{index}:8080/v1' for index in range(instance_count)]
 
 
@@ -734,12 +804,50 @@ def main():
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
     reset_gpu_processing(database, config)
+    inference_urls = config['GPU_INFERENCE_BASE_URLS']
+    _agent_debug_log(
+        'gpu_worker.py:main',
+        'GPU worker startup inference config',
+        {
+            'in_docker': _running_in_docker(),
+            'instance_count': config['GPU_INSTANCE_COUNT'],
+            'concurrency': config['GPU_WORKER_CONCURRENCY'],
+            'inference_urls': inference_urls,
+            'gpu_inference_host': os.environ.get('GPU_INFERENCE_HOST', ''),
+            'gpu_inference_base_urls_set': bool(
+                os.environ.get('GPU_INFERENCE_BASE_URLS', '').strip(),
+            ),
+        },
+        hypothesis_id='H1',
+    )
     log_info(
         'GPU worker configuration',
         instances=config['GPU_INSTANCE_COUNT'],
         concurrency=config['GPU_WORKER_CONCURRENCY'],
-        urls=','.join(config['GPU_INFERENCE_BASE_URLS']),
+        in_docker=_running_in_docker(),
+        urls=','.join(inference_urls),
     )
+    unresolved = validate_inference_urls(inference_urls)
+    for issue in unresolved:
+        _agent_debug_log(
+            'gpu_worker.py:main',
+            'Inference hostname does not resolve',
+            issue,
+            hypothesis_id='H1',
+        )
+        log_error(
+            'Inference endpoint hostname does not resolve',
+            worker=issue['worker'],
+            url=issue['url'],
+            hostname=issue['hostname'],
+            hint=(
+                'Use GPU_INFERENCE_BASE_URLS=http://127.0.0.1:8080/v1,... when running '
+                'gpu_worker on the host, or start gpu-worker via '
+                'docker compose --profile per-gpu up -d'
+            ),
+        )
+    if unresolved:
+        raise SystemExit(1)
     if not config['GPU_ENABLED']:
         log_info('GPU processing is disabled; waiting for shutdown')
         try:
