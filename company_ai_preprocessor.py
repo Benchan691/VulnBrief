@@ -36,24 +36,6 @@ NO_PROVIDER_LOG_INTERVAL_SECONDS = 30
 QUEUE_CAPACITY_WAIT_SECONDS = 1
 _LAST_NO_PROVIDER_LOG_AT = 0
 PROVIDER_METRIC_ALPHA = 0.3
-_DEBUG_LOG_PATH = '/Users/chankokpan/Documents/webserver/.cursor/debug-bffc5d.log'
-
-
-def _agent_debug_log(hypothesis_id, location, message, data=None):
-    # #region agent log
-    try:
-        with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps({
-                'sessionId': 'bffc5d',
-                'hypothesisId': hypothesis_id,
-                'location': location,
-                'message': message,
-                'data': data or {},
-                'timestamp': int(time.time() * 1000),
-            }) + '\n')
-    except OSError:
-        pass
-    # #endregion
 
 
 OPENAI_COMPATIBLE_PROVIDERS = {
@@ -156,30 +138,9 @@ def _declare_durable_queue(connection, channel, queue_name, config):
             durable=True,
             arguments=arguments,
         )
-        # #region agent log
-        _agent_debug_log(
-            'H3',
-            'company_ai_preprocessor.py:_declare_durable_queue:declare_ok',
-            'queue declare succeeded',
-            {'queue': queue_name, 'messages': result.method.message_count},
-        )
-        # #endregion
         return channel, result
     except pika.exceptions.ChannelClosedByBroker as exc:
         reply_code = getattr(exc, 'reply_code', None)
-        # #region agent log
-        _agent_debug_log(
-            'H1',
-            'company_ai_preprocessor.py:_declare_durable_queue:declare_failed',
-            'queue declare precondition failed',
-            {
-                'queue': queue_name,
-                'desired_arguments': arguments,
-                'error': str(exc),
-                'reply_code': reply_code,
-            },
-        )
-        # #endregion
         if reply_code != 406:
             raise
         log_error(
@@ -189,18 +150,6 @@ def _declare_durable_queue(connection, channel, queue_name, config):
         )
         channel = connection.channel()
         result = channel.queue_declare(queue=queue_name, passive=True)
-        # #region agent log
-        _agent_debug_log(
-            'H2',
-            'company_ai_preprocessor.py:_declare_durable_queue:passive_ok',
-            'passive declare succeeded for mismatched queue',
-            {
-                'queue': queue_name,
-                'messages': result.method.message_count,
-                'consumer_count': result.method.consumer_count,
-            },
-        )
-        # #endregion
         return channel, result
 
 
@@ -245,9 +194,24 @@ def _enabled_provider_names(config):
     ]
 
 
+def _queue_consumer_count(status):
+    return int(getattr(status.method, 'consumer_count', 0) or 0)
+
+
+def _routable_providers(connection, channel, config):
+    available = []
+    for provider_name, definition in ROUTABLE_PROVIDERS.items():
+        queue_name = config[definition['queue']]
+        channel, status = _provider_queue_declare(connection, channel, config, queue_name)
+        if _queue_consumer_count(status) <= 0:
+            continue
+        available.append((provider_name, definition, status))
+    return available, channel
+
+
 def _routed_queue_declare(connection, channel, config):
-    for provider_name in _enabled_provider_names(config):
-        queue_name = config[ROUTABLE_PROVIDERS[provider_name]['queue']]
+    for definition in ROUTABLE_PROVIDERS.values():
+        queue_name = config[definition['queue']]
         channel, _ = _provider_queue_declare(connection, channel, config, queue_name)
     return channel
 
@@ -309,21 +273,6 @@ def _record_provider_metric(config, provider_name, seconds, success):
 
 
 def _queue_status(config):
-    # #region agent log
-    _agent_debug_log(
-        'H4',
-        'company_ai_preprocessor.py:_queue_status:entry',
-        'queue declare config',
-        {
-            'intake_queue': repr(config['RABBITMQ_INTAKE_QUEUE']),
-            'company_queue': repr(config['RABBITMQ_COMPANY_QUEUE']),
-            'gpu_queue': repr(config['RABBITMQ_GPU_QUEUE']),
-            'max_priority': config['RABBITMQ_MAX_PRIORITY'],
-            'max_queue_size': config['RABBITMQ_MAX_QUEUE_SIZE'],
-            'desired_arguments': _queue_arguments(config),
-        },
-    )
-    # #endregion
     connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
     try:
         channel = connection.channel()
@@ -333,27 +282,20 @@ def _queue_status(config):
             config['RABBITMQ_INTAKE_QUEUE']: intake_status.method.message_count,
             config['RABBITMQ_COMPANY_QUEUE']: company_status.method.message_count,
         }
-        for provider_name, definition in ROUTABLE_PROVIDERS.items():
+        for definition in ROUTABLE_PROVIDERS.values():
             queue_name = config[definition['queue']]
             if queue_name in counts:
                 continue
-            if config.get(definition['enabled']):
-                channel, status = _provider_queue_declare(connection, channel, config, queue_name)
-                counts[queue_name] = status.method.message_count
-            else:
-                counts[queue_name] = 0
+            channel, status = _provider_queue_declare(connection, channel, config, queue_name)
+            counts[queue_name] = status.method.message_count
         return counts
     finally:
         connection.close()
 
 
 def _role_worker_counts(config, role):
-    scan_count = 1 if role in {'all', 'scanner'} and (
-        role == 'scanner' or _enabled_provider_names(config)
-    ) else 0
-    router_count = 1 if role in {'all', 'router'} and (
-        role == 'router' or _enabled_provider_names(config)
-    ) else 0
+    scan_count = 1 if role in {'all', 'scanner'} else 0
+    router_count = 1 if role in {'all', 'router'} else 0
     company_count = (
         config['COMPANY_AI_PARALLEL_CHATS']
         if role in {'all', 'company-worker'} and config['COMPANY_AI_ENABLED']
@@ -428,10 +370,10 @@ def _clear_queues(config, queue_names=None):
         channel, _ = _queue_declare(connection, channel, config)
         channel = _routed_queue_declare(connection, channel, config)
         default_queues = [config['RABBITMQ_INTAKE_QUEUE']]
-        for provider_name in _enabled_provider_names(config):
-            default_queues.append(config[ROUTABLE_PROVIDERS[provider_name]['queue']])
-        if config['RABBITMQ_COMPANY_QUEUE'] not in default_queues:
-            default_queues.append(config['RABBITMQ_COMPANY_QUEUE'])
+        for definition in ROUTABLE_PROVIDERS.values():
+            queue_name = config[definition['queue']]
+            if queue_name not in default_queues:
+                default_queues.append(queue_name)
         for queue_name in queue_names or default_queues:
             channel.queue_purge(queue=queue_name)
     finally:
@@ -1315,20 +1257,17 @@ def _scan_loop(config):
 
 
 def _route_destination(task, config, channel):
-    enabled = [
-        (provider_name, definition)
-        for provider_name, definition in ROUTABLE_PROVIDERS.items()
-        if config.get(definition['enabled'])
-    ]
-    if not enabled:
-        return None, channel
     if channel is None or not hasattr(channel, 'queue_declare'):
-        return config[enabled[0][1]['queue']], channel
+        for definition in ROUTABLE_PROVIDERS.values():
+            if config.get(definition['enabled']):
+                return config[definition['queue']], channel
+        return None, channel
+    available, channel = _routable_providers(channel.connection, channel, config)
+    if not available:
+        return None, channel
     candidates = []
-    connection = channel.connection
-    for provider_name, definition in enabled:
+    for provider_name, definition, status in available:
         queue_name = config[definition['queue']]
-        channel, status = _provider_queue_declare(connection, channel, config, queue_name)
         message_count = status.method.message_count
         if (
             provider_name == 'gpu_local'
@@ -1357,7 +1296,7 @@ def _nack_unroutable_task(channel, method, task):
     now = time.monotonic()
     if now - _LAST_NO_PROVIDER_LOG_AT >= NO_PROVIDER_LOG_INTERVAL_SECONDS:
         log_error(
-            'No preprocessing provider enabled; leaving intake task queued',
+            'No preprocessing consumer available; leaving intake task queued',
             target=_task_target(task),
         )
         _LAST_NO_PROVIDER_LOG_AT = now
@@ -1430,11 +1369,10 @@ def run_worker(config, role='all'):
     elif role == 'router':
         threads.append(threading.Thread(target=_route_loop, args=(config,), daemon=True))
     elif role == 'all':
-        if _enabled_provider_names(config):
-            threads.extend([
-                threading.Thread(target=_scan_loop, args=(config,), daemon=True),
-                threading.Thread(target=_route_loop, args=(config,), daemon=True),
-            ])
+        threads.extend([
+            threading.Thread(target=_scan_loop, args=(config,), daemon=True),
+            threading.Thread(target=_route_loop, args=(config,), daemon=True),
+        ])
     if role in {'all', 'company-worker'} and config['COMPANY_AI_ENABLED']:
         threads.extend([
             threading.Thread(target=_consume, args=(config, number), daemon=True)

@@ -44,8 +44,9 @@ def _fake_queue_declare(connection, channel, config):
     return channel, status
 
 
-def _routing_channel(message_counts=None):
+def _routing_channel(message_counts=None, consumer_counts=None):
     message_counts = message_counts or {}
+    default_consumer_count = 1 if consumer_counts is None else None
 
     class FakeConnection:
         def channel(self):
@@ -58,14 +59,38 @@ def _routing_channel(message_counts=None):
         def queue_declare(self, **kwargs):
             queue = kwargs.get('queue')
             count = message_counts.get(queue, 0)
+            if consumer_counts is None:
+                consumers = default_consumer_count
+            else:
+                consumers = consumer_counts.get(queue, 0)
             return type(
                 'QueueStatus',
                 (),
-                {'method': type('Method', (), {'message_count': count})()},
+                {
+                    'method': type(
+                        'Method',
+                        (),
+                        {'message_count': count, 'consumer_count': consumers},
+                    )()
+                },
             )()
 
     channel = FakeChannel()
     return channel
+
+
+def _routing_channel_for_providers(providers, message_counts=None):
+    config = app.config
+    provider_queues = {
+        'gpu': config['RABBITMQ_GPU_QUEUE'],
+        'company': config['RABBITMQ_COMPANY_QUEUE'],
+        'deepseek': config['RABBITMQ_DEEPSEEK_QUEUE'],
+        'gemini': config['RABBITMQ_GEMINI_QUEUE'],
+    }
+    consumer_counts = {queue: 0 for queue in provider_queues.values()}
+    for provider in providers:
+        consumer_counts[provider_queues[provider]] = 1
+    return _routing_channel(message_counts, consumer_counts)
 
 
 def _route_queue_name(task, priority, config, channel):
@@ -466,6 +491,15 @@ def test_worker_failure_requeues_task_to_background_priority(monkeypatch):
         ),
     )
     retry_config = {**dict(app.config), 'COMPANY_AI_ENABLED': True}
+    company_queue = app.config['RABBITMQ_COMPANY_QUEUE']
+    routing_channel = _routing_channel(
+        consumer_counts={
+            company_queue: 1,
+            app.config['RABBITMQ_GPU_QUEUE']: 0,
+            app.config['RABBITMQ_DEEPSEEK_QUEUE']: 0,
+            app.config['RABBITMQ_GEMINI_QUEUE']: 0,
+        },
+    )
     with app.app_context():
         source = _source()
         source.delete_many({})
@@ -486,7 +520,7 @@ def test_worker_failure_requeues_task_to_background_priority(monkeypatch):
                 'worker-1',
                 ValueError('temporary failure'),
                 retry_config,
-                _routing_channel(),
+                routing_channel,
                 claimed,
             )
             document = source.find_one({'_id': 'retry'})
@@ -725,6 +759,15 @@ def test_release_processing_task_republishes_to_background_priority(monkeypatch)
         'COMPANY_AI_ENABLED': True,
         'GPU_ENABLED': False,
     }
+    company_queue = app.config['RABBITMQ_COMPANY_QUEUE']
+    routing_channel = _routing_channel(
+        consumer_counts={
+            company_queue: 1,
+            app.config['RABBITMQ_GPU_QUEUE']: 0,
+            app.config['RABBITMQ_DEEPSEEK_QUEUE']: 0,
+            app.config['RABBITMQ_GEMINI_QUEUE']: 0,
+        },
+    )
     with app.app_context():
         source = _source()
         source.delete_many({})
@@ -740,7 +783,7 @@ def test_release_processing_task_republishes_to_background_priority(monkeypatch)
             )
             task = {**reference, 'content_hash': reference['content_hash']}
             _claim_task(task, 'worker-release', app.config)
-            _release_processing_task(task, 'worker-release', release_config)
+            _release_processing_task(task, 'worker-release', release_config, routing_channel)
             entry = source.find_one({'_id': 'release'})['html_json']['en']
             assert entry['status'] == 'pending'
             assert republished[-1][1] == app.config['RABBITMQ_BACKGROUND_PRIORITY']
@@ -777,6 +820,15 @@ def test_shutdown_worker_deletes_room_resets_processing_and_acks(monkeypatch):
         'COMPANY_AI_ENABLED': True,
         'GPU_ENABLED': False,
     }
+    company_queue = app.config['RABBITMQ_COMPANY_QUEUE']
+    routing_channel = _routing_channel(
+        consumer_counts={
+            company_queue: 1,
+            app.config['RABBITMQ_GPU_QUEUE']: 0,
+            app.config['RABBITMQ_DEEPSEEK_QUEUE']: 0,
+            app.config['RABBITMQ_GEMINI_QUEUE']: 0,
+        },
+    )
     with app.app_context():
         source = _source()
         source.delete_many({})
@@ -841,10 +893,11 @@ def test_router_sends_source_and_shared_tasks_to_gpu_until_backlog_limit(monkeyp
         'GPU_ENABLED': True,
         'COMPANY_AI_ENABLED': True,
     }
-    assert _route_queue_name({'storage': 'source'}, 1, config, _routing_channel()) == config[
+    routing_channel = _routing_channel_for_providers(['gpu', 'company'])
+    assert _route_queue_name({'storage': 'source'}, 1, config, routing_channel) == config[
         'RABBITMQ_GPU_QUEUE'
     ]
-    assert _route_queue_name({'storage': 'shared'}, 1, config, _routing_channel()) == config[
+    assert _route_queue_name({'storage': 'shared'}, 1, config, routing_channel) == config[
         'RABBITMQ_GPU_QUEUE'
     ]
     assert routed == [config['RABBITMQ_GPU_QUEUE'], config['RABBITMQ_GPU_QUEUE']]
@@ -863,7 +916,10 @@ def test_router_sends_source_overflow_to_company(monkeypatch):
         'GPU_ENABLED': True,
         'COMPANY_AI_ENABLED': True,
     }
-    channel = _routing_channel({config['RABBITMQ_GPU_QUEUE']: 3})
+    channel = _routing_channel_for_providers(
+        ['gpu', 'company'],
+        {config['RABBITMQ_GPU_QUEUE']: 3},
+    )
     assert _route_queue_name({'storage': 'source'}, 1, config, channel) == config[
         'RABBITMQ_COMPANY_QUEUE'
     ]
@@ -998,12 +1054,24 @@ def test_wait_for_queue_capacity_stops_on_shutdown(monkeypatch):
     ) is False
 
 
-def test_router_never_sends_to_disabled_providers(monkeypatch):
+def test_router_never_sends_to_queues_without_consumers(monkeypatch):
     routed = []
 
     class FakeChannel:
         def queue_declare(self, **kwargs):
-            return type('QueueStatus', (), {'method': type('Method', (), {'message_count': 0})()})()
+            queue = kwargs.get('queue')
+            consumers = 1 if queue == app.config['RABBITMQ_COMPANY_QUEUE'] else 0
+            return type(
+                'QueueStatus',
+                (),
+                {
+                    'method': type(
+                        'Method',
+                        (),
+                        {'message_count': 0, 'consumer_count': consumers},
+                    )()
+                },
+            )()
 
     monkeypatch.setattr(
         'company_ai_preprocessor._publish_to_queue',
@@ -1015,16 +1083,18 @@ def test_router_never_sends_to_disabled_providers(monkeypatch):
         'GPU_ENABLED': False,
         'COMPANY_AI_ENABLED': True,
     }
-    assert _route_queue_name({'storage': 'source'}, 1, config, _routing_channel()) == config[
+    channel = FakeChannel()
+    channel.connection = type('Connection', (), {})()
+    assert _route_queue_name({'storage': 'source'}, 1, config, channel) == config[
         'RABBITMQ_COMPANY_QUEUE'
     ]
-    config['COMPANY_AI_ENABLED'] = False
-    assert _route_queue_name({'storage': 'source'}, 1, config, _routing_channel()) is None
-    assert _route_queue_name({'storage': 'shared'}, 1, config, _routing_channel()) is None
+    no_consumer_channel = _routing_channel(consumer_counts={})
+    assert _route_queue_name({'storage': 'source'}, 1, config, no_consumer_channel) is None
+    assert _route_queue_name({'storage': 'shared'}, 1, config, no_consumer_channel) is None
     assert routed == [config['RABBITMQ_COMPANY_QUEUE']]
 
 
-def test_router_requeues_when_no_provider_is_enabled(monkeypatch):
+def test_router_requeues_when_no_consumer_is_available(monkeypatch):
     import company_ai_preprocessor as preprocessor
 
     acks = []
@@ -1247,15 +1317,11 @@ def test_queue_status_reads_message_counts(monkeypatch):
     counts = _queue_status(config)
     assert counts[config['RABBITMQ_INTAKE_QUEUE']] == 10
     assert counts[config['RABBITMQ_COMPANY_QUEUE']] == 20
-    if config['GPU_ENABLED']:
-        assert counts[config['RABBITMQ_GPU_QUEUE']] == 30
-        assert declarations.count(config['RABBITMQ_GPU_QUEUE']) == 1
-    else:
-        assert counts[config['RABBITMQ_GPU_QUEUE']] == 0
-        assert config['RABBITMQ_GPU_QUEUE'] not in declarations
+    assert counts[config['RABBITMQ_GPU_QUEUE']] == 30
+    assert declarations.count(config['RABBITMQ_GPU_QUEUE']) == 1
 
 
-def test_queue_status_skips_gpu_queue_when_gpu_disabled(monkeypatch):
+def test_queue_status_reads_all_provider_queues(monkeypatch):
     declarations = []
 
     class FakeChannel:
@@ -1274,10 +1340,32 @@ def test_queue_status_skips_gpu_queue_when_gpu_disabled(monkeypatch):
         'company_ai_preprocessor.pika.BlockingConnection',
         lambda parameters: FakeConnection(),
     )
-    config = {**dict(app.config), 'GPU_ENABLED': False}
+    config = dict(app.config)
     counts = _queue_status(config)
-    assert counts[config['RABBITMQ_GPU_QUEUE']] == 0
-    assert config['RABBITMQ_GPU_QUEUE'] not in declarations
+    assert counts[config['RABBITMQ_GPU_QUEUE']] == 5
+    assert declarations.count(config['RABBITMQ_GPU_QUEUE']) == 1
+
+
+def test_router_routes_only_to_queues_with_consumers(monkeypatch):
+    routed = []
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish_to_queue',
+        lambda task, priority, config, queue_name, channel=None: routed.append(queue_name),
+    )
+    config = dict(app.config)
+    channel = _routing_channel(
+        consumer_counts={
+            config['RABBITMQ_GPU_QUEUE']: 1,
+            config['RABBITMQ_COMPANY_QUEUE']: 0,
+            config['RABBITMQ_DEEPSEEK_QUEUE']: 0,
+            config['RABBITMQ_GEMINI_QUEUE']: 0,
+        },
+    )
+    assert _route_queue_name({'storage': 'source'}, 1, config, channel) == config[
+        'RABBITMQ_GPU_QUEUE'
+    ]
+    assert routed == [config['RABBITMQ_GPU_QUEUE']]
 
 
 def test_scan_unprocessed_uses_collection_and_field_priority(monkeypatch):

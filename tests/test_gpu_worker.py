@@ -1,9 +1,14 @@
 import json
 
+import pytest
 import requests
 
+from GPU_server import gpu_worker
 from GPU_server.gpu_worker import (
     LocalGPUProvider,
+    _build_llama_server_command,
+    _inference_urls_are_localhost,
+    _resolve_model_path,
     compact_details,
     declare_queues,
     inference_base_url_for_worker,
@@ -12,7 +17,10 @@ from GPU_server.gpu_worker import (
     process_task,
     probe_inference_urls,
     publish,
+    start_llama_servers,
+    stop_llama_servers,
     summary_content_hash,
+    wait_for_inference_urls,
     wait_for_queue_capacity,
     _inference_health_url,
 )
@@ -365,6 +373,36 @@ def test_probe_inference_urls_reports_unreachable(monkeypatch):
     assert issues[0]['health_url'] == 'http://127.0.0.1:8081/health'
 
 
+def test_wait_for_inference_urls_retries_until_ready(monkeypatch):
+    attempts = {'count': 0}
+
+    def fake_probe(urls, timeout_seconds=3):
+        attempts['count'] += 1
+        if attempts['count'] < 3:
+            return [{
+                'worker': 0,
+                'url': urls[0],
+                'health_url': 'http://127.0.0.1:8080/health',
+                'error': 'HTTP 502',
+                'status_code': 502,
+                'body_preview': '',
+            }]
+        return []
+
+    monkeypatch.setattr('GPU_server.gpu_worker.probe_inference_urls', fake_probe)
+
+    class FakeStopEvent:
+        def wait(self, timeout):
+            return False
+
+    monkeypatch.setattr('GPU_server.gpu_worker.STOP_EVENT', FakeStopEvent())
+
+    issues = wait_for_inference_urls(['http://127.0.0.1:8080/v1'], wait_seconds=30, poll_seconds=1)
+
+    assert issues == []
+    assert attempts['count'] == 3
+
+
 def test_load_config_defaults_worker_concurrency_to_instance_count(monkeypatch):
     monkeypatch.setenv('ATLAS_MONGO_URI', 'mongodb://localhost:27017')
     monkeypatch.setenv('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672')
@@ -380,6 +418,163 @@ def test_load_config_defaults_worker_concurrency_to_instance_count(monkeypatch):
     assert inference_base_url_for_worker(config, 0) == 'http://llama-server-0:8080/v1'
     assert inference_base_url_for_worker(config, 2) == 'http://llama-server-2:8080/v1'
     assert inference_base_url_for_worker(config, 3) == 'http://llama-server-0:8080/v1'
+
+
+def _llama_config():
+    return {
+        **_config(),
+        'GPU_INSTANCE_COUNT': 3,
+        'GPU_INFERENCE_BASE_URLS': [
+            'http://127.0.0.1:8080/v1',
+            'http://127.0.0.1:8081/v1',
+            'http://127.0.0.1:8082/v1',
+        ],
+        'GPU_MODEL_PATH': '/models/test-model.gguf',
+        'GPU_CONTEXT_SIZE': 4096,
+        'GPU_TENSOR_SPLIT': '1,1,1',
+        'GPU_AUTO_START_LLAMA_SERVERS': True,
+    }
+
+
+def test_resolve_model_path_maps_docker_style_path(tmp_path, monkeypatch):
+    models_dir = tmp_path / 'models'
+    models_dir.mkdir()
+    model_file = models_dir / 'test-model.gguf'
+    model_file.write_text('gguf', encoding='utf-8')
+    monkeypatch.setattr(gpu_worker, '_gpu_server_dir', lambda: str(tmp_path))
+
+    assert _resolve_model_path('/models/test-model.gguf') == str(model_file)
+
+
+def test_resolve_model_path_accepts_absolute_host_path(tmp_path):
+    model_file = tmp_path / 'custom-model.gguf'
+    model_file.write_text('gguf', encoding='utf-8')
+
+    assert _resolve_model_path(str(model_file)) == str(model_file)
+
+
+def test_inference_urls_are_localhost():
+    assert _inference_urls_are_localhost(['http://127.0.0.1:8080/v1']) is True
+    assert _inference_urls_are_localhost(['http://llama-server-0:8080/v1']) is False
+
+
+def test_build_llama_server_command_per_gpu_ports_and_devices(tmp_path, monkeypatch):
+    models_dir = tmp_path / 'models'
+    models_dir.mkdir()
+    (models_dir / 'test-model.gguf').write_text('gguf', encoding='utf-8')
+    monkeypatch.setattr(gpu_worker, '_gpu_server_dir', lambda: str(tmp_path))
+    monkeypatch.setenv('GPU_LLAMA_SERVER_BIN', str(tmp_path / 'llama-server'))
+    (tmp_path / 'llama-server').write_text('', encoding='utf-8')
+
+    config = _llama_config()
+    for index, port, gpu in ((0, '8080', '0'), (1, '8081', '1'), (2, '8082', '2')):
+        cmd, env = _build_llama_server_command(config, index)
+        assert cmd[cmd.index('--port') + 1] == port
+        assert env['CUDA_VISIBLE_DEVICES'] == gpu
+        assert '--tensor-split' not in cmd
+
+
+def test_build_llama_server_command_tensor_split_mode(tmp_path, monkeypatch):
+    models_dir = tmp_path / 'models'
+    models_dir.mkdir()
+    (models_dir / 'test-model.gguf').write_text('gguf', encoding='utf-8')
+    monkeypatch.setattr(gpu_worker, '_gpu_server_dir', lambda: str(tmp_path))
+    monkeypatch.setenv('GPU_LLAMA_SERVER_BIN', str(tmp_path / 'llama-server'))
+    (tmp_path / 'llama-server').write_text('', encoding='utf-8')
+
+    config = {
+        **_llama_config(),
+        'GPU_INSTANCE_COUNT': 1,
+        'GPU_INFERENCE_BASE_URLS': ['http://127.0.0.1:8080/v1'],
+        'GPU_TENSOR_SPLIT': '1,1,1',
+    }
+    cmd, env = _build_llama_server_command(config, 0)
+    assert cmd[cmd.index('--tensor-split') + 1] == '1,1,1'
+    assert 'CUDA_VISIBLE_DEVICES' not in env
+
+
+def test_start_llama_servers_skips_when_healthy(monkeypatch):
+    monkeypatch.setattr(
+        'GPU_server.gpu_worker.probe_inference_urls',
+        lambda urls, timeout_seconds=3: [],
+    )
+    monkeypatch.setattr(
+        'GPU_server.gpu_worker.subprocess.Popen',
+        lambda *args, **kwargs: pytest.fail('Popen should not be called'),
+    )
+
+    start_llama_servers(_llama_config())
+
+
+def test_start_llama_servers_spawns_missing_instances(tmp_path, monkeypatch):
+    models_dir = tmp_path / 'models'
+    models_dir.mkdir()
+    (models_dir / 'test-model.gguf').write_text('gguf', encoding='utf-8')
+    monkeypatch.setattr(gpu_worker, '_gpu_server_dir', lambda: str(tmp_path))
+    monkeypatch.setenv('GPU_LLAMA_SERVER_BIN', str(tmp_path / 'llama-server'))
+    (tmp_path / 'llama-server').write_text('', encoding='utf-8')
+    monkeypatch.setattr(
+        'GPU_server.gpu_worker.probe_inference_urls',
+        lambda urls, timeout_seconds=3: [
+            {'worker': 0, 'url': urls[0], 'health_url': 'http://127.0.0.1:8080/health', 'error': 'refused'},
+            {'worker': 2, 'url': urls[2], 'health_url': 'http://127.0.0.1:8082/health', 'error': 'refused'},
+        ],
+    )
+
+    launched = []
+
+    class FakeProcess:
+        pid = 1234
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    def fake_popen(cmd, env, cwd):
+        launched.append((cmd, env, cwd))
+        return FakeProcess()
+
+    monkeypatch.setattr('GPU_server.gpu_worker.subprocess.Popen', fake_popen)
+    gpu_worker.LLAMA_SERVER_PROCESSES = []
+
+    start_llama_servers(_llama_config())
+
+    assert len(launched) == 2
+    assert launched[0][0][launched[0][0].index('--port') + 1] == '8080'
+    assert launched[0][1]['CUDA_VISIBLE_DEVICES'] == '0'
+    assert launched[1][0][launched[1][0].index('--port') + 1] == '8082'
+    assert launched[1][1]['CUDA_VISIBLE_DEVICES'] == '2'
+
+
+def test_stop_llama_servers_terminates_tracked_processes(monkeypatch):
+    terminated = []
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            terminated.append('terminate')
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            terminated.append('kill')
+
+    gpu_worker.LLAMA_SERVER_PROCESSES = [FakeProcess(), FakeProcess()]
+    stop_llama_servers()
+
+    assert terminated == ['terminate', 'terminate']
+    assert gpu_worker.LLAMA_SERVER_PROCESSES == []
 
 
 def test_local_gpu_provider_uses_worker_specific_base_url():

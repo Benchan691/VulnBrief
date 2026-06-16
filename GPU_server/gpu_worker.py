@@ -1,9 +1,12 @@
+import atexit
 import hashlib
 import html
 import json
 import os
+import shutil
 import signal
 import socket
+import subprocess
 import threading
 import time
 import uuid
@@ -13,11 +16,14 @@ from urllib.parse import urlparse
 import pika
 import requests
 from bson import json_util
+from dotenv import load_dotenv
 from jsonschema import ValidationError, validate
 from pymongo import MongoClient, ReturnDocument
 
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 STOP_EVENT = threading.Event()
+LLAMA_SERVER_PROCESSES = []
 QUEUE_CAPACITY_WAIT_SECONDS = 1
 REPORT_LANGUAGES = {
     'en': 'English',
@@ -38,31 +44,6 @@ def log_info(message, **fields):
 
 def log_error(message, **fields):
     print(f'[preprocessor] ERROR {message}{_format_log_fields(fields)}', flush=True)
-
-
-_DEBUG_LOG_PATH = os.environ.get(
-    'DEBUG_AGENT_LOG_PATH',
-    '/Users/chankokpan/Documents/webserver/.cursor/debug-bffc5d.log',
-)
-
-
-def _agent_debug_log(location, message, data, hypothesis_id, run_id='pre-fix'):
-    # #region agent log
-    payload = {
-        'sessionId': 'bffc5d',
-        'runId': run_id,
-        'hypothesisId': hypothesis_id,
-        'location': location,
-        'message': message,
-        'data': data,
-        'timestamp': int(time.time() * 1000),
-    }
-    try:
-        with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps(payload, default=str) + '\n')
-    except OSError:
-        pass
-    # #endregion
 
 
 def _running_in_docker():
@@ -111,6 +92,8 @@ def probe_inference_urls(urls, timeout_seconds=3):
                     'url': url,
                     'health_url': health_url,
                     'error': f'HTTP {response.status_code}',
+                    'status_code': response.status_code,
+                    'body_preview': (response.text or '')[:200],
                 })
         except requests.RequestException as exc:
             issues.append({
@@ -118,8 +101,174 @@ def probe_inference_urls(urls, timeout_seconds=3):
                 'url': url,
                 'health_url': health_url,
                 'error': str(exc),
+                'status_code': None,
+                'body_preview': '',
             })
     return issues
+
+
+def _gpu_server_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_model_path(model_path):
+    if not model_path:
+        raise ValueError('GPU_MODEL_PATH must be configured for llama-server auto-start.')
+    if model_path.startswith('/models/'):
+        local_path = os.path.join(
+            _gpu_server_dir(),
+            'models',
+            os.path.basename(model_path),
+        )
+        if os.path.isfile(local_path):
+            return local_path
+    if os.path.isfile(model_path):
+        return os.path.abspath(model_path)
+    raise ValueError(f'Model file not found: {model_path}')
+
+
+def _inference_urls_are_localhost(urls):
+    for url in urls:
+        hostname = (urlparse(url).hostname or '').casefold()
+        if hostname not in {'127.0.0.1', 'localhost', '::1'}:
+            return False
+    return bool(urls)
+
+
+def _inference_url_port(url):
+    parsed = urlparse(url)
+    if parsed.port is not None:
+        return parsed.port
+    return 8080
+
+
+def _llama_server_binary():
+    configured = os.environ.get('GPU_LLAMA_SERVER_BIN', '').strip()
+    if configured:
+        return configured if os.path.isfile(configured) else None
+    return shutil.which('llama-server')
+
+
+def _build_llama_server_command(config, index):
+    binary = _llama_server_binary()
+    if not binary:
+        raise ValueError(
+            'llama-server binary not found; set GPU_LLAMA_SERVER_BIN or add llama-server to PATH.',
+        )
+    model_path = _resolve_model_path(config['GPU_MODEL_PATH'])
+    port = _inference_url_port(config['GPU_INFERENCE_BASE_URLS'][index])
+    env = os.environ.copy()
+    cmd = [
+        binary,
+        '-m',
+        model_path,
+        '--host',
+        '127.0.0.1',
+        '--port',
+        str(port),
+        '-ngl',
+        '99',
+        '-c',
+        str(config['GPU_CONTEXT_SIZE']),
+        '--parallel',
+        '1',
+    ]
+    if config['GPU_INSTANCE_COUNT'] <= 1:
+        tensor_split = config['GPU_TENSOR_SPLIT']
+        if tensor_split:
+            cmd.extend(['--tensor-split', tensor_split])
+    else:
+        env['CUDA_VISIBLE_DEVICES'] = str(index)
+    return cmd, env
+
+
+def _should_auto_start_llama_servers(config, inference_urls):
+    if _running_in_docker():
+        return False
+    if not config['GPU_AUTO_START_LLAMA_SERVERS']:
+        return False
+    if not _inference_urls_are_localhost(inference_urls):
+        return False
+    return bool(probe_inference_urls(inference_urls))
+
+
+def start_llama_servers(config):
+    urls = config['GPU_INFERENCE_BASE_URLS']
+    issues = probe_inference_urls(urls)
+    if not issues:
+        return
+
+    unreachable_indices = sorted({issue['worker'] for issue in issues})
+    binary = _llama_server_binary()
+    if not binary:
+        log_error(
+            'Cannot auto-start llama-server; binary not found',
+            hint='Set GPU_LLAMA_SERVER_BIN or add llama-server to PATH.',
+        )
+        raise SystemExit(1)
+
+    try:
+        _resolve_model_path(config['GPU_MODEL_PATH'])
+    except ValueError as exc:
+        log_error('Cannot auto-start llama-server', error=str(exc))
+        raise SystemExit(1) from exc
+
+    for index in unreachable_indices:
+        cmd, env = _build_llama_server_command(config, index)
+        process = subprocess.Popen(cmd, env=env, cwd=_gpu_server_dir())
+        LLAMA_SERVER_PROCESSES.append(process)
+        log_info(
+            'Started llama-server',
+            instance=index,
+            port=_inference_url_port(urls[index]),
+            pid=process.pid,
+            gpu=env.get('CUDA_VISIBLE_DEVICES', 'all'),
+        )
+
+
+def stop_llama_servers():
+    global LLAMA_SERVER_PROCESSES
+    for process in LLAMA_SERVER_PROCESSES:
+        if process.poll() is None:
+            process.terminate()
+    for process in LLAMA_SERVER_PROCESSES:
+        if process.poll() is None:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+    LLAMA_SERVER_PROCESSES = []
+
+
+def wait_for_inference_urls(urls, wait_seconds, poll_seconds=5):
+    if wait_seconds <= 0:
+        return probe_inference_urls(urls)
+
+    deadline = time.monotonic() + wait_seconds
+    attempt = 0
+    while True:
+        attempt += 1
+        issues = probe_inference_urls(urls)
+        if not issues:
+            if attempt > 1:
+                log_info('All inference endpoints ready', attempts=attempt)
+            return []
+
+        if time.monotonic() >= deadline:
+            return issues
+
+        pending = '; '.join(
+            f"worker={issue['worker']} {issue['health_url']} ({issue['error']})"
+            for issue in issues
+        )
+        log_info(
+            'Waiting for inference endpoints to become ready',
+            attempt=attempt,
+            retry_in_seconds=poll_seconds,
+            pending=pending,
+        )
+        if STOP_EVENT.wait(poll_seconds):
+            return issues
 
 
 def _task_target(task):
@@ -271,9 +420,22 @@ def load_config():
         'GPU_MAX_TASK_ATTEMPTS': _env_int('GPU_MAX_TASK_ATTEMPTS', 2),
         'GPU_INFERENCE_BASE_URL': inference_urls[0],
         'GPU_MODEL_NAME': os.environ.get('GPU_MODEL_NAME', 'qwen-local'),
+        'GPU_MODEL_PATH': os.environ.get('GPU_MODEL_PATH', ''),
+        'GPU_CONTEXT_SIZE': _env_int('GPU_CONTEXT_SIZE', 4096),
+        'GPU_TENSOR_SPLIT': os.environ.get('GPU_TENSOR_SPLIT', '1,1,1'),
+        'GPU_INFERENCE_BASE_PORT': _env_int('GPU_INFERENCE_BASE_PORT', 8080),
+        'GPU_AUTO_START_LLAMA_SERVERS': _env_bool('GPU_AUTO_START_LLAMA_SERVERS', True),
         'GPU_REQUEST_TIMEOUT_SECONDS': _env_int('GPU_REQUEST_TIMEOUT_SECONDS', 300),
         'GPU_JSON_RETRIES': _env_int('GPU_JSON_RETRIES', 2),
         'GPU_MAX_OUTPUT_TOKENS': _env_int('GPU_MAX_OUTPUT_TOKENS', 4096),
+        'GPU_INFERENCE_STARTUP_WAIT_SECONDS': _env_int(
+            'GPU_INFERENCE_STARTUP_WAIT_SECONDS',
+            600,
+        ),
+        'GPU_INFERENCE_STARTUP_POLL_SECONDS': _env_int(
+            'GPU_INFERENCE_STARTUP_POLL_SECONDS',
+            5,
+        ),
         'GPU_START_PROMPT': os.environ.get('GPU_START_PROMPT', ''),
         'GPU_FINAL_SUMMARY_PROMPT': os.environ.get(
             'GPU_FINAL_SUMMARY_PROMPT',
@@ -827,29 +989,20 @@ def consume(config, worker_number):
     client.close()
 
 
+def _request_shutdown(*_):
+    stop_llama_servers()
+    STOP_EVENT.set()
+
+
 def main():
-    signal.signal(signal.SIGINT, lambda *_: STOP_EVENT.set())
-    signal.signal(signal.SIGTERM, lambda *_: STOP_EVENT.set())
+    atexit.register(stop_llama_servers)
+    signal.signal(signal.SIGINT, _request_shutdown)
+    signal.signal(signal.SIGTERM, _request_shutdown)
     config = load_config()
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
     reset_gpu_processing(database, config)
     inference_urls = config['GPU_INFERENCE_BASE_URLS']
-    _agent_debug_log(
-        'gpu_worker.py:main',
-        'GPU worker startup inference config',
-        {
-            'in_docker': _running_in_docker(),
-            'instance_count': config['GPU_INSTANCE_COUNT'],
-            'concurrency': config['GPU_WORKER_CONCURRENCY'],
-            'inference_urls': inference_urls,
-            'gpu_inference_host': os.environ.get('GPU_INFERENCE_HOST', ''),
-            'gpu_inference_base_urls_set': bool(
-                os.environ.get('GPU_INFERENCE_BASE_URLS', '').strip(),
-            ),
-        },
-        hypothesis_id='H1',
-    )
     log_info(
         'GPU worker configuration',
         instances=config['GPU_INSTANCE_COUNT'],
@@ -857,14 +1010,15 @@ def main():
         in_docker=_running_in_docker(),
         urls=','.join(inference_urls),
     )
+    if config['GPU_WORKER_CONCURRENCY'] != config['GPU_INSTANCE_COUNT']:
+        log_info(
+            'WARNING: GPU_WORKER_CONCURRENCY does not match GPU_INSTANCE_COUNT; '
+            'per-GPU mode expects one worker per llama-server instance',
+            concurrency=config['GPU_WORKER_CONCURRENCY'],
+            instances=config['GPU_INSTANCE_COUNT'],
+        )
     unresolved = validate_inference_urls(inference_urls)
     for issue in unresolved:
-        _agent_debug_log(
-            'gpu_worker.py:main',
-            'Inference hostname does not resolve',
-            issue,
-            hypothesis_id='H1',
-        )
         log_error(
             'Inference endpoint hostname does not resolve',
             worker=issue['worker'],
@@ -878,41 +1032,62 @@ def main():
         )
     if unresolved:
         raise SystemExit(1)
-    unreachable = probe_inference_urls(inference_urls)
-    for issue in unreachable:
-        _agent_debug_log(
-            'gpu_worker.py:main',
-            'Inference endpoint is not reachable',
-            issue,
-            hypothesis_id='H2',
+    if _should_auto_start_llama_servers(config, inference_urls):
+        log_info('Auto-starting native llama-server processes on localhost')
+        start_llama_servers(config)
+    startup_wait_seconds = config['GPU_INFERENCE_STARTUP_WAIT_SECONDS']
+    startup_poll_seconds = config['GPU_INFERENCE_STARTUP_POLL_SECONDS']
+    if startup_wait_seconds > 0:
+        log_info(
+            'Checking inference endpoint health',
+            wait_seconds=startup_wait_seconds,
+            poll_seconds=startup_poll_seconds,
         )
+    unreachable = wait_for_inference_urls(
+        inference_urls,
+        startup_wait_seconds,
+        startup_poll_seconds,
+    )
+    for issue in unreachable:
+        status_code = issue.get('status_code')
+        if status_code in {502, 503}:
+            hint = (
+                'Llama server returned HTTP '
+                f'{status_code}; model may still be loading or failed to load. '
+                'Check: docker compose logs llama-server-0. '
+                'A 30B model often will not fit on one 8GB GPU — use a smaller model '
+                'or tensor-split mode.'
+            )
+        elif 'Connection refused' in issue.get('error', ''):
+            hint = (
+                'No process is listening on that port. Start llama servers manually, '
+                'set GPU_LLAMA_SERVER_BIN for native auto-start, or run: '
+                'docker compose --profile per-gpu up -d llama-server-0 '
+                'llama-server-1 llama-server-2'
+            )
+        else:
+            hint = (
+                'Set GPU_INSTANCE_COUNT=1 and GPU_WORKER_CONCURRENCY=1 if only one '
+                'GPU/server is running, or increase GPU_INFERENCE_STARTUP_WAIT_SECONDS '
+                'while large models load.'
+            )
         log_error(
             'Inference endpoint is not reachable',
             worker=issue['worker'],
             url=issue['url'],
-            health_url=issue['health_url'],
+            health=issue['health_url'],
             error=issue['error'],
-            hint=(
-                'Start all llama servers: docker compose --profile per-gpu up -d '
-                'llama-server-0 llama-server-1 llama-server-2 — or set '
-                'GPU_INSTANCE_COUNT=1 and GPU_WORKER_CONCURRENCY=1 if only one GPU/server is running'
-            ),
+            hint=hint,
         )
     if unreachable:
         raise SystemExit(1)
-    _agent_debug_log(
-        'gpu_worker.py:main',
-        'All inference endpoints reachable',
-        {'inference_urls': inference_urls},
-        hypothesis_id='H2',
-        run_id='post-fix',
-    )
     if not config['GPU_ENABLED']:
         log_info('GPU processing is disabled; waiting for shutdown')
         try:
             while not STOP_EVENT.wait(1):
                 pass
         finally:
+            stop_llama_servers()
             reset_gpu_processing(database, config)
             client.close()
         return
@@ -928,6 +1103,7 @@ def main():
         for thread in threads:
             thread.join()
     finally:
+        stop_llama_servers()
         reset_gpu_processing(database, config)
         client.close()
 
