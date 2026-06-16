@@ -1,5 +1,7 @@
 import json
 
+import requests
+
 from GPU_server.gpu_worker import (
     LocalGPUProvider,
     compact_details,
@@ -8,9 +10,11 @@ from GPU_server.gpu_worker import (
     load_config,
     load_inference_base_urls,
     process_task,
+    probe_inference_urls,
     publish,
     summary_content_hash,
     wait_for_queue_capacity,
+    _inference_health_url,
 )
 from company_ai_preprocessor import summary_content_hash as application_summary_content_hash
 
@@ -334,6 +338,31 @@ def test_load_inference_base_urls_explicit_list(monkeypatch):
     )
 
     assert load_inference_base_urls() == ['http://a:8080/v1', 'http://b:8080/v1']
+
+
+def test_inference_health_url():
+    assert _inference_health_url('http://127.0.0.1:8081/v1') == 'http://127.0.0.1:8081/health'
+
+
+def test_probe_inference_urls_reports_unreachable(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+    def fake_get(url, timeout):
+        if url.endswith(':8081/health'):
+            raise requests.exceptions.ConnectionError('connection refused')
+        return FakeResponse()
+
+    monkeypatch.setattr('GPU_server.gpu_worker.requests.get', fake_get)
+
+    issues = probe_inference_urls([
+        'http://127.0.0.1:8080/v1',
+        'http://127.0.0.1:8081/v1',
+    ])
+
+    assert len(issues) == 1
+    assert issues[0]['worker'] == 1
+    assert issues[0]['health_url'] == 'http://127.0.0.1:8081/health'
 
 
 def test_load_config_defaults_worker_concurrency_to_instance_count(monkeypatch):

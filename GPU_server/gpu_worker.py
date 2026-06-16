@@ -92,6 +92,36 @@ def validate_inference_urls(urls):
     return issues
 
 
+def _inference_health_url(base_url):
+    trimmed = base_url.rstrip('/')
+    if trimmed.endswith('/v1'):
+        return trimmed[:-3] + '/health'
+    return trimmed + '/health'
+
+
+def probe_inference_urls(urls, timeout_seconds=3):
+    issues = []
+    for index, url in enumerate(urls):
+        health_url = _inference_health_url(url)
+        try:
+            response = requests.get(health_url, timeout=timeout_seconds)
+            if response.status_code >= 400:
+                issues.append({
+                    'worker': index,
+                    'url': url,
+                    'health_url': health_url,
+                    'error': f'HTTP {response.status_code}',
+                })
+        except requests.RequestException as exc:
+            issues.append({
+                'worker': index,
+                'url': url,
+                'health_url': health_url,
+                'error': str(exc),
+            })
+    return issues
+
+
 def _task_target(task):
     if task.get('source_collection') and task.get('source_id') is not None:
         return f"{task['source_collection']}/{task['source_id']}"
@@ -848,6 +878,35 @@ def main():
         )
     if unresolved:
         raise SystemExit(1)
+    unreachable = probe_inference_urls(inference_urls)
+    for issue in unreachable:
+        _agent_debug_log(
+            'gpu_worker.py:main',
+            'Inference endpoint is not reachable',
+            issue,
+            hypothesis_id='H2',
+        )
+        log_error(
+            'Inference endpoint is not reachable',
+            worker=issue['worker'],
+            url=issue['url'],
+            health_url=issue['health_url'],
+            error=issue['error'],
+            hint=(
+                'Start all llama servers: docker compose --profile per-gpu up -d '
+                'llama-server-0 llama-server-1 llama-server-2 — or set '
+                'GPU_INSTANCE_COUNT=1 and GPU_WORKER_CONCURRENCY=1 if only one GPU/server is running'
+            ),
+        )
+    if unreachable:
+        raise SystemExit(1)
+    _agent_debug_log(
+        'gpu_worker.py:main',
+        'All inference endpoints reachable',
+        {'inference_urls': inference_urls},
+        hypothesis_id='H2',
+        run_id='post-fix',
+    )
     if not config['GPU_ENABLED']:
         log_info('GPU processing is disabled; waiting for shutdown')
         try:
