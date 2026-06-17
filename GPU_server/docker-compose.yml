@@ -5,13 +5,11 @@ x-llama-server: &llama-server
     driver: "none"
   networks:
     - gpu-internal
-  env_file:
-    - .env
   volumes:
     - ./models:/models:ro
   command:
     - "-m"
-    - "${GPU_MODEL_PATH}"
+    - "${GPU_MODEL_PATH:-/models/Qwen3_Qwen3_30B-A3B-Instruct-2507_Q4_K_M.gguf}"
     - "--host"
     - "0.0.0.0"
     - "--port"
@@ -25,28 +23,9 @@ x-llama-server: &llama-server
     - "--log-verbosity"
     - "${GPU_LLAMA_LOG_VERBOSITY:-1}"
 
-x-gpu-worker: &gpu-worker
-  build:
-    context: .
-    dockerfile: Dockerfile
-  restart: unless-stopped
-  env_file:
-    - .env
-  networks:
-    - gpu-internal
-
-x-llama-healthcheck: &llama-healthcheck
-  healthcheck:
-    test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
-    interval: 10s
-    timeout: 5s
-    retries: 30
-    start_period: 120s
-
 services:
   llama-server:
-    <<: [*llama-server, *llama-healthcheck]
-    profiles: ["tensor-split"]
+    <<: *llama-server
     container_name: gpu-preprocessor-llama
     ports:
       - "127.0.0.1:8080:8080"
@@ -57,9 +36,15 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
     command:
       - "-m"
-      - "${GPU_MODEL_PATH}"
+      - "${GPU_MODEL_PATH:-/models/Qwen3_Qwen3_30B-A3B-Instruct-2507_Q4_K_M.gguf}"
       - "--host"
       - "0.0.0.0"
       - "--port"
@@ -75,74 +60,23 @@ services:
       - "--log-verbosity"
       - "${GPU_LLAMA_LOG_VERBOSITY:-1}"
 
-  llama-server-0:
-    <<: [*llama-server, *llama-healthcheck]
-    profiles: ["per-gpu"]
-    container_name: gpu-preprocessor-llama-0
-    ports:
-      - "127.0.0.1:8080:8080"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
-
-  llama-server-1:
-    <<: [*llama-server, *llama-healthcheck]
-    profiles: ["per-gpu"]
-    container_name: gpu-preprocessor-llama-1
-    ports:
-      - "127.0.0.1:8081:8080"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["1"]
-              capabilities: [gpu]
-
-  llama-server-2:
-    <<: [*llama-server, *llama-healthcheck]
-    profiles: ["per-gpu"]
-    container_name: gpu-preprocessor-llama-2
-    ports:
-      - "127.0.0.1:8082:8080"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["2"]
-              capabilities: [gpu]
-
   gpu-worker:
-    <<: *gpu-worker
-    profiles: ["per-gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: gpu-preprocessor-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    networks:
+      - gpu-internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       PYTHONUNBUFFERED: "1"
-      GPU_INFERENCE_BASE_URLS: http://host.docker.internal:8080/v1,http://host.docker.internal:8081/v1,http://host.docker.internal:8082/v1
-    depends_on:
-      llama-server-0:
-        condition: service_healthy
-      llama-server-1:
-        condition: service_healthy
-      llama-server-2:
-        condition: service_healthy
-
-  gpu-worker-tensor:
-    <<: *gpu-worker
-    profiles: ["tensor-split"]
-    container_name: gpu-preprocessor-worker
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      PYTHONUNBUFFERED: "1"
-      GPU_INFERENCE_BASE_URLS: http://host.docker.internal:8080/v1
+      GPU_SERVER_CONFIG: /app/config/gpu_server.json
+    volumes:
+      - ./config:/app/config:ro
     depends_on:
       llama-server:
         condition: service_healthy

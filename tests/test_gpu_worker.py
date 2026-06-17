@@ -1,9 +1,11 @@
 import json
+import os
 
 import pytest
 import requests
 
 from GPU_server import gpu_worker
+from GPU_server.gpu_config import load_gpu_server_config
 from GPU_server.gpu_worker import (
     LocalGPUProvider,
     _build_llama_server_command,
@@ -403,21 +405,77 @@ def test_wait_for_inference_urls_retries_until_ready(monkeypatch):
     assert attempts['count'] == 3
 
 
-def test_load_config_defaults_worker_concurrency_to_instance_count(monkeypatch):
+def test_load_gpu_server_config_reads_json(tmp_path, monkeypatch):
     monkeypatch.setenv('ATLAS_MONGO_URI', 'mongodb://localhost:27017')
     monkeypatch.setenv('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672')
-    monkeypatch.setenv('GPU_INSTANCE_COUNT', '3')
-    monkeypatch.delenv('GPU_WORKER_CONCURRENCY', raising=False)
-    monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
-    monkeypatch.setenv('GPU_INFERENCE_NETWORK', 'docker')
+    monkeypatch.delenv('GPU_MODEL_PATH', raising=False)
+    monkeypatch.delenv('RABBITMQ_GPU_QUEUE', raising=False)
+    config_path = tmp_path / 'gpu_server.json'
+    config_path.write_text(
+        json.dumps({
+            'inference': {
+                'instance_count': 1,
+                'worker_concurrency': 1,
+                'model_path': '/models/custom.gguf',
+                'docker_base_url': 'http://host.docker.internal:8080/v1',
+            },
+            'rabbitmq': {'gpu_queue': 'gpu_test'},
+            'mongodb': {},
+            'processing': {},
+            'prompts': {},
+            'report_compaction': {},
+            'flags': {},
+        }),
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('GPU_SERVER_CONFIG', str(config_path))
+
+    config = load_gpu_server_config(
+        base_dir=str(tmp_path),
+        running_in_docker=lambda: True,
+    )
+
+    assert config['GPU_MODEL_PATH'] == '/models/custom.gguf'
+    assert config['RABBITMQ_GPU_QUEUE'] == 'gpu_test'
+    assert config['GPU_INFERENCE_BASE_URLS'] == ['http://host.docker.internal:8080/v1']
+
+
+def test_load_config_uses_json_defaults(monkeypatch):
+    monkeypatch.setenv('ATLAS_MONGO_URI', 'mongodb://localhost:27017')
+    monkeypatch.setenv('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672')
+    for key in (
+        'GPU_INSTANCE_COUNT',
+        'GPU_WORKER_CONCURRENCY',
+        'GPU_INFERENCE_BASE_URLS',
+        'GPU_INFERENCE_NETWORK',
+        'RABBITMQ_GPU_QUEUE',
+        'GPU_MODEL_PATH',
+        'GPU_TENSOR_SPLIT',
+    ):
+        monkeypatch.delenv(key, raising=False)
+    gpu_server_dir = os.path.join(os.path.dirname(__file__), '..', 'GPU_server')
+    monkeypatch.setenv(
+        'GPU_SERVER_CONFIG',
+        os.path.join(gpu_server_dir, 'config', 'gpu_server.json'),
+    )
 
     config = load_config()
 
-    assert config['GPU_INSTANCE_COUNT'] == 3
-    assert config['GPU_WORKER_CONCURRENCY'] == 3
-    assert inference_base_url_for_worker(config, 0) == 'http://llama-server-0:8080/v1'
-    assert inference_base_url_for_worker(config, 2) == 'http://llama-server-2:8080/v1'
-    assert inference_base_url_for_worker(config, 3) == 'http://llama-server-0:8080/v1'
+    assert config['GPU_INSTANCE_COUNT'] == 1
+    assert config['GPU_WORKER_CONCURRENCY'] == 1
+    assert config['GPU_TENSOR_SPLIT'] == '1,1,1'
+    assert config['RABBITMQ_GPU_QUEUE'] == 'gpu_processing'
+    assert config['GPU_MODEL_PATH'] == '/models/Qwen3_Qwen3_30B-A3B-Instruct-2507_Q4_K_M.gguf'
+    assert config['GPU_INFERENCE_BASE_URLS'] == ['http://127.0.0.1:8080/v1']
+    assert inference_base_url_for_worker(config, 0) == 'http://127.0.0.1:8080/v1'
+
+
+def test_load_inference_base_urls_single_instance_docker(monkeypatch):
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
+    monkeypatch.setenv('GPU_INSTANCE_COUNT', '1')
+    monkeypatch.setenv('GPU_INFERENCE_NETWORK', 'docker')
+
+    assert load_inference_base_urls() == ['http://host.docker.internal:8080/v1']
 
 
 def _llama_config():
@@ -432,6 +490,7 @@ def _llama_config():
         'GPU_MODEL_PATH': '/models/test-model.gguf',
         'GPU_CONTEXT_SIZE': 4096,
         'GPU_TENSOR_SPLIT': '1,1,1',
+        'GPU_LLAMA_LOG_VERBOSITY': 1,
         'GPU_AUTO_START_LLAMA_SERVERS': True,
     }
 

@@ -160,6 +160,16 @@ If you previously used `config/config.json`, copy values into `.env`:
 | `web_auth.bootstrap_password` | `WEB_AUTH_BOOTSTRAP_PASSWORD` |
 | `gpu_preprocessing.enabled` | `GPU_ENABLED` |
 
+When running the GPU worker stack (`GPU_server/`), align these webserver variables
+with `GPU_server/config/gpu_server.json`:
+
+| Webserver `.env` | GPU JSON / default |
+|------------------|-------------------|
+| `RABBITMQ_GPU_QUEUE=gpu_processing` | `rabbitmq.gpu_queue` |
+| `GPU_WORKER_CONCURRENCY=1` | `inference.worker_concurrency` |
+| `PREPROCESSING_CACHE_VERSION=1` | `processing.cache_version` |
+| `REPORT_MAX_DEPTH=10` | `report_compaction.max_depth` |
+
 See [`.env.example`](.env.example) and [configuration.py](configuration.py) for
 every supported variable and its default.
 

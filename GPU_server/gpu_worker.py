@@ -17,6 +17,10 @@ import pika
 import requests
 from bson import json_util
 from dotenv import load_dotenv
+try:
+    from gpu_config import load_gpu_server_config, resolve_inference_base_urls
+except ImportError:
+    from GPU_server.gpu_config import load_gpu_server_config, resolve_inference_base_urls
 from jsonschema import ValidationError, validate
 from pymongo import MongoClient, ReturnDocument
 
@@ -134,33 +138,6 @@ def probe_inference_urls(urls, timeout_seconds=3):
 
 def _gpu_server_dir():
     return os.path.dirname(os.path.abspath(__file__))
-
-
-def _agent_debug_log(location, message, data, hypothesis_id, run_id='pre-fix'):
-    payload = {
-        'sessionId': '45cf15',
-        'timestamp': int(time.time() * 1000),
-        'location': location,
-        'message': message,
-        'data': data,
-        'hypothesisId': hypothesis_id,
-        'runId': run_id,
-    }
-    # #region agent log
-    debug_log = os.environ.get(
-        'AGENT_DEBUG_LOG',
-        os.path.normpath(os.path.join(_gpu_server_dir(), '..', '.cursor', 'debug-45cf15.log')),
-    )
-    try:
-        log_dir = os.path.dirname(debug_log)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-        with open(debug_log, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps(payload, default=str) + '\n')
-    except OSError:
-        pass
-    log_info('Agent debug', hypothesis=hypothesis_id, debug_message=message, **data)
-    # #endregion
 
 
 def _resolve_model_path(model_path):
@@ -374,60 +351,22 @@ FINAL_SCHEMA = {
 }
 
 
-def _env_int(name, default):
-    return int(os.environ.get(name, default))
-
-
-def _env_bool(name, default):
-    value = os.environ.get(name)
-    if value is None:
-        return bool(default)
-    return value.lower() in {'1', 'true', 'yes', 'on'}
-
-
-def _env_list(name, default):
-    value = os.environ.get(name)
-    if not value:
-        return list(default)
-    try:
-        parsed = json.loads(value)
-        if isinstance(parsed, list):
-            return parsed
-    except json.JSONDecodeError:
-        pass
-    return [item.strip() for item in value.split(',') if item.strip()]
+def _inference_settings_from_env():
+    instance_count = os.environ.get('GPU_INSTANCE_COUNT')
+    return {
+        'instance_count': int(instance_count) if instance_count not in (None, '') else 1,
+        'base_url': os.environ.get('GPU_INFERENCE_BASE_URL', 'http://llama-server:8080/v1'),
+        'docker_base_url': os.environ.get(
+            'GPU_INFERENCE_DOCKER_BASE_URL',
+            'http://host.docker.internal:8080/v1',
+        ),
+        'base_port': int(os.environ.get('GPU_INFERENCE_BASE_PORT', 8080)),
+        'host': os.environ.get('GPU_INFERENCE_HOST', ''),
+    }
 
 
 def load_inference_base_urls():
-    explicit = os.environ.get('GPU_INFERENCE_BASE_URLS', '').strip()
-    if explicit:
-        return [url.strip().rstrip('/') for url in explicit.split(',') if url.strip()]
-
-    instance_count = _env_int('GPU_INSTANCE_COUNT', 1)
-    if instance_count <= 1:
-        return [
-            os.environ.get(
-                'GPU_INFERENCE_BASE_URL',
-                'http://llama-server:8080/v1',
-            ).rstrip('/'),
-        ]
-
-    host_override = os.environ.get('GPU_INFERENCE_HOST', '').strip()
-    if host_override:
-        base_port = _env_int('GPU_INFERENCE_BASE_PORT', 8080)
-        return [
-            f'http://{host_override}:{base_port + index}/v1'
-            for index in range(instance_count)
-        ]
-
-    if not _running_in_docker():
-        base_port = _env_int('GPU_INFERENCE_BASE_PORT', 8080)
-        return [
-            f'http://127.0.0.1:{base_port + index}/v1'
-            for index in range(instance_count)
-        ]
-
-    return [f'http://llama-server-{index}:8080/v1' for index in range(instance_count)]
+    return resolve_inference_base_urls(_inference_settings_from_env(), _running_in_docker)
 
 
 def inference_base_url_for_worker(config, worker_number):
@@ -436,82 +375,7 @@ def inference_base_url_for_worker(config, worker_number):
 
 
 def load_config():
-    required = ['ATLAS_MONGO_URI', 'RABBITMQ_URL']
-    missing = [name for name in required if not os.environ.get(name)]
-    if missing:
-        raise ValueError(f'Missing required environment variables: {", ".join(missing)}')
-
-    inference_urls = load_inference_base_urls()
-    concurrency_default = len(inference_urls) if len(inference_urls) > 1 else 1
-    concurrency_raw = os.environ.get('GPU_WORKER_CONCURRENCY')
-    worker_concurrency = (
-        int(concurrency_raw)
-        if concurrency_raw is not None and concurrency_raw != ''
-        else concurrency_default
-    )
-
-    return {
-        'ATLAS_MONGO_URI': os.environ['ATLAS_MONGO_URI'],
-        'VULNERABILITIES_DATABASE': os.environ.get(
-            'VULNERABILITIES_DATABASE',
-            'vulnerabilities',
-        ),
-        'AI_TASK_COLLECTION': os.environ.get('AI_TASK_COLLECTION', 'ai_generation_tasks'),
-        'RABBITMQ_URL': os.environ['RABBITMQ_URL'],
-        'RABBITMQ_GPU_QUEUE': os.environ.get('RABBITMQ_GPU_QUEUE', 'gpu_preprocessing'),
-        'RABBITMQ_COMPANY_QUEUE': os.environ.get(
-            'RABBITMQ_COMPANY_QUEUE',
-            'company_ai_processing',
-        ),
-        'RABBITMQ_MAX_PRIORITY': _env_int('RABBITMQ_MAX_PRIORITY', 10),
-        'RABBITMQ_MAX_QUEUE_SIZE': _env_int('RABBITMQ_MAX_QUEUE_SIZE', 19999),
-        'RABBITMQ_BACKGROUND_PRIORITY': _env_int('RABBITMQ_BACKGROUND_PRIORITY', 1),
-        'GPU_ENABLED': _env_bool('GPU_ENABLED', True),
-        'COMPANY_AI_ENABLED': _env_bool('COMPANY_AI_ENABLED', True),
-        'GPU_INSTANCE_COUNT': len(inference_urls),
-        'GPU_INFERENCE_BASE_URLS': inference_urls,
-        'GPU_WORKER_CONCURRENCY': worker_concurrency,
-        'GPU_MAX_TASK_ATTEMPTS': _env_int('GPU_MAX_TASK_ATTEMPTS', 2),
-        'GPU_INFERENCE_BASE_URL': inference_urls[0],
-        'GPU_MODEL_NAME': os.environ.get('GPU_MODEL_NAME', 'qwen-local'),
-        'GPU_MODEL_PATH': os.environ.get('GPU_MODEL_PATH', ''),
-        'GPU_CONTEXT_SIZE': _env_int('GPU_CONTEXT_SIZE', 4096),
-        'GPU_TENSOR_SPLIT': os.environ.get('GPU_TENSOR_SPLIT', '1,1,1'),
-        'GPU_INFERENCE_BASE_PORT': _env_int('GPU_INFERENCE_BASE_PORT', 8080),
-        'GPU_AUTO_START_LLAMA_SERVERS': _env_bool('GPU_AUTO_START_LLAMA_SERVERS', True),
-        'GPU_REQUEST_TIMEOUT_SECONDS': _env_int('GPU_REQUEST_TIMEOUT_SECONDS', 300),
-        'GPU_JSON_RETRIES': _env_int('GPU_JSON_RETRIES', 2),
-        'GPU_MAX_OUTPUT_TOKENS': _env_int('GPU_MAX_OUTPUT_TOKENS', 4096),
-        'GPU_LLAMA_LOG_VERBOSITY': _env_int('GPU_LLAMA_LOG_VERBOSITY', 1),
-        'GPU_LOG_MESSAGES': _env_bool('GPU_LOG_MESSAGES', True),
-        'GPU_LOG_MESSAGE_CHARS': _env_int('GPU_LOG_MESSAGE_CHARS', 2000),
-        'GPU_INFERENCE_STARTUP_WAIT_SECONDS': _env_int(
-            'GPU_INFERENCE_STARTUP_WAIT_SECONDS',
-            600,
-        ),
-        'GPU_INFERENCE_STARTUP_POLL_SECONDS': _env_int(
-            'GPU_INFERENCE_STARTUP_POLL_SECONDS',
-            5,
-        ),
-        'GPU_START_PROMPT': os.environ.get('GPU_START_PROMPT', ''),
-        'GPU_FINAL_SUMMARY_PROMPT': os.environ.get(
-            'GPU_FINAL_SUMMARY_PROMPT',
-            'Write the final cybersecurity report summary in ${language}.',
-        ),
-        'PREPROCESSING_CACHE_VERSION': os.environ.get('PREPROCESSING_CACHE_VERSION', '1'),
-        'COMPANY_AI_STALE_PROCESSING_SECONDS': _env_int(
-            'COMPANY_AI_STALE_PROCESSING_SECONDS',
-            900,
-        ),
-        'REPORT_DENY_KEYS': _env_list(
-            'REPORT_DENY_KEYS',
-            ['raw', 'raw_fields', 'raw_sections', 'raw_tables'],
-        ),
-        'REPORT_DENY_PREFIXES': _env_list('REPORT_DENY_PREFIXES', ['raw_']),
-        'REPORT_MAX_DEPTH': _env_int('REPORT_MAX_DEPTH', 6),
-        'REPORT_MAX_LIST_ITEMS': _env_int('REPORT_MAX_LIST_ITEMS', 100),
-        'REPORT_MAX_STRING_CHARS': _env_int('REPORT_MAX_STRING_CHARS', 12000),
-    }
+    return load_gpu_server_config(_gpu_server_dir(), running_in_docker=_running_in_docker)
 
 
 def _now():
@@ -1026,19 +890,6 @@ def consume(config, worker_number):
                 queue=config['RABBITMQ_GPU_QUEUE'],
                 messages=gpu_status.method.message_count,
             )
-            # #region agent log
-            _agent_debug_log(
-                'gpu_worker.py:consume',
-                'rabbitmq consumer registered',
-                {
-                    'worker_number': worker_number,
-                    'queue': config['RABBITMQ_GPU_QUEUE'],
-                    'message_count': gpu_status.method.message_count,
-                    'inference': base_url,
-                },
-                'E',
-            )
-            # #endregion
             channel.confirm_delivery()
             channel.basic_qos(prefetch_count=1)
             for method, _, body in channel.consume(
@@ -1106,25 +957,6 @@ def main():
         in_docker=_running_in_docker(),
         urls=','.join(inference_urls),
     )
-    # #region agent log
-    for index, url in enumerate(inference_urls):
-        hostname = urlparse(url).hostname or ''
-        _agent_debug_log(
-            'gpu_worker.py:main',
-            'inference endpoint resolution',
-            {
-                'worker': index,
-                'url': url,
-                'health_url': _inference_health_url(url),
-                'hostname': hostname,
-                'resolves': _hostname_resolves(hostname),
-                'in_docker': _running_in_docker(),
-                'gpu_inference_network': os.environ.get('GPU_INFERENCE_NETWORK', ''),
-                'explicit_inference_urls': bool(os.environ.get('GPU_INFERENCE_BASE_URLS', '').strip()),
-            },
-            'A',
-        )
-    # #endregion
     if config['GPU_WORKER_CONCURRENCY'] != config['GPU_INSTANCE_COUNT']:
         log_info(
             'WARNING: GPU_WORKER_CONCURRENCY does not match GPU_INSTANCE_COUNT; '
