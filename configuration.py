@@ -59,15 +59,12 @@ def _require_env(*names):
 def load_application_config(base_dir, require_local=True):
     local_database = _env_str('LOCAL_DATABASE', _env_str('WEB_DATABASE', 'web'))
     newsletter_root = _env_str('NEWSLETTER_ROOT', 'newsletters')
-    sources_config = _env_str('SOURCES_CONFIG', os.path.join('config', 'sources.json'))
     preprocessing_priorities_config = _env_str(
         'PREPROCESSING_PRIORITIES_CONFIG',
         os.path.join('config', 'preprocessing_priorities.json'),
     )
     if not os.path.isabs(newsletter_root):
         newsletter_root = os.path.join(base_dir, newsletter_root)
-    if not os.path.isabs(sources_config):
-        sources_config = os.path.join(base_dir, sources_config)
     if not os.path.isabs(preprocessing_priorities_config):
         preprocessing_priorities_config = os.path.join(base_dir, preprocessing_priorities_config)
 
@@ -107,7 +104,6 @@ def load_application_config(base_dir, require_local=True):
         'WEB_AUTH_BOOTSTRAP_USERNAME': _env_str('WEB_AUTH_BOOTSTRAP_USERNAME', 'admin'),
         'WEB_AUTH_BOOTSTRAP_PASSWORD': _env_str('WEB_AUTH_BOOTSTRAP_PASSWORD', 'changeme'),
         'NEWSLETTER_ROOT': newsletter_root,
-        'SOURCES_CONFIG': sources_config,
         'PREPROCESSING_PRIORITIES_CONFIG': preprocessing_priorities_config,
         'PREPROCESSING_PRIORITIES': load_preprocessing_priorities(preprocessing_priorities_config),
         'COMPANY_AI_BASE_URL': _env_str('COMPANY_AI_BASE_URL'),

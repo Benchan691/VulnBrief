@@ -124,10 +124,6 @@ not need to run `source .env` manually.
 | `RABBITMQ_URL` | CloudAMQP URL (required for AI reports and preprocessor) |
 | `COMPANY_AI_*` | Company AI credentials (required when `COMPANY_AI_ENABLED=true`) |
 
-`config/sources.json` is committed and lists vulnerability source collection
-names used by the review UI. Its path is controlled by `SOURCES_CONFIG`
-(default `config/sources.json`).
-
 `config/preprocessing_priorities.json` controls background AI preprocessing
 priority by collection and document field boosts. Override with
 `PREPROCESSING_PRIORITIES_CONFIG`.
