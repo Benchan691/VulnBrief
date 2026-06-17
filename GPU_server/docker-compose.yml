@@ -3,6 +3,8 @@ x-llama-server: &llama-server
   restart: unless-stopped
   logging:
     driver: "none"
+  networks:
+    - gpu-internal
   env_file:
     - .env
   volumes:
@@ -30,13 +32,20 @@ x-gpu-worker: &gpu-worker
   restart: unless-stopped
   env_file:
     - .env
-  environment:
-    PYTHONUNBUFFERED: "1"
-    GPU_INFERENCE_NETWORK: docker
+  networks:
+    - gpu-internal
+
+x-llama-healthcheck: &llama-healthcheck
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 120s
 
 services:
   llama-server:
-    <<: *llama-server
+    <<: [*llama-server, *llama-healthcheck]
     profiles: ["tensor-split"]
     container_name: gpu-preprocessor-llama
     ports:
@@ -67,7 +76,7 @@ services:
       - "${GPU_LLAMA_LOG_VERBOSITY:-1}"
 
   llama-server-0:
-    <<: *llama-server
+    <<: [*llama-server, *llama-healthcheck]
     profiles: ["per-gpu"]
     container_name: gpu-preprocessor-llama-0
     ports:
@@ -81,7 +90,7 @@ services:
               capabilities: [gpu]
 
   llama-server-1:
-    <<: *llama-server
+    <<: [*llama-server, *llama-healthcheck]
     profiles: ["per-gpu"]
     container_name: gpu-preprocessor-llama-1
     ports:
@@ -95,7 +104,7 @@ services:
               capabilities: [gpu]
 
   llama-server-2:
-    <<: *llama-server
+    <<: [*llama-server, *llama-healthcheck]
     profiles: ["per-gpu"]
     container_name: gpu-preprocessor-llama-2
     ports:
@@ -112,14 +121,32 @@ services:
     <<: *gpu-worker
     profiles: ["per-gpu"]
     container_name: gpu-preprocessor-worker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      GPU_INFERENCE_BASE_URLS: http://host.docker.internal:8080/v1,http://host.docker.internal:8081/v1,http://host.docker.internal:8082/v1
     depends_on:
-      - llama-server-0
-      - llama-server-1
-      - llama-server-2
+      llama-server-0:
+        condition: service_healthy
+      llama-server-1:
+        condition: service_healthy
+      llama-server-2:
+        condition: service_healthy
 
   gpu-worker-tensor:
     <<: *gpu-worker
     profiles: ["tensor-split"]
     container_name: gpu-preprocessor-worker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      GPU_INFERENCE_BASE_URLS: http://host.docker.internal:8080/v1
     depends_on:
-      - llama-server
+      llama-server:
+        condition: service_healthy
+
+networks:
+  gpu-internal:
+    driver: bridge

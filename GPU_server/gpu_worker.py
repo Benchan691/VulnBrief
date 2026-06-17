@@ -136,6 +136,33 @@ def _gpu_server_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _agent_debug_log(location, message, data, hypothesis_id, run_id='pre-fix'):
+    payload = {
+        'sessionId': '45cf15',
+        'timestamp': int(time.time() * 1000),
+        'location': location,
+        'message': message,
+        'data': data,
+        'hypothesisId': hypothesis_id,
+        'runId': run_id,
+    }
+    # #region agent log
+    debug_log = os.environ.get(
+        'AGENT_DEBUG_LOG',
+        os.path.normpath(os.path.join(_gpu_server_dir(), '..', '.cursor', 'debug-45cf15.log')),
+    )
+    try:
+        log_dir = os.path.dirname(debug_log)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        with open(debug_log, 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps(payload, default=str) + '\n')
+    except OSError:
+        pass
+    log_info('Agent debug', hypothesis=hypothesis_id, debug_message=message, **data)
+    # #endregion
+
+
 def _resolve_model_path(model_path):
     if not model_path:
         raise ValueError('GPU_MODEL_PATH must be configured for llama-server auto-start.')
@@ -999,6 +1026,19 @@ def consume(config, worker_number):
                 queue=config['RABBITMQ_GPU_QUEUE'],
                 messages=gpu_status.method.message_count,
             )
+            # #region agent log
+            _agent_debug_log(
+                'gpu_worker.py:consume',
+                'rabbitmq consumer registered',
+                {
+                    'worker_number': worker_number,
+                    'queue': config['RABBITMQ_GPU_QUEUE'],
+                    'message_count': gpu_status.method.message_count,
+                    'inference': base_url,
+                },
+                'E',
+            )
+            # #endregion
             channel.confirm_delivery()
             channel.basic_qos(prefetch_count=1)
             for method, _, body in channel.consume(
@@ -1066,6 +1106,25 @@ def main():
         in_docker=_running_in_docker(),
         urls=','.join(inference_urls),
     )
+    # #region agent log
+    for index, url in enumerate(inference_urls):
+        hostname = urlparse(url).hostname or ''
+        _agent_debug_log(
+            'gpu_worker.py:main',
+            'inference endpoint resolution',
+            {
+                'worker': index,
+                'url': url,
+                'health_url': _inference_health_url(url),
+                'hostname': hostname,
+                'resolves': _hostname_resolves(hostname),
+                'in_docker': _running_in_docker(),
+                'gpu_inference_network': os.environ.get('GPU_INFERENCE_NETWORK', ''),
+                'explicit_inference_urls': bool(os.environ.get('GPU_INFERENCE_BASE_URLS', '').strip()),
+            },
+            'A',
+        )
+    # #endregion
     if config['GPU_WORKER_CONCURRENCY'] != config['GPU_INSTANCE_COUNT']:
         log_info(
             'WARNING: GPU_WORKER_CONCURRENCY does not match GPU_INSTANCE_COUNT; '
@@ -1081,9 +1140,10 @@ def main():
             url=issue['url'],
             hostname=issue['hostname'],
             hint=(
-                'Use GPU_INFERENCE_BASE_URLS=http://127.0.0.1:8080/v1,... when running '
-                'gpu_worker on the host, or start gpu-worker via '
-                'docker compose --profile per-gpu up -d'
+                'Use GPU_INFERENCE_BASE_URLS=http://host.docker.internal:8080/v1,... when '
+                'running gpu-worker in Docker with published llama ports, '
+                'http://127.0.0.1:8080/v1,... on the host, or compose service names '
+                'llama-server-0:8080 when llama containers share the compose network.'
             ),
         )
     if unresolved:

@@ -72,7 +72,9 @@ docker compose logs -f llama-server-0 llama-server-1 llama-server-2 gpu-worker
 Worker `0` uses `llama-server-0` (GPU 0), worker `1` → GPU 1, worker `2` → GPU 2.
 Host health checks: `http://127.0.0.1:8080/health`, `:8081/health`, `:8082/health`.
 
-Override URLs explicitly with `GPU_INFERENCE_BASE_URLS` (comma-separated) if needed.
+The Docker `gpu-worker` service uses `host.docker.internal` and the published
+host ports above so it does not depend on compose DNS names like `llama-server-0`.
+Override with `GPU_INFERENCE_BASE_URLS` in `.env` if needed.
 
 ### Tensor-split (one model across GPUs)
 
