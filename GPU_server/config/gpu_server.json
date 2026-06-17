@@ -7,7 +7,7 @@
     "model_name": "qwen-local",
     "context_size": 4096,
     "base_url": "http://127.0.0.1:8080/v1",
-    "docker_base_url": "http://host.docker.internal:8080/v1",
+    "docker_base_url": "http://localhost:8080/v1",
     "base_port": 8080,
     "auto_start_llama_servers": true,
     "startup_wait_seconds": 600,
