@@ -18,9 +18,13 @@ import requests
 from bson import json_util
 from dotenv import load_dotenv
 try:
-    from gpu_config import load_gpu_server_config, resolve_inference_base_urls
+    from gpu_config import load_gpu_server_config, resolve_inference_base_urls, _agent_debug_log
 except ImportError:
-    from GPU_server.gpu_config import load_gpu_server_config, resolve_inference_base_urls
+    from GPU_server.gpu_config import (
+        load_gpu_server_config,
+        resolve_inference_base_urls,
+        _agent_debug_log,
+    )
 from jsonschema import ValidationError, validate
 from pymongo import MongoClient, ReturnDocument
 
@@ -946,6 +950,21 @@ def main():
     signal.signal(signal.SIGINT, _request_shutdown)
     signal.signal(signal.SIGTERM, _request_shutdown)
     config = load_config()
+    # #region agent log
+    _agent_debug_log(
+        'gpu_worker.py:main',
+        'Worker startup config',
+        {
+            'in_docker': _running_in_docker(),
+            'instances': config.get('GPU_INSTANCE_COUNT'),
+            'concurrency': config.get('GPU_WORKER_CONCURRENCY'),
+            'urls': config.get('GPU_INFERENCE_BASE_URLS'),
+            'gpu_queue': config.get('RABBITMQ_GPU_QUEUE'),
+            'config_path': os.environ.get('GPU_SERVER_CONFIG', 'config/gpu_server.json'),
+        },
+        'D',
+    )
+    # #endregion
     client = MongoClient(config['ATLAS_MONGO_URI'], serverSelectionTimeoutMS=5000)
     database = client[config['VULNERABILITIES_DATABASE']]
     reset_gpu_processing(database, config)
