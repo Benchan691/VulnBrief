@@ -1,32 +1,5 @@
 import json
 import os
-import time
-
-
-def _agent_debug_log(location, message, data, hypothesis_id, run_id='pre-fix'):
-    payload = {
-        'sessionId': '45cf15',
-        'timestamp': int(time.time() * 1000),
-        'location': location,
-        'message': message,
-        'data': data,
-        'hypothesisId': hypothesis_id,
-        'runId': run_id,
-    }
-    # #region agent log
-    debug_log = os.environ.get('AGENT_DEBUG_LOG', '')
-    if not debug_log:
-        base = os.path.dirname(os.path.abspath(__file__))
-        debug_log = os.path.normpath(os.path.join(base, '..', '.cursor', 'debug-45cf15.log'))
-    try:
-        log_dir = os.path.dirname(debug_log)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-        with open(debug_log, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps(payload) + '\n')
-    except OSError:
-        pass
-    # #endregion
 
 
 def _gpu_server_dir():
@@ -123,21 +96,6 @@ def load_gpu_server_config(base_dir=None, running_in_docker=None):
 
     with open(config_path, encoding='utf-8') as handle:
         raw = json.load(handle)
-
-    # #region agent log
-    _agent_debug_log(
-        'gpu_config.py:load',
-        'Loaded GPU server config',
-        {
-            'config_path': config_path,
-            'config_exists': os.path.isfile(config_path),
-            'instance_count': raw.get('inference', {}).get('instance_count'),
-            'tensor_split': raw.get('inference', {}).get('tensor_split'),
-            'gpu_queue': raw.get('rabbitmq', {}).get('gpu_queue'),
-        },
-        'A',
-    )
-    # #endregion
 
     inference = raw.get('inference', {})
     rabbitmq = raw.get('rabbitmq', {})

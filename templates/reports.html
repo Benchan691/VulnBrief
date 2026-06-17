@@ -75,6 +75,7 @@
 (function () {
     const jobsUrl = {{ url_for('report.get_report_jobs')|tojson }};
     const cancelUrlTemplate = {{ url_for('report.cancel_report_job', job_id='__JOB_ID__')|tojson }};
+    const deleteUrlTemplate = {{ url_for('report.delete_report_job', job_id='__JOB_ID__')|tojson }};
     const selectionStorageKey = 'vulnerabilityReviewSelections';
     const rows = document.getElementById('job-rows');
     const empty = document.getElementById('empty');
@@ -113,6 +114,26 @@
                 return body;
             });
         });
+    }
+    function appendDeleteButton(container, job) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-outline-danger btn-sm delete-btn ms-1';
+        button.textContent = 'Delete';
+        button.addEventListener('click', function () {
+            if (!confirm('Delete this report job?')) return;
+            button.disabled = true;
+            requestJson(deleteUrlTemplate.replace('__JOB_ID__', job.id), { method: 'DELETE' })
+                .then(function () {
+                    showMessage('Report job deleted.', 'success');
+                    loadJobs();
+                })
+                .catch(function (reason) {
+                    showMessage(reason.message, 'danger');
+                    button.disabled = false;
+                });
+        });
+        container.append(button);
     }
     function renderJobs(jobs) {
         rows.replaceChildren();
@@ -156,9 +177,13 @@
                     document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
                     previewModal.show();
                 });
+                appendDeleteButton(action, job);
             } else if (job.status === 'failed') {
-                action.textContent = job.error || 'Generation failed.';
-                action.className = 'text-danger small';
+                const error = document.createElement('span');
+                error.className = 'text-danger small me-1';
+                error.textContent = job.error || 'Generation failed.';
+                action.append(error);
+                appendDeleteButton(action, job);
             } else if (job.status === 'cancelled') {
                 if ((job.processed_count || 0) > 0) {
                     action.innerHTML = '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Partial</button>';
@@ -166,9 +191,13 @@
                         document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
                         previewModal.show();
                     });
+                    appendDeleteButton(action, job);
                 } else {
-                    action.textContent = 'Cancelled.';
-                    action.className = 'text-muted small';
+                    const cancelled = document.createElement('span');
+                    cancelled.className = 'text-muted small me-1';
+                    cancelled.textContent = 'Cancelled.';
+                    action.append(cancelled);
+                    appendDeleteButton(action, job);
                 }
             } else {
                 action.innerHTML = '<button class="btn btn-outline-danger btn-sm cancel-btn me-1">Cancel</button>';

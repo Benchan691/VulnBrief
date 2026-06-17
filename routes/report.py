@@ -10,6 +10,7 @@ from report_harness import (
     _render_job_html,
     cancel_job,
     create_job,
+    delete_job,
     resolve_review_selections,
     start_job,
 )
@@ -110,6 +111,19 @@ def cancel_report_job(job_id):
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': 'Unable to cancel report job.'}), 503
+
+
+@report_blueprint.route('/api/reports/<job_id>', methods=['DELETE'])
+@login_required
+def delete_report_job(job_id):
+    try:
+        delete_job(job_id)
+        return jsonify({'id': job_id, 'deleted': True})
+    except ValueError as exc:
+        status = 404 if str(exc) == 'Report job not found.' else 400
+        return jsonify({'error': str(exc)}), status
+    except PyMongoError:
+        return jsonify({'error': 'Unable to delete report job.'}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>')

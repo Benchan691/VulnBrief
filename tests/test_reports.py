@@ -1057,6 +1057,33 @@ def test_cancel_report_job_api(client, monkeypatch):
     assert cancel_again.status_code == 400
 
 
+def test_delete_report_job_api(client, monkeypatch):
+    authenticate(client)
+    monkeypatch.setattr('routes.report.start_job', lambda app, job_id: None)
+    response = client.post('/api/reports', data={
+        'json_file': (BytesIO(json.dumps([sample_document()]).encode()), 'input.json'),
+    })
+    assert response.status_code == 202
+    job_id = response.get_json()['id']
+
+    delete_active = client.delete(f'/api/reports/{job_id}')
+    assert delete_active.status_code == 400
+    assert 'Cancel' in delete_active.get_json()['error']
+
+    cancel = client.post(f'/api/reports/{job_id}/cancel')
+    assert cancel.status_code == 200
+
+    deleted = client.delete(f'/api/reports/{job_id}')
+    assert deleted.status_code == 200
+    assert deleted.get_json()['deleted'] is True
+    with app.app_context():
+        assert get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)}) is None
+        assert get_web_database()['report_job_inputs'].count_documents({'job_id': ObjectId(job_id)}) == 0
+
+    delete_again = client.delete(f'/api/reports/{job_id}')
+    assert delete_again.status_code == 404
+
+
 def test_run_job_exits_when_job_already_cancelled(tmp_path, monkeypatch):
     monkeypatch.setattr('report_harness.CompanyAIProvider', lambda config: FakeProvider())
     with app.app_context():

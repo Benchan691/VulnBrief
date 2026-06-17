@@ -1499,6 +1499,22 @@ def cancel_job(job_id):
     return str(job_object_id)
 
 
+def delete_job(job_id):
+    try:
+        job_object_id = ObjectId(job_id)
+    except Exception as exc:
+        raise ValueError('Invalid report job id.') from exc
+    job = _job_collection().find_one({'_id': job_object_id}, {'status': 1})
+    if job is None:
+        raise ValueError('Report job not found.')
+    if job.get('status') in ('queued', 'running'):
+        raise ValueError('Cancel the report job before deleting it.')
+    _result_collection().delete_many({'job_id': job_object_id})
+    _input_collection().delete_many({'job_id': job_object_id})
+    _job_collection().delete_one({'_id': job_object_id})
+    return str(job_object_id)
+
+
 def run_template_job(app, job_id):
     with app.app_context():
         collection = _job_collection()
