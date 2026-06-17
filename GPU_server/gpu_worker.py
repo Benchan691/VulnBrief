@@ -46,6 +46,31 @@ def log_error(message, **fields):
     print(f'[preprocessor] ERROR {message}{_format_log_fields(fields)}', flush=True)
 
 
+def _preview_text(text, limit):
+    normalized = ' '.join((text or '').split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit] + '...'
+
+
+def _preview_bytes(body, limit):
+    if isinstance(body, bytes):
+        body = body.decode('utf-8', errors='replace')
+    return _preview_text(body, limit)
+
+
+def log_llm_message(config, direction, role, content, **fields):
+    if not config.get('GPU_LOG_MESSAGES'):
+        return
+    log_info(
+        'LLM message',
+        direction=direction,
+        role=role,
+        content=_preview_text(content, config['GPU_LOG_MESSAGE_CHARS']),
+        **fields,
+    )
+
+
 def _running_in_docker():
     if os.environ.get('GPU_INFERENCE_NETWORK', '').strip().lower() == 'docker':
         return True
@@ -172,6 +197,8 @@ def _build_llama_server_command(config, index):
         str(config['GPU_CONTEXT_SIZE']),
         '--parallel',
         '1',
+        '--log-verbosity',
+        str(config['GPU_LLAMA_LOG_VERBOSITY']),
     ]
     if config['GPU_INSTANCE_COUNT'] <= 1:
         tensor_split = config['GPU_TENSOR_SPLIT']
@@ -428,6 +455,9 @@ def load_config():
         'GPU_REQUEST_TIMEOUT_SECONDS': _env_int('GPU_REQUEST_TIMEOUT_SECONDS', 300),
         'GPU_JSON_RETRIES': _env_int('GPU_JSON_RETRIES', 2),
         'GPU_MAX_OUTPUT_TOKENS': _env_int('GPU_MAX_OUTPUT_TOKENS', 4096),
+        'GPU_LLAMA_LOG_VERBOSITY': _env_int('GPU_LLAMA_LOG_VERBOSITY', 1),
+        'GPU_LOG_MESSAGES': _env_bool('GPU_LOG_MESSAGES', True),
+        'GPU_LOG_MESSAGE_CHARS': _env_int('GPU_LOG_MESSAGE_CHARS', 2000),
         'GPU_INFERENCE_STARTUP_WAIT_SECONDS': _env_int(
             'GPU_INFERENCE_STARTUP_WAIT_SECONDS',
             600,
@@ -599,6 +629,7 @@ def publish(channel, queue_name, task, priority, config):
 
 class LocalGPUProvider:
     def __init__(self, config, base_url=None):
+        self.config = config
         self.base_url = (base_url or config['GPU_INFERENCE_BASE_URL']).rstrip('/')
         self.model = config['GPU_MODEL_NAME']
         self.timeout = config['GPU_REQUEST_TIMEOUT_SECONDS']
@@ -606,6 +637,9 @@ class LocalGPUProvider:
         self.max_output_tokens = config['GPU_MAX_OUTPUT_TOKENS']
         self.start_prompt = config['GPU_START_PROMPT']
         self.messages = None
+
+    def _log_message(self, direction, role, content, **fields):
+        log_llm_message(self.config, direction, role, content, inference=self.base_url, **fields)
 
     @staticmethod
     def _parse_json(content):
@@ -634,13 +668,22 @@ class LocalGPUProvider:
                     'schema': schema,
                 },
             }
+        outgoing = messages[-1] if messages else {}
+        self._log_message(
+            'request',
+            outgoing.get('role', 'unknown'),
+            outgoing.get('content', ''),
+            schema=schema_name if schema is not None else None,
+        )
         response = requests.post(
             self.base_url + '/chat/completions',
             json=payload,
             timeout=self.timeout,
         )
         response.raise_for_status()
-        return response.json()['choices'][0]['message']['content']
+        content = response.json()['choices'][0]['message']['content']
+        self._log_message('response', 'assistant', content, schema=schema_name if schema is not None else None)
+        return content
 
     def open_chat(self):
         if not self.start_prompt:
@@ -966,10 +1009,23 @@ def consume(config, worker_number):
                     break
                 if method is None:
                     continue
+                task = json_util.loads(body.decode('utf-8'))
+                received_fields = {
+                    'worker': worker_number,
+                    'target': _task_target(task),
+                    'task_type': task.get('task_type', 'item'),
+                    'language': task.get('language'),
+                }
+                if config.get('GPU_LOG_MESSAGES'):
+                    received_fields['body'] = _preview_bytes(
+                        body,
+                        config['GPU_LOG_MESSAGE_CHARS'],
+                    )
+                log_info('Received queue message', **received_fields)
                 process_task(
                     database,
                     channel,
-                    json_util.loads(body.decode('utf-8')),
+                    task,
                     owner,
                     provider,
                     config,

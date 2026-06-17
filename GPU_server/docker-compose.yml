@@ -1,10 +1,38 @@
 x-llama-server: &llama-server
   image: ghcr.io/ggml-org/llama.cpp:server-cuda
   restart: unless-stopped
+  logging:
+    driver: "none"
   env_file:
     - .env
   volumes:
     - ./models:/models:ro
+  command:
+    - "-m"
+    - "${GPU_MODEL_PATH}"
+    - "--host"
+    - "0.0.0.0"
+    - "--port"
+    - "8080"
+    - "-ngl"
+    - "99"
+    - "-c"
+    - "${GPU_CONTEXT_SIZE:-4096}"
+    - "--parallel"
+    - "1"
+    - "--log-verbosity"
+    - "${GPU_LLAMA_LOG_VERBOSITY:-1}"
+
+x-gpu-worker: &gpu-worker
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    PYTHONUNBUFFERED: "1"
+    GPU_INFERENCE_NETWORK: docker
 
 services:
   llama-server:
@@ -13,7 +41,13 @@ services:
     container_name: gpu-preprocessor-llama
     ports:
       - "127.0.0.1:8080:8080"
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     command:
       - "-m"
       - "${GPU_MODEL_PATH}"
@@ -29,6 +63,8 @@ services:
       - "1"
       - "--tensor-split"
       - "${GPU_TENSOR_SPLIT:-1,1,1}"
+      - "--log-verbosity"
+      - "${GPU_LLAMA_LOG_VERBOSITY:-1}"
 
   llama-server-0:
     <<: *llama-server
@@ -36,21 +72,13 @@ services:
     container_name: gpu-preprocessor-llama-0
     ports:
       - "127.0.0.1:8080:8080"
-    gpus:
-      - device: "0"
-    command:
-      - "-m"
-      - "${GPU_MODEL_PATH}"
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "8080"
-      - "-ngl"
-      - "99"
-      - "-c"
-      - "${GPU_CONTEXT_SIZE:-4096}"
-      - "--parallel"
-      - "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
 
   llama-server-1:
     <<: *llama-server
@@ -58,21 +86,13 @@ services:
     container_name: gpu-preprocessor-llama-1
     ports:
       - "127.0.0.1:8081:8080"
-    gpus:
-      - device: "1"
-    command:
-      - "-m"
-      - "${GPU_MODEL_PATH}"
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "8080"
-      - "-ngl"
-      - "99"
-      - "-c"
-      - "${GPU_CONTEXT_SIZE:-4096}"
-      - "--parallel"
-      - "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
 
   llama-server-2:
     <<: *llama-server
@@ -80,32 +100,26 @@ services:
     container_name: gpu-preprocessor-llama-2
     ports:
       - "127.0.0.1:8082:8080"
-    gpus:
-      - device: "2"
-    command:
-      - "-m"
-      - "${GPU_MODEL_PATH}"
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "8080"
-      - "-ngl"
-      - "99"
-      - "-c"
-      - "${GPU_CONTEXT_SIZE:-4096}"
-      - "--parallel"
-      - "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
 
   gpu-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *gpu-worker
+    profiles: ["per-gpu"]
     container_name: gpu-preprocessor-worker
-    restart: unless-stopped
-    env_file:
-      - .env
     depends_on:
-      - llama-server
       - llama-server-0
       - llama-server-1
       - llama-server-2
+
+  gpu-worker-tensor:
+    <<: *gpu-worker
+    profiles: ["tensor-split"]
+    container_name: gpu-preprocessor-worker
+    depends_on:
+      - llama-server

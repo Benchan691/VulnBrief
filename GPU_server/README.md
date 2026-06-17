@@ -37,6 +37,14 @@ Set the Atlas URI, RabbitMQ URI, `AI_TASK_COLLECTION`, and `GPU_MODEL_PATH`. Que
 `PREPROCESSING_CACHE_VERSION`, and report compaction settings must match the
 webserver.
 
+In `.env`, escape `${language}` for Docker Compose as `$${language}` in
+`GPU_FINAL_SUMMARY_PROMPT` (see `.env.example`). Otherwise Compose warns that
+`language` is unset.
+
+GPU services use `deploy.resources.reservations.devices` instead of the
+top-level `gpus` key so older Compose schema validators accept the file. Requires
+Docker Compose v2 with NVIDIA Container Toolkit.
+
 Match `GPU_WORKER_CONCURRENCY` on the **webserver** `.env` to the number of GPU
 worker sessions you run here so the router load-balances correctly.
 
@@ -82,7 +90,7 @@ Start:
 
 ```sh
 docker compose --profile tensor-split up -d --build
-docker compose logs -f llama-server gpu-worker
+docker compose logs -f llama-server gpu-worker-tensor
 curl http://127.0.0.1:8080/health
 ```
 
