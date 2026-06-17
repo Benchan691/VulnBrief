@@ -14,6 +14,9 @@
     "qianxin": 7,
     "cve": 6
   },
+  "background_scan_skip": [
+    "cve"
+  ],
   "field_boosts": {
     "severity": {
       "CRITICAL": 3,

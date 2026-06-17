@@ -88,9 +88,11 @@ Background scans assign RabbitMQ priority per vulnerability using
 `config/preprocessing_priorities.json` (override with
 `PREPROCESSING_PRIORITIES_CONFIG`). Each collection can define a base priority;
 document fields such as `severity` and `status` can add boosts. The computed value
-is clamped to `RABBITMQ_MAX_PRIORITY`. Interactive report jobs still use
-`RABBITMQ_REPORT_PRIORITY`; failed background retries keep
-`RABBITMQ_BACKGROUND_PRIORITY`.
+is clamped to `RABBITMQ_MAX_PRIORITY`. Collections listed in
+`background_scan_skip` are excluded from scanner cycles; they are still processed
+on demand when selected for report generation (`RABBITMQ_REPORT_PRIORITY`).
+Interactive report jobs still use `RABBITMQ_REPORT_PRIORITY`; failed background
+retries keep `RABBITMQ_BACKGROUND_PRIORITY`.
 
 ### Preprocessor logs
 

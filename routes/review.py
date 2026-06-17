@@ -17,15 +17,15 @@ from review_data import (
     resolve_vulnerability_document,
     review_views,
 )
+from subscription_data import VALID_SEVERITIES, build_severity_filter, severity_projection_fields
 from . import review_blueprint
 from .common import login_required
 
 
-SUMMARY_FIELDS = ('code', 'cve', 'title', 'impacts', 'affected', 'affected_products')
+SUMMARY_FIELDS = ('code', 'cve', 'title', 'severity', 'status', 'affected', 'affected_products')
 FILTER_FIELDS = {
     'code': ('code', 'cve'),
     'title': ('title',),
-    'impact': ('impacts',),
     'affected': ('affected', 'affected_products'),
 }
 def _review_views(database):
@@ -44,6 +44,12 @@ def _regex(value):
     return {'$regex': re.escape(value), '$options': 'i'}
 
 
+def _parse_include_unknown(value):
+    if value is None:
+        return False
+    return str(value).lower() in {'1', 'true', 'yes', 'on'}
+
+
 def _build_filter(args):
     clauses = []
     search = args.get('search', '').strip()
@@ -54,6 +60,17 @@ def _build_filter(args):
         value = args.get(parameter, '').strip()
         if value:
             clauses.append({'$or': [{field: _regex(value)} for field in fields]})
+
+    status = args.get('status', '').strip()
+    if status and status not in VALID_SEVERITIES - {''}:
+        raise ValueError('Severity must be Critical, High, Medium, or Low.')
+    if clauses or 'status' in args or 'include_unknown' in args:
+        severity_clause = build_severity_filter(
+            status,
+            _parse_include_unknown(args.get('include_unknown')),
+        )
+        if severity_clause:
+            clauses.append(severity_clause)
 
     if not clauses:
         return {}
@@ -89,6 +106,7 @@ def _source_projection(view):
             ],
         }
     first_stage['$project'] = projection
+    projection.update(severity_projection_fields())
     projection['scraped_at'] = 1
     projection['disclosure_date'] = 1
     return [first_stage, *pipeline[1:]]
@@ -204,27 +222,43 @@ def get_review_collections():
         return jsonify({'error': 'Unable to connect to the vulnerabilities database.'}), 503
 
 
+def _selected_review_collections(args, views):
+    collection_names = []
+    seen = set()
+    for name in args.getlist('collection'):
+        name = name.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        collection_names.append(name)
+    if not collection_names:
+        return sorted(
+            views,
+            key=lambda name: collection_base_priority(views[name]['options']['viewOn'], current_app.config),
+            reverse=True,
+        )
+    invalid = [name for name in collection_names if name not in views]
+    if invalid:
+        raise ValueError('Review collection not found.')
+    return sorted(
+        collection_names,
+        key=lambda name: collection_base_priority(views[name]['options']['viewOn'], current_app.config),
+        reverse=True,
+    )
+
+
 @review_blueprint.route('/api/reviews/search')
 @login_required
 def search_review_documents():
-    collection_name = request.args.get('collection', '').strip()
-    mongo_filter = _build_filter(request.args)
-    if not mongo_filter and not collection_name:
-        return jsonify({'error': 'Enter at least one filter.'}), 400
+    try:
+        mongo_filter = _build_filter(request.args)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     try:
         database = get_vulnerabilities_database()
         views = _review_views(database)
-        if collection_name:
-            if collection_name not in views:
-                return jsonify({'error': 'Review collection not found.'}), 400
-            view_names = [collection_name]
-        else:
-            view_names = sorted(
-                views,
-                key=lambda name: collection_base_priority(views[name]['options']['viewOn'], current_app.config),
-                reverse=True,
-            )
+        view_names = _selected_review_collections(request.args, views)
 
         page = max(request.args.get('page', 1, type=int), 1)
         page_size = min(max(request.args.get('page_size', 25, type=int), 1), 100)
@@ -268,7 +302,9 @@ def search_review_documents():
             'total': total,
             'pages': max((total + page_size - 1) // page_size, 1),
         })
-    except (PyMongoError, ValueError):
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
         return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
 
 
@@ -305,7 +341,9 @@ def get_review_documents(collection_name):
             'total': total,
             'pages': max((total + page_size - 1) // page_size, 1),
         })
-    except (PyMongoError, ValueError):
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
         return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
 
 

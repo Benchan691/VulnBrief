@@ -141,6 +141,18 @@ def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
     assert response.status_code == 200
     assert response.get_json()['total'] == 2
 
+    response = client.get('/api/reviews/search?collection=a_review&collection=b_review&title=test')
+    assert response.status_code == 200
+    assert response.get_json()['total'] == 4
+
+    response = client.get('/api/reviews/search?collection=a_review&collection=missing_review&title=test')
+    assert response.status_code == 400
+    assert 'not found' in response.get_json()['error']
+
+    response = client.get('/api/reviews/search?collection=a_review&collection=b_review')
+    assert response.status_code == 200
+    assert response.get_json()['total'] == 4
+
 
 def test_global_review_search_orders_by_preprocessing_priority(client, monkeypatch):
     authenticate(client)
@@ -218,14 +230,74 @@ def test_review_documents_sort_newest_first(client, monkeypatch):
     assert {'$sort': {'scraped_at': -1, '_id': -1}} in captured['pipeline']
 
 
-def test_global_review_search_rejects_empty_and_invalid_filters(client, monkeypatch):
+def test_global_review_search_allows_empty_filters_and_rejects_invalid_filters(client, monkeypatch):
     authenticate(client)
-    assert client.get('/api/reviews/search').status_code == 400
+    views = {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    def query_matches(database, view, mongo_filter, config):
+        return 1, [{'_id': 'cve:1', 'title': 'Example'}]
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    monkeypatch.setattr('routes.review._query_review_matches', query_matches)
+
+    response = client.get('/api/reviews/search')
+    assert response.status_code == 200
+    assert response.get_json()['total'] == 1
 
     monkeypatch.setattr('routes.review._review_views', lambda database: {})
     response = client.get('/api/reviews/search?collection=not_a_review')
     assert response.status_code == 400
     assert 'not found' in response.get_json()['error']
+
+    response = client.get('/api/reviews/search?status=Invalid')
+    assert response.status_code == 400
+    assert 'Severity' in response.get_json()['error']
+
+
+def test_review_severity_filter_applies_known_only_by_default(client, monkeypatch):
+    authenticate(client)
+    views = {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+    captured = []
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    def query_matches(database, view, mongo_filter, config):
+        captured.append(mongo_filter)
+        return 0, []
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    monkeypatch.setattr('routes.review._query_review_matches', query_matches)
+
+    response = client.get('/api/reviews/search?collection=cve_review&title=test')
+    assert response.status_code == 200
+    assert 'severity' in str(captured[0])
+
+    captured.clear()
+    response = client.get('/api/reviews/search?collection=cve_review')
+    assert response.status_code == 200
+    assert captured == [{}]
+
+    captured.clear()
+    response = client.get('/api/reviews/search?collection=cve_review&include_unknown=true')
+    assert response.status_code == 200
+    assert captured == [{}]
+
+    captured.clear()
+    response = client.get('/api/reviews/search?collection=cve_review&status=High&include_unknown=true')
+    assert response.status_code == 200
+    assert '$or' in captured[0]
 
 
 @pytest.mark.parametrize('payload, status', [

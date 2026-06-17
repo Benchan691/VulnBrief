@@ -125,7 +125,9 @@ not need to run `source .env` manually.
 | `COMPANY_AI_*` | Company AI credentials (required when `COMPANY_AI_ENABLED=true`) |
 
 `config/preprocessing_priorities.json` controls background AI preprocessing
-priority by collection and document field boosts. Override with
+priority by collection and document field boosts. Collections in
+`background_scan_skip` are not scanned proactively (for example `cve`); they are
+still processed when a report job selects them. Override with
 `PREPROCESSING_PRIORITIES_CONFIG`.
 
 ### Multiline values

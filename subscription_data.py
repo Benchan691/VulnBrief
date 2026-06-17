@@ -170,6 +170,68 @@ def _regex(value):
     return {'$regex': re.escape(value), '$options': 'i'}
 
 
+UNKNOWN_SEVERITY_VALUES = ('unknown', 'n/a', 'na', 'none', 'not specified')
+
+
+def unknown_severity_clauses():
+    return [
+        {'severity': {'$exists': False}},
+        {'severity': None},
+        {'severity': ''},
+        *[
+            {'severity': {'$regex': f'^{re.escape(value)}$', '$options': 'i'}}
+            for value in UNKNOWN_SEVERITY_VALUES
+        ],
+    ]
+
+
+def build_severity_filter(status='', include_unknown=False):
+    status = (status or '').strip()
+    include_unknown = bool(include_unknown)
+    if status:
+        severity_clause = {'severity': {
+            '$regex': f'^{re.escape(status)}(?:\\s+Risk)?$',
+            '$options': 'i',
+        }}
+        return (
+            {'$or': [severity_clause, *unknown_severity_clauses()]}
+            if include_unknown else severity_clause
+        )
+    if not include_unknown:
+        return {'severity': {
+            '$regex': r'^(?:Critical|High|Medium|Low)(?:\s+Risk)?$',
+            '$options': 'i',
+        }}
+    return None
+
+
+def severity_projection_fields():
+    return {
+        'status': 1,
+        'severity': {
+            '$ifNull': [
+                '$severity',
+                {
+                    '$ifNull': [
+                        '$details.hkcert.risk_level',
+                        {
+                            '$ifNull': [
+                                '$details.cisco.sir',
+                                {
+                                    '$ifNull': [
+                                        '$details.cnnvd.hazardLevel',
+                                        '$status',
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        },
+    }
+
+
 def _window_bounds(filters, now=None):
     now = (now or datetime.now(timezone.utc)).astimezone(HONG_KONG)
     window = filters['time_window']
@@ -199,28 +261,9 @@ def build_match_filter(filters, now=None):
             clauses.append({'$or': [{field: _regex(value)} for field in fields]})
     status = filters.get('status', '')
     include_unknown = filters.get('include_unknown', False)
-    unknown_values = ('unknown', 'n/a', 'na', 'none', 'not specified')
-    unknown_clauses = [
-        {'severity': {'$exists': False}},
-        {'severity': None},
-        {'severity': ''},
-        *[{'severity': {'$regex': f'^{re.escape(value)}$', '$options': 'i'}}
-          for value in unknown_values],
-    ]
-    if status:
-        severity_clause = {'severity': {
-            '$regex': f'^{re.escape(status)}(?:\\s+Risk)?$',
-            '$options': 'i',
-        }}
-        clauses.append(
-            {'$or': [severity_clause, *unknown_clauses]}
-            if include_unknown else severity_clause
-        )
-    elif not include_unknown:
-        clauses.append({'severity': {
-            '$regex': r'^(?:Critical|High|Medium|Low)(?:\s+Risk)?$',
-            '$options': 'i',
-        }})
+    severity_clause = build_severity_filter(status, include_unknown)
+    if severity_clause:
+        clauses.append(severity_clause)
     bounds = _window_bounds(filters, now)
     if bounds:
         start, end = bounds
@@ -243,28 +286,7 @@ def _projection_pipeline(view):
     projection = dict(first['$project'])
     projection.update({
         '_id': 1,
-        'status': 1,
-        'severity': {
-            '$ifNull': [
-                '$severity',
-                {
-                    '$ifNull': [
-                        '$details.hkcert.risk_level',
-                        {
-                            '$ifNull': [
-                                '$details.cisco.sir',
-                                {
-                                    '$ifNull': [
-                                        '$details.cnnvd.hazardLevel',
-                                        '$status',
-                                    ],
-                                },
-                            ],
-                        },
-                    ],
-                },
-            ],
-        },
+        **severity_projection_fields(),
         'vuln_type': 1,
         'scraped_at': 1,
         'disclosure_date': 1,

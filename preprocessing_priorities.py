@@ -62,12 +62,33 @@ def load_preprocessing_priorities(path):
             normalized_values[value.strip().casefold()] = boost
         normalized_boosts[field] = normalized_values
 
+    background_scan_skip = raw.get('background_scan_skip', [])
+    if not isinstance(background_scan_skip, list):
+        raise ValueError('Preprocessing priorities "background_scan_skip" must be a list.')
+    normalized_skip = []
+    seen = set()
+    for name in background_scan_skip:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                'Preprocessing priorities background_scan_skip entries must be non-empty strings.',
+            )
+        name = name.strip()
+        if name not in seen:
+            seen.add(name)
+            normalized_skip.append(name)
+
     normalized_collections = {str(name): priority for name, priority in collections.items()}
     return {
         'default': default,
         'collections': normalized_collections,
+        'background_scan_skip': normalized_skip,
         'field_boosts': normalized_boosts,
     }
+
+
+def background_scan_skipped(collection_name, config):
+    skipped = (config.get('PREPROCESSING_PRIORITIES') or {}).get('background_scan_skip') or []
+    return collection_name in skipped
 
 
 def document_field_value(document, field):

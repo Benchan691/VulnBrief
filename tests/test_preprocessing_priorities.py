@@ -3,6 +3,7 @@ import json
 import pytest
 
 from preprocessing_priorities import (
+    background_scan_skipped,
     document_field_value,
     load_preprocessing_priorities,
     resolve_preprocessing_priority,
@@ -52,8 +53,42 @@ def test_load_preprocessing_priorities_normalizes_field_boost_keys(tmp_path):
 
     assert loaded['default'] == 1
     assert loaded['collections'] == {'cve': 7}
+    assert loaded['background_scan_skip'] == []
     assert loaded['field_boosts']['severity']['critical'] == 3
     assert loaded['field_boosts']['severity']['high'] == 2
+
+
+def test_load_preprocessing_priorities_normalizes_background_scan_skip(tmp_path):
+    path = tmp_path / 'priorities.json'
+    path.write_text(json.dumps({
+        'background_scan_skip': ['cve', 'cve', ' avd '],
+    }), encoding='utf-8')
+
+    loaded = load_preprocessing_priorities(str(path))
+
+    assert loaded['background_scan_skip'] == ['cve', 'avd']
+
+
+def test_load_preprocessing_priorities_rejects_invalid_background_scan_skip(tmp_path):
+    path = tmp_path / 'priorities.json'
+    path.write_text(json.dumps({'background_scan_skip': 'cve'}), encoding='utf-8')
+
+    with pytest.raises(ValueError, match='background_scan_skip'):
+        load_preprocessing_priorities(str(path))
+
+
+def test_background_scan_skipped_reads_configured_collections():
+    config = _base_config(
+        PREPROCESSING_PRIORITIES={
+            'default': 1,
+            'collections': {},
+            'background_scan_skip': ['cve'],
+            'field_boosts': {},
+        },
+    )
+
+    assert background_scan_skipped('cve', config) is True
+    assert background_scan_skipped('avd', config) is False
 
 
 def test_load_preprocessing_priorities_rejects_invalid_schema(tmp_path):

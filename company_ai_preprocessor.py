@@ -16,6 +16,7 @@ from bootstrap import BASE_DIR, configure_worker
 from mongo import get_config, get_vulnerabilities_database
 from preprocessor_log import log_error, log_info
 from preprocessing_priorities import (
+    background_scan_skipped,
     resolve_preprocessing_priority,
     scan_projection,
     sorted_scan_collections,
@@ -539,7 +540,11 @@ def scan_unprocessed(config):
     connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
     try:
         channel = _publisher_channel(connection, config)
+        skipped_collections = 0
         for collection_name in sorted_scan_collections(collection_names, config):
+            if background_scan_skipped(collection_name, config):
+                skipped_collections += 1
+                continue
             for document in database[collection_name].find({}, projection):
                 details = document.get('details')
                 if not isinstance(details, dict):
@@ -556,6 +561,8 @@ def scan_unprocessed(config):
                         channel,
                     )
                     queued += int(published)
+        if skipped_collections:
+            log_info('Background scan skipped collections', count=skipped_collections)
         stale_before = _now() - timedelta(seconds=config['COMPANY_AI_STALE_PROCESSING_SECONDS'])
         for task in _shared_task_collection().find({
             '$or': [

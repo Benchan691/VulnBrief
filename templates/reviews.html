@@ -2,6 +2,16 @@
 {% block title %}Vulnerability Reviews{% endblock %}
 
 {% block content %}
+<style>
+    .review-collections-toggle.dropdown-toggle::after {
+        margin-left: auto;
+        float: right;
+    }
+    .review-collections-options {
+        max-height: 12rem;
+        overflow-y: auto;
+    }
+</style>
 <div class="container">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
         <div>
@@ -40,19 +50,40 @@
                     <label for="filter-title" class="form-label">Title</label>
                     <input id="filter-title" name="title" class="form-control">
                 </div>
-                <div class="col-12 col-md-6 col-lg-3">
-                    <label for="filter-impact" class="form-label">Impact</label>
-                    <input id="filter-impact" name="impact" class="form-control">
+                <div class="col-12 col-md-6 col-lg-2">
+                    <label for="filter-status" class="form-label">Severity</label>
+                    <select id="filter-status" name="status" class="form-select">
+                        <option value="">All known severities</option>
+                        <option value="Critical">Critical</option>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                    </select>
+                </div>
+                <div class="col-12 col-md-6 col-lg-2 d-flex align-items-end">
+                    <div class="form-check mb-2">
+                        <input id="filter-include-unknown" name="include_unknown" class="form-check-input" type="checkbox" value="true">
+                        <label class="form-check-label" for="filter-include-unknown">Include unknown severity</label>
+                    </div>
                 </div>
                 <div class="col-12 col-md-6 col-lg-4">
                     <label for="filter-affected" class="form-label">Affected product / system</label>
                     <input id="filter-affected" name="affected" class="form-control">
                 </div>
                 <div class="col-12 col-md-6 col-lg-4">
-                    <label for="filter-collection" class="form-label">Review collection</label>
-                    <select id="filter-collection" name="collection" class="form-select">
-                        <option value="">All review collections</option>
-                    </select>
+                    <label for="filter-collections-toggle" class="form-label">Review collections</label>
+                    <div class="dropdown w-100">
+                        <button id="filter-collections-toggle" type="button" class="form-select dropdown-toggle review-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">All review collections</button>
+                        <div id="filter-collections-menu" class="dropdown-menu w-100 shadow-sm p-2">
+                            <input id="filter-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="Search collections..." autocomplete="off">
+                            <div id="filter-collections-options" class="review-collections-options"></div>
+                            <div class="dropdown-divider my-2"></div>
+                            <div class="d-flex justify-content-between px-1">
+                                <button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">Select all</button>
+                                <button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="clear">Clear</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 <div class="col-12 col-md-6 col-lg-4 d-flex align-items-end gap-2">
                     <button class="btn btn-primary flex-grow-1" type="submit">
@@ -103,7 +134,7 @@
                             <th scope="col">Collection</th>
                             <th scope="col">Code / CVE</th>
                             <th scope="col">Title</th>
-                            <th scope="col">Impact</th>
+                            <th scope="col">Severity</th>
                             <th scope="col">Affected</th>
                             <th scope="col">Action</th>
                         </tr>
@@ -144,7 +175,10 @@
     const refresh = document.getElementById('refresh-btn');
     const filterForm = document.getElementById('global-filter-form');
     const clearFilter = document.getElementById('clear-filter-btn');
-    const collectionFilter = document.getElementById('filter-collection');
+    const collectionsToggle = document.getElementById('filter-collections-toggle');
+    const collectionsMenu = document.getElementById('filter-collections-menu');
+    const collectionsSearch = document.getElementById('filter-collections-search');
+    const collectionsOptions = document.getElementById('filter-collections-options');
     const searchResults = document.getElementById('search-results');
     const resultsLoading = document.getElementById('results-loading');
     const resultsEmpty = document.getElementById('results-empty');
@@ -232,6 +266,110 @@
         return '';
     }
 
+    function getCollectionCheckboxes() {
+        return Array.from(collectionsOptions.querySelectorAll('.review-collection-checkbox'));
+    }
+
+    function getVisibleCollectionCheckboxes() {
+        return getCollectionCheckboxes().filter(function (input) {
+            return !input.closest('.form-check').classList.contains('d-none');
+        });
+    }
+
+    function filterCollectionOptions() {
+        const query = collectionsSearch.value.trim().toLowerCase();
+        collectionsOptions.querySelectorAll('.form-check').forEach(function (wrap) {
+            const name = wrap.querySelector('.review-collection-checkbox').value.toLowerCase();
+            wrap.classList.toggle('d-none', query !== '' && !name.includes(query));
+        });
+    }
+
+    function clearCollectionSearch() {
+        collectionsSearch.value = '';
+        filterCollectionOptions();
+    }
+
+    function updateCollectionsLabel() {
+        const checked = getCollectionCheckboxes().filter(function (input) { return input.checked; });
+        if (checked.length === 0) {
+            collectionsToggle.textContent = 'All review collections';
+        } else if (checked.length === 1) {
+            collectionsToggle.textContent = checked[0].value;
+        } else {
+            collectionsToggle.textContent = checked.length + ' collections';
+        }
+    }
+
+    function populateCollectionFilter(selected) {
+        collectionsOptions.replaceChildren();
+        collections.forEach(function (collection) {
+            const wrap = document.createElement('div');
+            wrap.className = 'form-check mb-1';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'form-check-input review-collection-checkbox';
+            input.id = 'filter-collection-' + collection.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+            input.value = collection.name;
+            input.checked = selected.includes(collection.name);
+            const label = document.createElement('label');
+            label.className = 'form-check-label small';
+            label.htmlFor = input.id;
+            label.textContent = collection.name;
+            wrap.append(input, label);
+            collectionsOptions.append(wrap);
+        });
+        clearCollectionSearch();
+        updateCollectionsLabel();
+    }
+
+    function selectedCollectionNames() {
+        return getCollectionCheckboxes()
+            .filter(function (input) { return input.checked; })
+            .map(function (input) { return input.value; });
+    }
+
+    function clearCollectionSelection() {
+        getCollectionCheckboxes().forEach(function (input) { input.checked = false; });
+        updateCollectionsLabel();
+    }
+
+    function severityValue(document) {
+        return firstValue(document, ['severity', 'status', 'impacts']);
+    }
+
+    function buildFilterParams() {
+        const params = new URLSearchParams();
+        new FormData(filterForm).forEach(function (value, key) {
+            if (key === 'include_unknown') return;
+            value = value.trim();
+            if (value) params.set(key, value);
+        });
+        if (document.getElementById('filter-include-unknown').checked) {
+            params.set('include_unknown', 'true');
+        }
+        selectedCollectionNames().forEach(function (name) {
+            params.append('collection', name);
+        });
+        return params;
+    }
+
+    collectionsSearch.addEventListener('input', filterCollectionOptions);
+    collectionsSearch.addEventListener('click', function (event) { event.stopPropagation(); });
+    collectionsSearch.addEventListener('keydown', function (event) { event.stopPropagation(); });
+    collectionsOptions.addEventListener('change', updateCollectionsLabel);
+    collectionsMenu.addEventListener('click', function (event) {
+        const action = event.target.closest('.collections-action');
+        if (!action) return;
+        event.preventDefault();
+        const checkboxes = action.dataset.action === 'all'
+            ? getVisibleCollectionCheckboxes()
+            : getCollectionCheckboxes();
+        checkboxes.forEach(function (input) {
+            input.checked = action.dataset.action === 'all';
+        });
+        updateCollectionsLabel();
+    });
+
     function renderCollections() {
         grid.replaceChildren();
         const selectedCounts = selectedCountsByCollection();
@@ -268,13 +406,9 @@
         });
     }
 
-    function populateCollectionFilter() {
-        const selected = collectionFilter.value;
-        collectionFilter.replaceChildren(new Option('All review collections', ''));
-        collections.forEach(function (collection) {
-            collectionFilter.append(new Option(collection.name, collection.name));
-        });
-        collectionFilter.value = selected;
+    function populateCollectionFilterFromActive() {
+        const selected = activeFilters ? activeFilters.getAll('collection') : [];
+        populateCollectionFilter(selected);
     }
 
     function loadCollections() {
@@ -293,7 +427,7 @@
             })
             .then(function (body) {
                 collections = body.data;
-                populateCollectionFilter();
+                populateCollectionFilterFromActive();
                 if (!body.data.length) {
                     empty.classList.remove('d-none');
                     return;
@@ -348,7 +482,7 @@
             addCell(row, item.collection);
             addCell(row, firstValue(projectedDocument, ['code', 'cve']));
             addCell(row, firstValue(projectedDocument, ['title']));
-            addCell(row, firstValue(projectedDocument, ['impacts']));
+            addCell(row, severityValue(projectedDocument));
             addCell(row, firstValue(projectedDocument, ['affected', 'affected_products']));
 
             const actionCell = document.createElement('td');
@@ -409,6 +543,7 @@
     function showCollectionOverview() {
         activeFilters = null;
         filterForm.reset();
+        clearCollectionSelection();
         searchResults.classList.add('d-none');
         overview.classList.remove('d-none');
         error.classList.add('d-none');
@@ -416,16 +551,7 @@
 
     filterForm.addEventListener('submit', function (event) {
         event.preventDefault();
-        const params = new URLSearchParams();
-        new FormData(filterForm).forEach(function (value, key) {
-            value = value.trim();
-            if (value) params.set(key, value);
-        });
-        if (!Array.from(params.keys()).length) {
-            showCollectionOverview();
-            return;
-        }
-        activeFilters = params;
+        activeFilters = buildFilterParams();
         runSearch(1);
     });
 

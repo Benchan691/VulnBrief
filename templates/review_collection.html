@@ -31,7 +31,7 @@
             <div class="row g-2">
                 <div class="col-12 col-lg-4">
                     <label class="form-label small text-muted" for="search">Search all summary fields</label>
-                    <input class="form-control" id="search" name="search" placeholder="Search title, CVE, impact, affected...">
+                    <input class="form-control" id="search" name="search" placeholder="Search title, CVE, severity, affected...">
                 </div>
                 <div class="col-6 col-lg-2">
                     <label class="form-label small text-muted" for="code">Code / CVE</label>
@@ -42,8 +42,20 @@
                     <input class="form-control" id="title" name="title" placeholder="Title contains">
                 </div>
                 <div class="col-6 col-lg-2">
-                    <label class="form-label small text-muted" for="impact">Impact</label>
-                    <input class="form-control" id="impact" name="impact" placeholder="High">
+                    <label class="form-label small text-muted" for="status">Severity</label>
+                    <select class="form-select" id="status" name="status">
+                        <option value="">All known severities</option>
+                        <option value="Critical">Critical</option>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                    </select>
+                </div>
+                <div class="col-6 col-lg-2 d-flex align-items-end">
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" id="include-unknown" name="include_unknown" type="checkbox" value="true">
+                        <label class="form-check-label small" for="include-unknown">Include unknown severity</label>
+                    </div>
                 </div>
                 <div class="col-6 col-lg-2">
                     <label class="form-label small text-muted" for="affected">Affected</label>
@@ -67,7 +79,7 @@
                         <th style="width:52px">Select</th>
                         <th style="min-width:150px">Code / CVE</th>
                         <th style="min-width:280px">Title</th>
-                        <th style="min-width:130px">Impact</th>
+                        <th style="min-width:130px">Severity</th>
                         <th style="min-width:300px">Affected</th>
                         <th style="width:90px">Action</th>
                     </tr>
@@ -182,6 +194,25 @@
         row.append(cell);
     }
 
+    function severityValue(document) {
+        return document.severity || document.status || document.impacts;
+    }
+
+    function buildQueryParams() {
+        const parameters = new URLSearchParams();
+        new FormData(form).forEach(function (value, key) {
+            if (key === 'include_unknown') return;
+            value = value.trim();
+            if (value) parameters.set(key, value);
+        });
+        if (document.getElementById('include-unknown').checked) {
+            parameters.set('include_unknown', 'true');
+        }
+        parameters.set('page', page);
+        parameters.set('page_size', pageSize.value);
+        return parameters;
+    }
+
     function renderDocuments(documents) {
         rows.replaceChildren();
         const selectedKeys = new Set(getSelections().map(function (selection) {
@@ -201,7 +232,7 @@
             tr.append(selectCell);
             addCell(tr, document.code || document.cve, 'fw-medium');
             addCell(tr, document.title);
-            addCell(tr, document.impacts);
+            addCell(tr, severityValue(document));
             addCell(tr, document.affected || document.affected_products, 'small');
 
             const action = window.document.createElement('td');
@@ -224,9 +255,7 @@
             return;
         }
 
-        const parameters = new URLSearchParams(new FormData(form));
-        parameters.set('page', page);
-        parameters.set('page_size', pageSize.value);
+        const parameters = buildQueryParams();
         loading.classList.remove('d-none');
         empty.classList.add('d-none');
         error.classList.add('d-none');

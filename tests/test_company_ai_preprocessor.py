@@ -1484,3 +1484,154 @@ def test_scan_unprocessed_uses_collection_and_field_priority(monkeypatch):
             assert 9 in published
         finally:
             pass
+
+
+def test_scan_unprocessed_skips_background_scan_skip_collections(monkeypatch):
+    enqueued_collections = []
+
+    class FakeConnection:
+        is_open = True
+
+        def channel(self):
+            return FakeChannel()
+
+        def close(self):
+            return None
+
+    class FakeChannel:
+        def confirm_delivery(self):
+            return None
+
+    class FakeCollection:
+        def __init__(self, documents):
+            self._documents = documents
+
+        def find(self, query, projection):
+            return list(self._documents)
+
+    class FakeDatabase:
+        def __init__(self):
+            self._collections = {
+                TEST_COLLECTION: FakeCollection([
+                    {
+                        '_id': 'scan-me',
+                        'details': {'source': {'description': 'keep'}},
+                    },
+                ]),
+                'cve': FakeCollection([
+                    {
+                        '_id': 'cve-item',
+                        'details': {'source': {'description': 'skip'}},
+                    },
+                ]),
+            }
+
+        def list_collections(self, filter=None):
+            return [
+                {'name': name, 'type': 'collection'}
+                for name in self._collections
+            ]
+
+        def __getitem__(self, name):
+            return self._collections[name]
+
+    def fake_enqueue_summary(
+        details,
+        language,
+        config,
+        priority,
+        source_collection=None,
+        source_id=None,
+        channel=None,
+    ):
+        enqueued_collections.append(source_collection)
+        return ({'storage': 'source'}, True)
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor.pika.BlockingConnection',
+        lambda parameters: FakeConnection(),
+    )
+    monkeypatch.setattr('company_ai_preprocessor._queue_declare', _fake_queue_declare)
+    monkeypatch.setattr('company_ai_preprocessor.enqueue_summary', fake_enqueue_summary)
+    monkeypatch.setattr('company_ai_preprocessor.ensure_cache_indexes', lambda: None)
+    monkeypatch.setattr(
+        'company_ai_preprocessor.get_vulnerabilities_database',
+        lambda: FakeDatabase(),
+    )
+    monkeypatch.setattr(
+        'company_ai_preprocessor._shared_task_collection',
+        lambda: type('Tasks', (), {'find': lambda self, query: []})(),
+    )
+
+    with app.app_context():
+        config = {
+            **dict(app.config),
+            'AI_TASK_COLLECTION': 'ai_generation_tasks',
+            'PREPROCESSING_PRIORITIES': {
+                'default': 1,
+                'collections': {'cve': 7},
+                'background_scan_skip': ['cve'],
+                'field_boosts': {},
+            },
+        }
+        queued = scan_unprocessed(config)
+        assert queued == 3
+        assert TEST_COLLECTION in enqueued_collections
+        assert 'cve' not in enqueued_collections
+
+
+def test_enqueue_report_items_still_enqueues_skipped_collection(monkeypatch):
+    priorities = []
+
+    class FakeConnection:
+        is_open = True
+
+        def channel(self):
+            return FakeChannel()
+
+        def close(self):
+            return None
+
+    class FakeChannel:
+        def confirm_delivery(self):
+            return None
+
+    monkeypatch.setattr(
+        'company_ai_preprocessor.pika.BlockingConnection',
+        lambda parameters: FakeConnection(),
+    )
+    monkeypatch.setattr('company_ai_preprocessor._queue_declare', _fake_queue_declare)
+    monkeypatch.setattr(
+        'company_ai_preprocessor._publish',
+        lambda task, priority, config, channel=None: priorities.append(priority),
+    )
+    with app.app_context():
+        source = get_vulnerabilities_database()['cve']
+        source.delete_many({})
+        source.insert_one({
+            '_id': 'cve:report-1',
+            'details': {'cve': {'description': 'report item'}},
+        })
+        try:
+            config = {
+                **dict(app.config),
+                'PREPROCESSING_PRIORITIES': {
+                    **app.config['PREPROCESSING_PRIORITIES'],
+                    'background_scan_skip': ['cve'],
+                },
+            }
+            references = enqueue_report_items([
+                {
+                    'details': {'cve': {'description': 'report item'}},
+                    'source_collection': 'cve',
+                    'source_id': 'cve:report-1',
+                },
+            ], 'en', config)
+            source.update_one(
+                {'_id': 'cve:report-1'},
+                {'$set': {'html_json.en.status': 'completed', 'html_json.en.result': {'ok': True}}},
+            )
+            assert priorities == [config['RABBITMQ_REPORT_PRIORITY']]
+            assert wait_for_summaries(references, 1) == [{'ok': True}]
+        finally:
+            source.drop()
