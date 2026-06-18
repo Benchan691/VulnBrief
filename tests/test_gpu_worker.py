@@ -410,6 +410,7 @@ def test_load_gpu_server_config_reads_json(tmp_path, monkeypatch):
     monkeypatch.setenv('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672')
     monkeypatch.delenv('GPU_MODEL_PATH', raising=False)
     monkeypatch.delenv('RABBITMQ_GPU_QUEUE', raising=False)
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URL', raising=False)
     config_path = tmp_path / 'gpu_server.json'
     config_path.write_text(
         json.dumps({
@@ -447,6 +448,7 @@ def test_load_config_uses_json_defaults(monkeypatch):
         'GPU_INSTANCE_COUNT',
         'GPU_WORKER_CONCURRENCY',
         'GPU_INFERENCE_BASE_URLS',
+        'GPU_INFERENCE_BASE_URL',
         'GPU_INFERENCE_NETWORK',
         'RABBITMQ_GPU_QUEUE',
         'GPU_MODEL_PATH',
@@ -472,6 +474,7 @@ def test_load_config_uses_json_defaults(monkeypatch):
 
 def test_load_inference_base_urls_single_instance_docker(monkeypatch):
     monkeypatch.delenv('GPU_INFERENCE_BASE_URLS', raising=False)
+    monkeypatch.delenv('GPU_INFERENCE_BASE_URL', raising=False)
     monkeypatch.setenv('GPU_INSTANCE_COUNT', '1')
     monkeypatch.setenv('GPU_INFERENCE_NETWORK', 'docker')
 

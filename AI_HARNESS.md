@@ -35,8 +35,7 @@ Company AI report jobs use this cascade:
 
 Fixed-template output is report-only and is never written to `html_json` or the
 upload-summary cache. Queued report entries identify their producer as
-`gpu_local`, `company_ai`, `deepseek`, or `gemini` when provider metadata is
-available.
+`gpu_local` or `company_ai` when provider metadata is available.
 
 Report and item titles are assigned by the system, not Company AI. The report H1
 uses a fixed localized title (`Cybersecurity Report` / `網絡安全報告` /
@@ -59,11 +58,10 @@ Report profile Run actions prepare the browser's Vulnerability Reviews selection
 list. Enabled five-field cron schedules are executed in `Asia/Hong_Kong` by the
 dedicated `scheduler.py` process and generate report jobs automatically.
 
-Company AI, DeepSeek, Gemini, GPU, and RabbitMQ settings live in the same `.env`
-file. See [`.env.example`](.env.example). `COMPANY_AI_ENABLED`,
-`DEEPSEEK_ENABLED`, `GEMINI_ENABLED`, and `GPU_ENABLED` are the router's provider
-status flags. Set a provider false before stopping it; the router never
-publishes work to a disabled provider.
+Company AI, GPU, and RabbitMQ settings live in the same `.env` file. See
+[`.env.example`](.env.example). `COMPANY_AI_ENABLED` and `GPU_ENABLED` are the
+router's provider status flags. Set a provider false before stopping it; the
+router never publishes work to a disabled provider.
 `start_prompt` primes preprocessor rooms for per-item vulnerability JSON work.
 `summary_prompt` drives the report final executive summary. It supports
 `${language}` placeholders and must return `executive_summary`, `trends`, and
@@ -84,11 +82,6 @@ or republish stale shared tasks; report jobs rely on their timeout and template
 fallback if queued AI work is unavailable. Queue purging is an explicit
 `company_ai_preprocessor.py --purge-queues` maintenance action.
 
-DeepSeek and Gemini use OpenAI-compatible chat-completions endpoints. Configure
-`DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` and `GEMINI_API_KEY` / `GEMINI_MODEL` when
-enabling those workers. Their base URLs default to `https://api.deepseek.com`
-and `https://generativelanguage.googleapis.com/v1beta/openai`.
-
 Background preprocessing is disabled by default
 (`BACKGROUND_PREPROCESSING_ENABLED=false`) and is no longer required for normal
 operation. Interactive and scheduled report jobs enqueue selected items at
@@ -101,10 +94,8 @@ task content hashes.
 `company_ai_preprocessor.py` writes operational lines to stdout. In Docker, scan
 scanner logs are visible in `webserver-preprocessor-scanner` when that optional
 role is run, routing logs in `webserver-preprocessor-router`, and provider
-consumption logs in
-`webserver-company-ai-worker`, `webserver-deepseek-worker`, and
-`webserver-gemini-worker`. On startup each role logs configuration, RabbitMQ
-queue depths (`intake`, `gpu`, `company`, `deepseek`, `gemini`), and worker
+consumption logs in `webserver-company-ai-worker`. On startup each role logs
+configuration, RabbitMQ queue depths (`intake`, `gpu`, `company`), and worker
 counts. Company AI worker startup also logs login success (`mode=cached` or
 `mode=fresh`). When background preprocessing is disabled, scanner cycles log
 that the scan is disabled and publish no work. Each Company AI task logs
@@ -140,9 +131,9 @@ remove legacy stored HTML fields.
 
 ## Independent processes
 
-The web server, preprocessing router, Company AI worker, DeepSeek worker, Gemini
-worker, optional standalone GPU preprocessor, optional/deprecated preprocessing
-scanner, and scheduler are separate processes. Web processes use
+The web server, preprocessing router, Company AI worker, optional standalone GPU
+preprocessor, optional/deprecated preprocessing scanner, and scheduler are
+separate processes. Web processes use
 `bootstrap.configure_application()`. Isolated provider workers use
 `bootstrap.configure_worker()` and require Atlas but not local MongoDB.
 
@@ -166,8 +157,6 @@ terminals:
 ```sh
 .venv/bin/python company_ai_preprocessor.py --role router
 .venv/bin/python company_ai_preprocessor.py --role company-worker
-.venv/bin/python company_ai_preprocessor.py --role deepseek-worker
-.venv/bin/python company_ai_preprocessor.py --role gemini-worker
 .venv/bin/python scheduler.py
 .venv/bin/python app.py
 ```
@@ -184,12 +173,12 @@ for example via `host.docker.internal` on Docker Desktop):
 
 ```sh
 docker compose up -d
-docker compose up -d preprocessor-router company-ai-worker deepseek-worker gemini-worker
+docker compose up -d preprocessor-router company-ai-worker
 docker compose up -d web
 ```
 
-Use the CloudAMQP dashboard to monitor the intake, GPU, Company AI, DeepSeek,
-and Gemini queues. The router scores enabled providers with
+Use the CloudAMQP dashboard to monitor the intake, GPU, and Company AI queues.
+The router scores enabled providers with
 `(queue depth / worker concurrency) + EWMA processing seconds`, then publishes
 to the lowest score. GPU keeps `GPU_QUEUE_BACKLOG_LIMIT` as a hard cap before it
 is eligible. Provider speed metrics are stored in

@@ -18,7 +18,6 @@ from preprocessor_log import log_error, log_info
 from report_harness import (
     CompanyAIProvider,
     CompanyAILoginLimitExceeded,
-    OpenAICompatibleProvider,
     REPORT_LANGUAGES,
     compact_details,
     generate_final_data,
@@ -33,24 +32,6 @@ _LAST_NO_PROVIDER_LOG_AT = 0
 PROVIDER_METRIC_ALPHA = 0.3
 
 
-OPENAI_COMPATIBLE_PROVIDERS = {
-    'deepseek': {
-        'prefix': 'DEEPSEEK',
-        'label': 'DeepSeek',
-        'enabled': 'DEEPSEEK_ENABLED',
-        'queue': 'RABBITMQ_DEEPSEEK_QUEUE',
-        'workers': 'DEEPSEEK_WORKER_CONCURRENCY',
-        'default_ewma': 'DEEPSEEK_DEFAULT_EWMA_SECONDS',
-    },
-    'gemini': {
-        'prefix': 'GEMINI',
-        'label': 'Gemini',
-        'enabled': 'GEMINI_ENABLED',
-        'queue': 'RABBITMQ_GEMINI_QUEUE',
-        'workers': 'GEMINI_WORKER_CONCURRENCY',
-        'default_ewma': 'GEMINI_DEFAULT_EWMA_SECONDS',
-    },
-}
 ROUTABLE_PROVIDERS = {
     'gpu_local': {
         'enabled': 'GPU_ENABLED',
@@ -58,8 +39,6 @@ ROUTABLE_PROVIDERS = {
         'workers': 'GPU_WORKER_CONCURRENCY',
         'default_ewma': 'GPU_DEFAULT_EWMA_SECONDS',
     },
-    'deepseek': OPENAI_COMPATIBLE_PROVIDERS['deepseek'],
-    'gemini': OPENAI_COMPATIBLE_PROVIDERS['gemini'],
     'company_ai': {
         'enabled': 'COMPANY_AI_ENABLED',
         'queue': 'RABBITMQ_COMPANY_QUEUE',
@@ -160,14 +139,6 @@ def _gpu_queue_declare(connection, channel, config):
     return _declare_durable_queue(connection, channel, config['RABBITMQ_GPU_QUEUE'], config)
 
 
-def _deepseek_queue_declare(connection, channel, config):
-    return _declare_durable_queue(connection, channel, config['RABBITMQ_DEEPSEEK_QUEUE'], config)
-
-
-def _gemini_queue_declare(connection, channel, config):
-    return _declare_durable_queue(connection, channel, config['RABBITMQ_GEMINI_QUEUE'], config)
-
-
 def _provider_queue_declare(connection, channel, config, queue_name):
     if queue_name == config['RABBITMQ_INTAKE_QUEUE']:
         return _queue_declare(connection, channel, config)
@@ -175,10 +146,6 @@ def _provider_queue_declare(connection, channel, config, queue_name):
         return _company_queue_declare(connection, channel, config)
     if queue_name == config['RABBITMQ_GPU_QUEUE']:
         return _gpu_queue_declare(connection, channel, config)
-    if queue_name == config['RABBITMQ_DEEPSEEK_QUEUE']:
-        return _deepseek_queue_declare(connection, channel, config)
-    if queue_name == config['RABBITMQ_GEMINI_QUEUE']:
-        return _gemini_queue_declare(connection, channel, config)
     return _declare_durable_queue(connection, channel, queue_name, config)
 
 
@@ -296,21 +263,11 @@ def _role_worker_counts(config, role):
         if role in {'all', 'company-worker'} and config['COMPANY_AI_ENABLED']
         else 0
     )
-    deepseek_count = (
-        config['DEEPSEEK_WORKER_CONCURRENCY']
-        if role in {'all', 'deepseek-worker'} and config['DEEPSEEK_ENABLED']
-        else 0
-    )
-    gemini_count = (
-        config['GEMINI_WORKER_CONCURRENCY']
-        if role in {'all', 'gemini-worker'} and config['GEMINI_ENABLED']
-        else 0
-    )
-    return scan_count, router_count, company_count, deepseek_count, gemini_count
+    return scan_count, router_count, company_count
 
 
 def _startup_worker(config, role='all'):
-    scan_count, router_count, company_count, deepseek_count, gemini_count = _role_worker_counts(config, role)
+    scan_count, router_count, company_count = _role_worker_counts(config, role)
 
     log_info(
         'Starting Company AI preprocessor',
@@ -319,8 +276,6 @@ def _startup_worker(config, role='all'):
         scan_interval=f"{config['COMPANY_AI_SCAN_INTERVAL_SECONDS']}s",
         company_ai=config['COMPANY_AI_ENABLED'],
         gpu=config['GPU_ENABLED'],
-        deepseek=config['DEEPSEEK_ENABLED'],
-        gemini=config['GEMINI_ENABLED'],
         background_preprocessing=config.get('BACKGROUND_PREPROCESSING_ENABLED', False),
     )
 
@@ -340,8 +295,6 @@ def _startup_worker(config, role='all'):
             intake=counts[config['RABBITMQ_INTAKE_QUEUE']],
             gpu=counts[config['RABBITMQ_GPU_QUEUE']],
             company=counts[config['RABBITMQ_COMPANY_QUEUE']],
-            deepseek=counts[config['RABBITMQ_DEEPSEEK_QUEUE']],
-            gemini=counts[config['RABBITMQ_GEMINI_QUEUE']],
         )
     except pika.exceptions.AMQPError as exc:
         log_error('Failed to connect to RabbitMQ', error=str(exc))
@@ -352,8 +305,6 @@ def _startup_worker(config, role='all'):
         scan=scan_count,
         router=router_count,
         company_ai=company_count,
-        deepseek=deepseek_count,
-        gemini=gemini_count,
     )
 
 
@@ -1090,131 +1041,6 @@ def _consume(config, worker_number):
                 connection.close()
 
 
-def _process_openai_task(task, claimed, owner, config, provider_name, worker_number):
-    definition = OPENAI_COMPATIBLE_PROVIDERS[provider_name]
-    provider = OpenAICompatibleProvider(config, definition['prefix'], definition['label'])
-    task_type = task.get('task_type', 'item')
-    target = _task_target(task)
-    started = time.monotonic()
-    try:
-        log_info(
-            'Processing task',
-            provider=provider_name,
-            worker=worker_number,
-            task_type=task_type,
-            language=task['language'],
-            target=target,
-        )
-        details = _task_details(task, config)
-        if summary_content_hash(details, task['language'], config) != task['content_hash']:
-            raise ValueError('Source details changed while the task was queued.')
-        if task_type == 'final':
-            result, _ = generate_final_data(
-                provider,
-                details['item_results'],
-                task['language'],
-                config['REPORT_FINAL_JSON_RETRIES'],
-                config,
-            )
-        else:
-            result, _ = generate_item_data(
-                provider,
-                details,
-                claimed['source_key'],
-                task['language'],
-                config['REPORT_ITEM_JSON_RETRIES'],
-            )
-        _complete_task(task, owner, result, provider=provider_name)
-        _record_provider_metric(config, provider_name, time.monotonic() - started, True)
-        log_info(
-            'Task completed',
-            provider=provider_name,
-            worker=worker_number,
-            task_type=task_type,
-            language=task['language'],
-            target=target,
-            seconds=round(time.monotonic() - started, 1),
-        )
-        return result
-    except Exception:
-        _record_provider_metric(config, provider_name, time.monotonic() - started, False)
-        raise
-
-
-def _consume_openai(config, provider_name, worker_number):
-    definition = OPENAI_COMPATIBLE_PROVIDERS[provider_name]
-    queue_name = config[definition['queue']]
-    owner = f'{provider_name}:{uuid.uuid4()}:{worker_number}'
-    while not STOP_EVENT.is_set():
-        connection = None
-        channel = None
-        active_task = None
-        active_method = None
-        try:
-            connection = pika.BlockingConnection(pika.URLParameters(config['RABBITMQ_URL']))
-            channel = connection.channel()
-            channel, status = _provider_queue_declare(connection, channel, config, queue_name)
-            log_info(
-                f"{definition['label']} worker connected",
-                worker=worker_number,
-                queue=queue_name,
-                messages=status.method.message_count,
-            )
-            channel.basic_qos(prefetch_count=1)
-            for method, _, body in channel.consume(queue_name, inactivity_timeout=1):
-                if STOP_EVENT.is_set():
-                    break
-                if method is None:
-                    continue
-                task = json_util.loads(body.decode('utf-8'))
-                claimed = _claim_task(task, owner, config)
-                if claimed is None:
-                    log_info(
-                        'Skipped stale task',
-                        provider=provider_name,
-                        worker=worker_number,
-                        target=_task_target(task),
-                    )
-                    channel.basic_ack(method.delivery_tag)
-                    continue
-                active_task = task
-                active_method = method
-                if STOP_EVENT.is_set():
-                    break
-                try:
-                    _process_openai_task(
-                        task,
-                        claimed,
-                        owner,
-                        config,
-                        provider_name,
-                        worker_number,
-                    )
-                except Exception as exc:
-                    log_error(
-                        'Task failed',
-                        provider=provider_name,
-                        worker=worker_number,
-                        target=_task_target(task),
-                        error=str(exc),
-                    )
-                    _requeue_task(task, owner, exc, config, channel, claimed)
-                active_task = None
-                active_method = None
-                channel.basic_ack(method.delivery_tag)
-        except Exception as exc:
-            log_error(
-                f"{definition['label']} worker reconnecting after error",
-                worker=worker_number,
-                error=str(exc),
-            )
-            STOP_EVENT.wait(5)
-        finally:
-            _shutdown_worker(owner, None, config, channel, active_task, active_method)
-            if connection is not None and connection.is_open:
-                connection.close()
-
-
 def _scan_loop(config):
     while not STOP_EVENT.is_set():
         try:
@@ -1328,7 +1154,7 @@ def _run_threads(threads):
 def run_worker(config, role='all'):
     STOP_EVENT.clear()
     threads = []
-    if role not in {'all', 'scanner', 'router', 'company-worker', 'deepseek-worker', 'gemini-worker'}:
+    if role not in {'all', 'scanner', 'router', 'company-worker'}:
         raise ValueError(f'Unsupported preprocessor role: {role}')
     if role != 'router':
         ensure_cache_indexes()
@@ -1346,24 +1172,6 @@ def run_worker(config, role='all'):
         threads.extend([
             threading.Thread(target=_consume, args=(config, number), daemon=True)
             for number in range(config['COMPANY_AI_PARALLEL_CHATS'])
-        ])
-    if role in {'all', 'deepseek-worker'} and config['DEEPSEEK_ENABLED']:
-        threads.extend([
-            threading.Thread(
-                target=_consume_openai,
-                args=(config, 'deepseek', number),
-                daemon=True,
-            )
-            for number in range(config['DEEPSEEK_WORKER_CONCURRENCY'])
-        ])
-    if role in {'all', 'gemini-worker'} and config['GEMINI_ENABLED']:
-        threads.extend([
-            threading.Thread(
-                target=_consume_openai,
-                args=(config, 'gemini', number),
-                daemon=True,
-            )
-            for number in range(config['GEMINI_WORKER_CONCURRENCY'])
         ])
     if not threads:
         log_info('No workers enabled for preprocessor role; waiting for shutdown', role=role)
@@ -1385,7 +1193,7 @@ def main():
     )
     parser.add_argument(
         '--role',
-        choices=['all', 'scanner', 'router', 'company-worker', 'deepseek-worker', 'gemini-worker'],
+        choices=['all', 'scanner', 'router', 'company-worker'],
         default='all',
         help='Run all workers, scanner, intake router, or a provider queue worker.',
     )

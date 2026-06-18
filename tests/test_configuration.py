@@ -48,26 +48,6 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         COMPANY_AI_ENABLED='true',
         COMPANY_AI_DEFAULT_EWMA_SECONDS='55.5',
         AI_PROVIDER_METRICS_COLLECTION='provider_metrics',
-        DEEPSEEK_ENABLED='true',
-        DEEPSEEK_API_KEY='deepseek-key',
-        DEEPSEEK_BASE_URL='https://deepseek.example',
-        DEEPSEEK_MODEL='deepseek-chat',
-        DEEPSEEK_TIMEOUT_SECONDS='91',
-        DEEPSEEK_MAX_OUTPUT_TOKENS='2201',
-        DEEPSEEK_JSON_RETRIES='2',
-        DEEPSEEK_WORKER_CONCURRENCY='3',
-        DEEPSEEK_DEFAULT_EWMA_SECONDS='33.5',
-        GEMINI_ENABLED='true',
-        GEMINI_API_KEY='gemini-key',
-        GEMINI_BASE_URL='https://gemini.example/openai',
-        GEMINI_MODEL='gemini-model',
-        GEMINI_TIMEOUT_SECONDS='92',
-        GEMINI_MAX_OUTPUT_TOKENS='2202',
-        GEMINI_JSON_RETRIES='4',
-        GEMINI_WORKER_CONCURRENCY='5',
-        GEMINI_DEFAULT_EWMA_SECONDS='44.5',
-        RABBITMQ_DEEPSEEK_QUEUE='deepseek-jobs',
-        RABBITMQ_GEMINI_QUEUE='gemini-jobs',
         RABBITMQ_MAX_PRIORITY='8',
         RABBITMQ_MAX_QUEUE_SIZE='19999',
         RABBITMQ_BACKGROUND_PRIORITY='2',
@@ -113,31 +93,11 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['COMPANY_AI_ENABLED'] is True
     assert loaded['COMPANY_AI_DEFAULT_EWMA_SECONDS'] == 55.5
     assert loaded['AI_PROVIDER_METRICS_COLLECTION'] == 'provider_metrics'
-    assert loaded['DEEPSEEK_ENABLED'] is True
-    assert loaded['DEEPSEEK_API_KEY'] == 'deepseek-key'
-    assert loaded['DEEPSEEK_BASE_URL'] == 'https://deepseek.example'
-    assert loaded['DEEPSEEK_MODEL'] == 'deepseek-chat'
-    assert loaded['DEEPSEEK_TIMEOUT_SECONDS'] == 91
-    assert loaded['DEEPSEEK_MAX_OUTPUT_TOKENS'] == 2201
-    assert loaded['DEEPSEEK_JSON_RETRIES'] == 2
-    assert loaded['DEEPSEEK_WORKER_CONCURRENCY'] == 3
-    assert loaded['DEEPSEEK_DEFAULT_EWMA_SECONDS'] == 33.5
-    assert loaded['GEMINI_ENABLED'] is True
-    assert loaded['GEMINI_API_KEY'] == 'gemini-key'
-    assert loaded['GEMINI_BASE_URL'] == 'https://gemini.example/openai'
-    assert loaded['GEMINI_MODEL'] == 'gemini-model'
-    assert loaded['GEMINI_TIMEOUT_SECONDS'] == 92
-    assert loaded['GEMINI_MAX_OUTPUT_TOKENS'] == 2202
-    assert loaded['GEMINI_JSON_RETRIES'] == 4
-    assert loaded['GEMINI_WORKER_CONCURRENCY'] == 5
-    assert loaded['GEMINI_DEFAULT_EWMA_SECONDS'] == 44.5
     assert loaded['RABBITMQ_URL'] == 'amqp://rabbit.example/'
     assert loaded['RABBITMQ_QUEUE_NAME'] == 'summaries'
     assert loaded['RABBITMQ_INTAKE_QUEUE'] == 'summaries'
     assert loaded['RABBITMQ_GPU_QUEUE'] == 'gpu_preprocessing'
     assert loaded['RABBITMQ_COMPANY_QUEUE'] == 'company_ai_processing'
-    assert loaded['RABBITMQ_DEEPSEEK_QUEUE'] == 'deepseek-jobs'
-    assert loaded['RABBITMQ_GEMINI_QUEUE'] == 'gemini-jobs'
     assert loaded['RABBITMQ_MAX_PRIORITY'] == 8
     assert loaded['RABBITMQ_MAX_QUEUE_SIZE'] == 19999
     assert loaded['RABBITMQ_BACKGROUND_PRIORITY'] == 2
@@ -214,29 +174,12 @@ def test_worker_configuration_requires_atlas_but_not_local_mongo(tmp_path, monke
     monkeypatch.setenv('ATLAS_MONGO_URI', 'mongodb://atlas.example/')
     monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
     monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
-    for name in (
-        'DEEPSEEK_ENABLED', 'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
-        'GEMINI_ENABLED', 'GEMINI_API_KEY', 'GEMINI_MODEL',
-    ):
-        monkeypatch.delenv(name, raising=False)
 
     loaded = load_application_config(str(tmp_path), require_local=False)
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://atlas.example/'
     assert loaded['LOCAL_MONGO_URI'] == ''
     assert loaded['AI_TASK_COLLECTION'] == 'ai_generation_tasks'
     assert loaded['AI_PROVIDER_METRICS_COLLECTION'] == 'ai_provider_metrics'
-    assert loaded['DEEPSEEK_ENABLED'] is False
-    assert loaded['DEEPSEEK_BASE_URL'] == 'https://api.deepseek.com'
-    assert loaded['DEEPSEEK_API_KEY'] == ''
-    assert loaded['DEEPSEEK_MODEL'] == ''
-    assert loaded['DEEPSEEK_WORKER_CONCURRENCY'] == 1
-    assert loaded['GEMINI_ENABLED'] is False
-    assert loaded['GEMINI_BASE_URL'] == 'https://generativelanguage.googleapis.com/v1beta/openai'
-    assert loaded['GEMINI_API_KEY'] == ''
-    assert loaded['GEMINI_MODEL'] == ''
-    assert loaded['GEMINI_WORKER_CONCURRENCY'] == 1
-    assert loaded['RABBITMQ_DEEPSEEK_QUEUE'] == 'deepseek_processing'
-    assert loaded['RABBITMQ_GEMINI_QUEUE'] == 'gemini_processing'
 
 
 def test_environment_list_and_report_defaults(tmp_path, monkeypatch):
@@ -286,8 +229,6 @@ def test_load_dotenv_from_file(tmp_path, monkeypatch):
         'COMPANY_AI_BASE_URL', 'COMPANY_AI_USERNAME', 'COMPANY_AI_PASSWORD',
         'COMPANY_AI_START_PROMPT', 'COMPANY_AI_SUMMARY_PROMPT',
         'COMPANY_AI_PUBLIC_KEY_B64', 'COMPANY_AI_SIGN_SECRET', 'COMPANY_AI_MODEL',
-        'DEEPSEEK_ENABLED', 'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
-        'GEMINI_ENABLED', 'GEMINI_API_KEY', 'GEMINI_MODEL',
         'RABBITMQ_URL',
     ):
         monkeypatch.delenv(name, raising=False)
@@ -304,12 +245,6 @@ def test_load_dotenv_from_file(tmp_path, monkeypatch):
             'COMPANY_AI_PUBLIC_KEY_B64=dotenv-key',
             'COMPANY_AI_SIGN_SECRET=dotenv-sign',
             'COMPANY_AI_MODEL=dotenv-model',
-            'DEEPSEEK_ENABLED=true',
-            'DEEPSEEK_API_KEY=dotenv-deepseek',
-            'DEEPSEEK_MODEL=dotenv-deepseek-model',
-            'GEMINI_ENABLED=true',
-            'GEMINI_API_KEY=dotenv-gemini',
-            'GEMINI_MODEL=dotenv-gemini-model',
             'RABBITMQ_URL=amqp://dotenv/',
         ]),
         encoding='utf-8',
@@ -321,9 +256,3 @@ def test_load_dotenv_from_file(tmp_path, monkeypatch):
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://dotenv-local/'
     assert loaded['SECRET_KEY'] == 'dotenv-secret'
     assert loaded['COMPANY_AI_BASE_URL'] == 'https://dotenv.example'
-    assert loaded['DEEPSEEK_ENABLED'] is True
-    assert loaded['DEEPSEEK_API_KEY'] == 'dotenv-deepseek'
-    assert loaded['DEEPSEEK_MODEL'] == 'dotenv-deepseek-model'
-    assert loaded['GEMINI_ENABLED'] is True
-    assert loaded['GEMINI_API_KEY'] == 'dotenv-gemini'
-    assert loaded['GEMINI_MODEL'] == 'dotenv-gemini-model'
