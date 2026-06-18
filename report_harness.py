@@ -221,6 +221,7 @@ def compact_document(document):
         'id': str(document.get('_id', '')),
         'type': document.get('type'),
         'code': document.get('cve_code') or document.get('cve') or document.get('code'),
+        'cve_codes': document.get('cve_codes'),
         'title': document.get('title'),
         'vulnerability_type': document.get('vuln_type'),
         'disclosure_date': document.get('disclosure_date'),
@@ -1309,6 +1310,19 @@ def _input_collection():
     return get_web_database()['report_job_inputs']
 
 
+def _cleanup_ai_generation_tasks(references, config):
+    task_ids = [
+        reference.get('task_id')
+        for reference in references
+        if reference and reference.get('storage') == 'shared' and reference.get('task_id') is not None
+    ]
+    if not task_ids:
+        return
+    get_vulnerabilities_database()[config['AI_TASK_COLLECTION']].delete_many(
+        {'_id': {'$in': task_ids}},
+    )
+
+
 def _result_collection():
     return get_web_database()['report_job_results']
 
@@ -1585,6 +1599,8 @@ def run_job(app, job_id):
             owner = f'{job_id}:{uuid.uuid4()}'
             _acquire_worker_lease(owner)
             collection = _job_collection()
+            summary_references = []
+            final_reference = None
             try:
                 job_object_id = ObjectId(job_id)
                 now = datetime.now(timezone.utc)
@@ -1745,6 +1761,10 @@ def run_job(app, job_id):
                     }},
                 )
             finally:
+                _cleanup_ai_generation_tasks(
+                    [*summary_references, final_reference],
+                    current_app.config,
+                )
                 _input_collection().delete_many({'job_id': ObjectId(job_id)})
                 _release_worker_lease(owner)
 

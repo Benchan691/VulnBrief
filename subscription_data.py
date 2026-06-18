@@ -45,7 +45,7 @@ DEFAULT_REPORT_PROFILE = {
 }
 
 
-def _parse_datetime(value):
+def parse_hong_kong_datetime(value):
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
@@ -58,6 +58,42 @@ def _parse_datetime(value):
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=HONG_KONG)
     return parsed.astimezone(HONG_KONG)
+
+
+_parse_datetime = parse_hong_kong_datetime
+
+
+def parse_include_unknown(value):
+    if value is None:
+        return False
+    return str(value).lower() in {'1', 'true', 'yes', 'on'}
+
+
+def build_scraped_at_window(window, start='', end='', now=None):
+    if window not in VALID_WINDOWS:
+        raise ValueError('Invalid scrape time window.')
+    if window == 'all':
+        return None
+
+    now = (now or datetime.now(timezone.utc)).astimezone(HONG_KONG)
+    if window == 'daily':
+        bounds = (now.replace(hour=0, minute=0, second=0, microsecond=0), now)
+    elif window == 'week':
+        bounds = (now - timedelta(days=7), now)
+    else:
+        start_dt = parse_hong_kong_datetime(start)
+        end_dt = parse_hong_kong_datetime(end)
+        if start_dt is None or end_dt is None or start_dt >= end_dt:
+            raise ValueError('Custom scrape time requires a valid start before end.')
+        bounds = (start_dt, end_dt)
+
+    start_dt, end_dt = bounds
+    return {
+        'scraped_at': {
+            '$gte': start_dt.astimezone(timezone.utc).isoformat(),
+            '$lt': end_dt.astimezone(timezone.utc).isoformat(),
+        },
+    }
 
 
 def validate_cron(value):
@@ -106,8 +142,8 @@ def validate_filters(database, value):
     filters['start'] = (value.get('start') or '').strip()
     filters['end'] = (value.get('end') or '').strip()
     if filters['time_window'] == 'custom':
-        start = _parse_datetime(filters['start'])
-        end = _parse_datetime(filters['end'])
+        start = parse_hong_kong_datetime(filters['start'])
+        end = parse_hong_kong_datetime(filters['end'])
         if start is None or end is None or start >= end:
             raise ValueError('Custom filter window requires a valid start before end.')
     return filters
@@ -241,7 +277,7 @@ def _window_bounds(filters, now=None):
         return now.replace(hour=0, minute=0, second=0, microsecond=0), now
     if window == 'week':
         return now - timedelta(days=7), now
-    return _parse_datetime(filters['start']), _parse_datetime(filters['end'])
+    return parse_hong_kong_datetime(filters['start']), parse_hong_kong_datetime(filters['end'])
 
 
 def build_match_filter(filters, now=None):

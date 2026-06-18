@@ -73,6 +73,22 @@ def test_hkcert_newsletter_omits_empty_table():
     assert 'Impacts:' in html
 
 
+def test_newsletter_normalizes_bare_cve_codes() -> None:
+    normalized = normalize_newsletter(
+        {
+            'details': {
+                'hkcert': {
+                    'vulnerability_identifiers': [{'cve_id': 'CVE-2026-2000'}],
+                },
+            },
+            'cve_codes': ['2026-1000', 'CVE-2026-2000'],
+        },
+        'hkcert',
+    )
+
+    assert normalized['cves'] == ['CVE-2026-2000', 'CVE-2026-1000']
+
+
 def test_hkcert_newsletter_renders_non_empty_table():
     document = {
         'details': {

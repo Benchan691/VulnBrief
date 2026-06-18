@@ -9,10 +9,12 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
 - **Reports** — generate structured reports with **Company AI** or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB.
 
-Background workers pre-generate per-item AI JSON via routed RabbitMQ queues and
-store results on vulnerability documents (`html_json.en`, `html_json.zh`,
-`html_json.ch`). The optional standalone [`GPU_server`](GPU_server/README.md)
-uses local GPUs for Atlas source tasks.
+Report jobs enqueue per-item and final AI JSON via routed RabbitMQ queues and
+store intermediate results in shared Atlas `ai_generation_tasks` until the job
+finishes. Source-document `html_json.en`, `html_json.zh`, and `html_json.ch`
+fields are legacy read-only cache data; normal report generation no longer
+writes them. The optional standalone [`GPU_server`](GPU_server/README.md) can
+consume shared queued tasks.
 
 ## Architecture
 
@@ -24,12 +26,10 @@ flowchart LR
   Web --> CloudAMQP
   Scheduler["scheduler.py"] --> Atlas
   Scheduler --> LocalMongo
-  Scanner["preprocessor scanner"] --> CloudAMQP
   Router["preprocessor router"] --> CloudAMQP
   CompanyWorker["Company AI worker"] --> CloudAMQP
   GPU["GPU_server worker"] --> CloudAMQP
   GPU --> Atlas
-  Scanner --> Atlas
   CompanyWorker --> Atlas
   CompanyWorker --> LocalMongo
   CompanyWorker --> CompanyAI["Company AI API"]
@@ -39,12 +39,12 @@ flowchart LR
 | Process | Role |
 |---------|------|
 | `web` | Flask UI, report job orchestration |
-| `preprocessor-scanner` | Scans Atlas/shared tasks and publishes pending work to the intake queue |
-| `preprocessor-router` | Distributes intake queue work to GPU or Company AI provider queues |
+| `preprocessor-scanner` | Optional/deprecated scanner; disabled by default with `BACKGROUND_PREPROCESSING_ENABLED=false` |
+| `preprocessor-router` | Distributes on-demand report tasks to GPU or Company AI provider queues |
 | `company-ai-worker` | Consumes the Company AI queue and generates item/final summaries |
 | `GPU_server` | Optional isolated local-model worker for source/shared AI tasks |
 | `scheduler` | Claims cron schedules and generates scheduled reports |
-| Atlas MongoDB | Vulnerability source data, review views, source AI cache, and shared AI tasks |
+| Atlas MongoDB | Vulnerability source data, review views, legacy source AI cache, and ephemeral shared AI tasks |
 | Local MongoDB | Auth, subscriptions, structured report jobs/results, schedules, and locks |
 | CloudAMQP | Priority-backed intake, GPU, and Company AI queues |
 
@@ -107,24 +107,24 @@ See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full virtual-environment setup (M
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 
-# Terminal 1 — scan database and publish intake tasks
-.venv/bin/python company_ai_preprocessor.py --role scanner
-
-# Terminal 2 — route intake tasks to provider queues
+# Terminal 1 — route report tasks to provider queues
 .venv/bin/python company_ai_preprocessor.py --role router
 
-# Terminal 3 — consume Company AI provider queue
+# Terminal 2 — consume Company AI provider queue
 .venv/bin/python company_ai_preprocessor.py --role company-worker
 
-# Terminal 4 — web server
+# Terminal 3 — web server
 .venv/bin/python app.py
 
-# Terminal 5 — report scheduler
+# Terminal 4 — report scheduler
 .venv/bin/python scheduler.py
 ```
 
-For local development, `.venv/bin/python company_ai_preprocessor.py` still runs
-the backward-compatible all-in-one scanner/router/Company AI worker.
+The scanner role is optional/deprecated for normal operation. With the default
+`BACKGROUND_PREPROCESSING_ENABLED=false`, it starts but does not scan source
+collections or republish stale shared tasks. For local development,
+`.venv/bin/python company_ai_preprocessor.py` still starts the all-in-one
+process, with the scanner remaining inert unless explicitly enabled.
 
 Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`).
 

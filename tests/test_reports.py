@@ -10,7 +10,7 @@ import report_harness
 from bson import ObjectId
 
 from app import app
-from mongo import get_web_database
+from mongo import get_vulnerabilities_database, get_web_database
 from company_ai_auth_cache import clear_auth_state_for_tests, invalidate
 from report_harness import (
     CompanyAIProvider,
@@ -1401,6 +1401,94 @@ def test_company_ai_report_job_uses_company_provider(tmp_path, monkeypatch):
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
             get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
+
+
+def test_company_ai_report_job_deletes_shared_ai_tasks_after_completion(tmp_path, monkeypatch):
+    item_task_id = ObjectId()
+    final_task_id = ObjectId()
+
+    def enqueue_items(items, language, config):
+        task_collection.insert_one({
+            '_id': item_task_id,
+            'storage': 'shared',
+            'task_type': 'item',
+            'language': language,
+            'content_hash': 'item-hash',
+            'status': 'completed',
+            'result': cached_item,
+        })
+        return [{
+            'storage': 'shared',
+            'task_id': item_task_id,
+            'task_type': 'item',
+            'language': language,
+            'content_hash': 'item-hash',
+        }]
+
+    def enqueue_final(item_results, language, config):
+        task_collection.insert_one({
+            '_id': final_task_id,
+            'storage': 'shared',
+            'task_type': 'final',
+            'language': language,
+            'content_hash': 'final-hash',
+            'status': 'completed',
+            'provider': 'company_ai',
+            'result': final_data,
+        })
+        return {
+            'storage': 'shared',
+            'task_id': final_task_id,
+            'task_type': 'final',
+            'language': language,
+            'content_hash': 'final-hash',
+        }
+
+    def wait_for_summaries(references, timeout, should_continue=None):
+        if references and references[0].get('task_type') == 'final':
+            return [final_data]
+        return [cached_item]
+
+    cached_item = {
+        'highlight': {'title': 'Cached', 'summary': 'Summary'},
+        'recommendations': ['Patch the affected system.'],
+    }
+    final_data = {
+        'title': 'Cybersecurity Report',
+        'executive_summary': 'Queued final summary.',
+        'trends': [],
+        'recommendations': ['Prioritize remediation.'],
+    }
+    monkeypatch.setattr('company_ai_preprocessor.enqueue_report_items', enqueue_items)
+    monkeypatch.setattr('company_ai_preprocessor.enqueue_final_summary', enqueue_final)
+    monkeypatch.setattr('company_ai_preprocessor.wait_for_summaries', wait_for_summaries)
+    monkeypatch.setattr('report_harness.CompanyAIProvider', lambda config: FakeProvider())
+
+    with app.app_context():
+        original_root = app.config['NEWSLETTER_ROOT']
+        app.config['NEWSLETTER_ROOT'] = str(tmp_path)
+        task_collection = get_vulnerabilities_database()[app.config['AI_TASK_COLLECTION']]
+        job_id = None
+        task_collection.delete_many({'_id': {'$in': [item_task_id, final_task_id]}})
+        try:
+            job_id = create_job([sample_document()], 'test', 'company_ai')
+            run_job(app, job_id)
+            job_object_id = ObjectId(job_id)
+            job = get_web_database()['report_jobs'].find_one({'_id': job_object_id})
+            assert job['status'] == 'completed'
+            assert job['report']['executive_summary'] == 'Queued final summary.'
+            assert get_web_database()['report_job_results'].count_documents({
+                'job_id': job_object_id,
+            }) == 1
+            assert task_collection.count_documents({
+                '_id': {'$in': [item_task_id, final_task_id]},
+            }) == 0
+        finally:
+            app.config['NEWSLETTER_ROOT'] = original_root
+            if job_id is not None:
+                get_web_database()['report_jobs'].delete_one({'_id': ObjectId(job_id)})
+                get_web_database()['report_job_results'].delete_many({'job_id': ObjectId(job_id)})
+            task_collection.delete_many({'_id': {'$in': [item_task_id, final_task_id]}})
 
 
 def test_generate_final_data_uses_configured_summary_prompt():

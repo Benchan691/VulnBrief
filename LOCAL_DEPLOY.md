@@ -8,15 +8,14 @@ Python virtual environment. For Docker-based deployment, see [README.md](README.
 | Process | Command | Purpose |
 |---------|---------|---------|
 | Web UI | `app.py` or Gunicorn | Flask app on port **6767** |
-| Preprocessor scanner | `company_ai_preprocessor.py --role scanner` | Scans Atlas/shared tasks and publishes intake queue work |
-| Preprocessor router | `company_ai_preprocessor.py --role router` | Distributes intake tasks to GPU or Company AI queues |
+| Preprocessor scanner | `company_ai_preprocessor.py --role scanner` | Optional/deprecated; disabled by default for normal report generation |
+| Preprocessor router | `company_ai_preprocessor.py --role router` | Distributes on-demand report tasks to GPU or Company AI queues |
 | Company AI worker | `company_ai_preprocessor.py --role company-worker` | Consumes Company AI queue tasks |
 | Scheduler | `scheduler.py` | Scheduled report generation |
 
 All processes read the same **`.env`** file (loaded automatically on startup).
 The web UI is usable for browsing newsletters and reviews with only MongoDB
-configured; AI reports and background preprocessing also need RabbitMQ and
-Company AI credentials.
+configured; AI reports need RabbitMQ and at least one enabled provider worker.
 
 ## Prerequisites
 
@@ -25,8 +24,8 @@ Install on your machine:
 - **Python 3.11+** (`python3 --version`)
 - **Atlas MongoDB** URI with vulnerability source collections and review views
 - **Local MongoDB** for application data (auth, subscriptions, report jobs)
-- **CloudAMQP** (or compatible RabbitMQ broker) for Company AI report mode and preprocessing
-- **Company AI** credentials (only if you use AI reports or the preprocessor)
+- **CloudAMQP** (or compatible RabbitMQ broker) for Company AI report mode
+- **Company AI** credentials (only if you use the Company AI provider)
 
 Optional:
 
@@ -124,11 +123,11 @@ not need to run `source .env` manually.
 | `RABBITMQ_URL` | CloudAMQP URL (required for AI reports and preprocessor) |
 | `COMPANY_AI_*` | Company AI credentials (required when `COMPANY_AI_ENABLED=true`) |
 
-`config/preprocessing_priorities.json` controls background AI preprocessing
-priority by collection and document field boosts. Collections in
-`background_scan_skip` are not scanned proactively (for example `cve`); they are
-still processed when a report job selects them. Override with
-`PREPROCESSING_PRIORITIES_CONFIG`.
+Background preprocessing is disabled by default with
+`BACKGROUND_PREPROCESSING_ENABLED=false`. Normal report generation enqueues
+selected items into shared `ai_generation_tasks` at `RABBITMQ_REPORT_PRIORITY`;
+it does not write source `html_json`. Existing `html_json` fields are legacy
+read-only cache data and do not require migration.
 
 ### Multiline values
 
@@ -192,16 +191,7 @@ require these files.
 Open separate terminals from the project root. Activate the venv in each (or use
 the `.venv/bin/python` paths shown).
 
-### Terminal 1 — preprocessor scanner
-
-```sh
-.venv/bin/python company_ai_preprocessor.py --role scanner
-```
-
-Leave this running. It scans Atlas and shared report tasks, then publishes
-pending work to `RABBITMQ_INTAKE_QUEUE`.
-
-### Terminal 2 — preprocessor router
+### Terminal 1 — preprocessor router
 
 ```sh
 .venv/bin/python company_ai_preprocessor.py --role router
@@ -210,18 +200,21 @@ pending work to `RABBITMQ_INTAKE_QUEUE`.
 Leave this running. It consumes `RABBITMQ_INTAKE_QUEUE` and distributes work to
 `RABBITMQ_GPU_QUEUE` or `RABBITMQ_COMPANY_QUEUE`.
 
-### Terminal 3 — Company AI worker
+### Terminal 2 — Company AI worker
 
 ```sh
 .venv/bin/python company_ai_preprocessor.py --role company-worker
 ```
 
 Leave this running when `COMPANY_AI_ENABLED=true`. It consumes
-`RABBITMQ_COMPANY_QUEUE` with `COMPANY_AI_PARALLEL_CHATS` workers. The legacy
-`.venv/bin/python company_ai_preprocessor.py` command still runs scanner,
+`RABBITMQ_COMPANY_QUEUE` with `COMPANY_AI_PARALLEL_CHATS` workers. The scanner
+role is optional/deprecated for normal operation; with the default
+`BACKGROUND_PREPROCESSING_ENABLED=false`, it starts but does not scan source
+collections or republish stale shared tasks. The legacy
+`.venv/bin/python company_ai_preprocessor.py` command still starts scanner,
 router, and Company AI worker together for local development.
 
-### Terminal 4 — web server
+### Terminal 3 — web server
 
 **Development (Flask built-in server, HTTPS on 6767)**
 
@@ -239,7 +232,7 @@ Open: **https://localhost:6767**
 
 Open: **http://localhost:6767**
 
-### Terminal 5 — scheduler
+### Terminal 4 — scheduler
 
 ```sh
 .venv/bin/python scheduler.py

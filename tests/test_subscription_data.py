@@ -2,7 +2,15 @@ from datetime import datetime, timezone
 
 import pytest
 
-from subscription_data import build_match_filter, next_cron_run, validate_cron, validate_filters
+from subscription_data import (
+    build_match_filter,
+    build_scraped_at_window,
+    next_cron_run,
+    parse_hong_kong_datetime,
+    parse_include_unknown,
+    validate_cron,
+    validate_filters,
+)
 
 
 def test_curated_filter_builds_combined_mongo_match():
@@ -48,6 +56,21 @@ def test_severity_filter_uses_fixed_choices_and_separate_unknown_switch():
 
     known_only = build_match_filter({**filters, 'status': '', 'include_unknown': False})
     assert known_only['severity']['$regex'].startswith('^(?:Critical')
+
+
+def test_parse_hong_kong_datetime_accepts_z_suffix_and_naive_local_times():
+    assert parse_hong_kong_datetime('2026-06-01T08:30Z').isoformat() == '2026-06-01T16:30:00+08:00'
+    assert parse_hong_kong_datetime('2026-06-01T08:30').isoformat() == '2026-06-01T08:30:00+08:00'
+
+
+def test_build_scraped_at_window_returns_none_for_all():
+    assert build_scraped_at_window('all') is None
+
+
+def test_parse_include_unknown_accepts_common_truthy_values():
+    assert parse_include_unknown('true') is True
+    assert parse_include_unknown('1') is True
+    assert parse_include_unknown(None) is False
 
 
 def test_five_field_cron_validation_and_next_run_use_hong_kong_time():

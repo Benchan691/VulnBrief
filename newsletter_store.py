@@ -1,4 +1,5 @@
 import hashlib
+import re
 from urllib.parse import urlparse
 
 import bleach
@@ -52,6 +53,7 @@ CHINESE_LABELS = {
     'default_recommendation': '请参考供应商指南并应用可用修复。',
     'footer': '如有任何疑问，请联系安全运营中心。谢谢。',
 }
+CVE_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)
 
 
 def _details(document, source_collection=None):
@@ -127,6 +129,18 @@ def _links(values):
                 seen.add(candidate)
                 links.append(candidate)
     return links
+
+
+def _cve_values(values):
+    cves = []
+    seen = set()
+    for value in _values(values):
+        for match in CVE_PATTERN.findall(str(value)):
+            cve = f'CVE-{match.upper()}'
+            if cve not in seen:
+                seen.add(cve)
+                cves.append(cve)
+    return cves
 
 
 def template_key_for_source(source_collection):
@@ -454,11 +468,10 @@ def normalize_newsletter(document, source_collection):
     references = _links(fields['reference_values'])
     related_links = _links(fields['related_values'])
     related_links = [link for link in related_links if link not in references]
-    cves = _all(
-        details, document, 'cve', 'cve_code', 'cveCode', 'cve_id', 'cve_ids',
+    cves = _cve_values(_all(
+        details, document, 'cve', 'cve_code', 'cve_codes', 'cveCode', 'cve_id', 'cve_ids',
         'vulnerability_identifiers',
-    )
-    cves = [value for value in cves if 'CVE-' in value.upper()]
+    ))
     template_key = template_key_for_source(source_collection)
     is_chinese = template_key in CHINESE_TEMPLATE_KEYS
     severity = fields['impacts']

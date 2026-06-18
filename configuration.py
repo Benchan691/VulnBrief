@@ -1,8 +1,6 @@
 import json
 import os
 
-from preprocessing_priorities import load_preprocessing_priorities
-
 
 DEFAULT_JSON_ERROR_MESSAGE = (
     'The JSON above is invalid.\n\nError:\n${error}\n\n'
@@ -59,14 +57,8 @@ def _require_env(*names):
 def load_application_config(base_dir, require_local=True):
     local_database = _env_str('LOCAL_DATABASE', _env_str('WEB_DATABASE', 'web'))
     newsletter_root = _env_str('NEWSLETTER_ROOT', 'newsletters')
-    preprocessing_priorities_config = _env_str(
-        'PREPROCESSING_PRIORITIES_CONFIG',
-        os.path.join('config', 'preprocessing_priorities.json'),
-    )
     if not os.path.isabs(newsletter_root):
         newsletter_root = os.path.join(base_dir, newsletter_root)
-    if not os.path.isabs(preprocessing_priorities_config):
-        preprocessing_priorities_config = os.path.join(base_dir, preprocessing_priorities_config)
 
     atlas_mongo_uri = _env_str('ATLAS_MONGO_URI')
     local_mongo_uri = _env_str('LOCAL_MONGO_URI')
@@ -104,8 +96,6 @@ def load_application_config(base_dir, require_local=True):
         'WEB_AUTH_BOOTSTRAP_USERNAME': _env_str('WEB_AUTH_BOOTSTRAP_USERNAME', 'admin'),
         'WEB_AUTH_BOOTSTRAP_PASSWORD': _env_str('WEB_AUTH_BOOTSTRAP_PASSWORD', 'changeme'),
         'NEWSLETTER_ROOT': newsletter_root,
-        'PREPROCESSING_PRIORITIES_CONFIG': preprocessing_priorities_config,
-        'PREPROCESSING_PRIORITIES': load_preprocessing_priorities(preprocessing_priorities_config),
         'COMPANY_AI_BASE_URL': _env_str('COMPANY_AI_BASE_URL'),
         'COMPANY_AI_USERNAME': company_ai_username,
         'COMPANY_AI_PASSWORD': _env_str('COMPANY_AI_PASSWORD'),
@@ -178,6 +168,7 @@ def load_application_config(base_dir, require_local=True):
         'RABBITMQ_BACKGROUND_PRIORITY': _env_int('RABBITMQ_BACKGROUND_PRIORITY', 1),
         'RABBITMQ_REPORT_PRIORITY': _env_int('RABBITMQ_REPORT_PRIORITY', 10),
         'COMPANY_AI_SCAN_INTERVAL_SECONDS': _env_int('COMPANY_AI_SCAN_INTERVAL_SECONDS', 60),
+        'BACKGROUND_PREPROCESSING_ENABLED': _env_bool('BACKGROUND_PREPROCESSING_ENABLED', False),
         'COMPANY_AI_STALE_PROCESSING_SECONDS': _env_int(
             'COMPANY_AI_STALE_PROCESSING_SECONDS',
             900,

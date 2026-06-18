@@ -22,6 +22,7 @@ def _lookup_queries(source_collection, selection_id):
             queries.extend([
                 {'code': suffix},
                 {'cve_code': suffix},
+                {'cve_codes': suffix},
             ])
             if not selection_id.startswith(f'{source_collection}:'):
                 queries.append({'_id': f'{source_collection}:{suffix}'})
@@ -30,6 +31,7 @@ def _lookup_queries(source_collection, selection_id):
             {'_id': f'{source_collection}:{selection_id}'},
             {'code': selection_id},
             {'cve_code': selection_id},
+            {'cve_codes': selection_id},
         ])
     unique = []
     seen = set()

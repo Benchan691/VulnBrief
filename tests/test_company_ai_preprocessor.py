@@ -268,7 +268,9 @@ def test_report_items_publish_at_report_priority_and_preserve_wait_order(monkeyp
     )
     with app.app_context():
         source = _source()
+        task_collection = get_vulnerabilities_database()[app.config['AI_TASK_COLLECTION']]
         source.delete_many({})
+        task_collection.delete_many({'source_key': {'$regex': '^upload:'}})
         source.insert_many([
             {'_id': 'priority-1', 'details': {'source': {'description': 'first'}}},
             {'_id': 'priority-2', 'details': {'source': {'description': 'second'}}},
@@ -286,18 +288,25 @@ def test_report_items_publish_at_report_priority_and_preserve_wait_order(monkeyp
                     'source_id': 'priority-2',
                 },
             ], 'en', app.config)
-            source.update_one(
-                {'_id': 'priority-2'},
-                {'$set': {'html_json.en.status': 'completed', 'html_json.en.result': {'order': 2}}},
+            task_collection.update_one(
+                {'_id': references[1]['task_id']},
+                {'$set': {'status': 'completed', 'result': {'order': 2}}},
             )
-            source.update_one(
-                {'_id': 'priority-1'},
-                {'$set': {'html_json.en.status': 'completed', 'html_json.en.result': {'order': 1}}},
+            task_collection.update_one(
+                {'_id': references[0]['task_id']},
+                {'$set': {'status': 'completed', 'result': {'order': 1}}},
             )
 
             assert priorities == [app.config['RABBITMQ_REPORT_PRIORITY']] * 2
+            assert [reference['storage'] for reference in references] == ['shared', 'shared']
+            assert task_collection.count_documents({
+                '_id': {'$in': [reference['task_id'] for reference in references]},
+            }) == 2
+            assert 'html_json' not in source.find_one({'_id': 'priority-1'})
+            assert 'html_json' not in source.find_one({'_id': 'priority-2'})
             assert wait_for_summaries(references, 1) == [{'order': 1}, {'order': 2}]
         finally:
+            task_collection.delete_many({'source_key': {'$regex': '^upload:'}})
             source.drop()
 
 
@@ -1368,216 +1377,30 @@ def test_router_routes_only_to_queues_with_consumers(monkeypatch):
     assert routed == [config['RABBITMQ_GPU_QUEUE']]
 
 
-def test_scan_unprocessed_uses_collection_and_field_priority(monkeypatch):
-    published = []
-
-    class FakeConnection:
-        is_open = True
-
-        def channel(self):
-            return FakeChannel()
-
-        def close(self):
-            return None
-
-    class FakeChannel:
-        def confirm_delivery(self):
-            return None
-
-    class FakeCollection:
-        def __init__(self, documents):
-            self._documents = documents
-
-        def find(self, query, projection):
-            return list(self._documents)
+def test_scan_unprocessed_disabled_skips_database_scan_and_publish(monkeypatch):
+    calls = []
 
     class FakeDatabase:
-        def __init__(self):
-            self._collections = {
-                TEST_COLLECTION: FakeCollection([
-                    {
-                        '_id': 'low',
-                        'details': {'source': {'description': 'low'}},
-                    },
-                    {
-                        '_id': 'high',
-                        'severity': 'CRITICAL',
-                        'details': {'source': {'description': 'high'}},
-                    },
-                ]),
-                'cve': FakeCollection([
-                    {
-                        '_id': 'cve-item',
-                        'severity': 'HIGH',
-                        'details': {'source': {'description': 'cve'}},
-                    },
-                ]),
-            }
-
         def list_collections(self, filter=None):
-            return [
-                {'name': name, 'type': 'collection'}
-                for name in self._collections
-            ]
+            calls.append('list_collections')
+            raise AssertionError('disabled scan should not list collections')
 
-        def __getitem__(self, name):
-            return self._collections[name]
+    def fail_connection(parameters):
+        calls.append('connection')
+        raise AssertionError('disabled scan should not connect to RabbitMQ')
 
-    def fake_enqueue_summary(
-        details,
-        language,
-        config,
-        priority,
-        source_collection=None,
-        source_id=None,
-        channel=None,
-    ):
-        published.append(priority)
-        return (
-            {
-                'storage': 'source',
-                'task_type': 'item',
-                'source_collection': source_collection,
-                'source_id': source_id,
-                'language': language,
-                'content_hash': 'hash',
-            },
-            True,
-        )
-
-    monkeypatch.setattr(
-        'company_ai_preprocessor.pika.BlockingConnection',
-        lambda parameters: FakeConnection(),
-    )
-    monkeypatch.setattr('company_ai_preprocessor._queue_declare', _fake_queue_declare)
-    monkeypatch.setattr('company_ai_preprocessor.enqueue_summary', fake_enqueue_summary)
-    monkeypatch.setattr(
-        'company_ai_preprocessor.ensure_cache_indexes',
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        'company_ai_preprocessor.get_vulnerabilities_database',
-        lambda: FakeDatabase(),
-    )
-    monkeypatch.setattr(
-        'company_ai_preprocessor._shared_task_collection',
-        lambda: type('Tasks', (), {'find': lambda self, query: []})(),
-    )
+    monkeypatch.setattr('company_ai_preprocessor.ensure_cache_indexes', lambda: calls.append('indexes'))
+    monkeypatch.setattr('company_ai_preprocessor.get_vulnerabilities_database', lambda: FakeDatabase())
+    monkeypatch.setattr('company_ai_preprocessor.pika.BlockingConnection', fail_connection)
 
     with app.app_context():
-        config = {
+        queued = scan_unprocessed({
             **dict(app.config),
-            'AI_TASK_COLLECTION': 'ai_generation_tasks',
-            'PREPROCESSING_PRIORITIES': {
-                'default': 1,
-                'collections': {'cve': 7},
-                'field_boosts': {
-                    'severity': {'critical': 3, 'high': 2},
-                },
-            },
-        }
-        try:
-            queued = scan_unprocessed(config)
-            assert queued == 9
-            assert 1 in published
-            assert 4 in published
-            assert 9 in published
-        finally:
-            pass
+            'BACKGROUND_PREPROCESSING_ENABLED': False,
+        })
 
-
-def test_scan_unprocessed_skips_background_scan_skip_collections(monkeypatch):
-    enqueued_collections = []
-
-    class FakeConnection:
-        is_open = True
-
-        def channel(self):
-            return FakeChannel()
-
-        def close(self):
-            return None
-
-    class FakeChannel:
-        def confirm_delivery(self):
-            return None
-
-    class FakeCollection:
-        def __init__(self, documents):
-            self._documents = documents
-
-        def find(self, query, projection):
-            return list(self._documents)
-
-    class FakeDatabase:
-        def __init__(self):
-            self._collections = {
-                TEST_COLLECTION: FakeCollection([
-                    {
-                        '_id': 'scan-me',
-                        'details': {'source': {'description': 'keep'}},
-                    },
-                ]),
-                'cve': FakeCollection([
-                    {
-                        '_id': 'cve-item',
-                        'details': {'source': {'description': 'skip'}},
-                    },
-                ]),
-            }
-
-        def list_collections(self, filter=None):
-            return [
-                {'name': name, 'type': 'collection'}
-                for name in self._collections
-            ]
-
-        def __getitem__(self, name):
-            return self._collections[name]
-
-    def fake_enqueue_summary(
-        details,
-        language,
-        config,
-        priority,
-        source_collection=None,
-        source_id=None,
-        channel=None,
-    ):
-        enqueued_collections.append(source_collection)
-        return ({'storage': 'source'}, True)
-
-    monkeypatch.setattr(
-        'company_ai_preprocessor.pika.BlockingConnection',
-        lambda parameters: FakeConnection(),
-    )
-    monkeypatch.setattr('company_ai_preprocessor._queue_declare', _fake_queue_declare)
-    monkeypatch.setattr('company_ai_preprocessor.enqueue_summary', fake_enqueue_summary)
-    monkeypatch.setattr('company_ai_preprocessor.ensure_cache_indexes', lambda: None)
-    monkeypatch.setattr(
-        'company_ai_preprocessor.get_vulnerabilities_database',
-        lambda: FakeDatabase(),
-    )
-    monkeypatch.setattr(
-        'company_ai_preprocessor._shared_task_collection',
-        lambda: type('Tasks', (), {'find': lambda self, query: []})(),
-    )
-
-    with app.app_context():
-        config = {
-            **dict(app.config),
-            'AI_TASK_COLLECTION': 'ai_generation_tasks',
-            'PREPROCESSING_PRIORITIES': {
-                'default': 1,
-                'collections': {'cve': 7},
-                'background_scan_skip': ['cve'],
-                'field_boosts': {},
-            },
-        }
-        queued = scan_unprocessed(config)
-        assert queued == 3
-        assert TEST_COLLECTION in enqueued_collections
-        assert 'cve' not in enqueued_collections
+    assert queued == 0
+    assert calls == ['indexes']
 
 
 def test_enqueue_report_items_still_enqueues_skipped_collection(monkeypatch):
@@ -1607,31 +1430,29 @@ def test_enqueue_report_items_still_enqueues_skipped_collection(monkeypatch):
     )
     with app.app_context():
         source = get_vulnerabilities_database()['cve']
+        task_collection = get_vulnerabilities_database()[app.config['AI_TASK_COLLECTION']]
         source.delete_many({})
+        task_collection.delete_many({'source_key': {'$regex': '^upload:'}})
         source.insert_one({
             '_id': 'cve:report-1',
             'details': {'cve': {'description': 'report item'}},
         })
         try:
-            config = {
-                **dict(app.config),
-                'PREPROCESSING_PRIORITIES': {
-                    **app.config['PREPROCESSING_PRIORITIES'],
-                    'background_scan_skip': ['cve'],
-                },
-            }
             references = enqueue_report_items([
                 {
                     'details': {'cve': {'description': 'report item'}},
                     'source_collection': 'cve',
                     'source_id': 'cve:report-1',
                 },
-            ], 'en', config)
-            source.update_one(
-                {'_id': 'cve:report-1'},
-                {'$set': {'html_json.en.status': 'completed', 'html_json.en.result': {'ok': True}}},
+            ], 'en', app.config)
+            task_collection.update_one(
+                {'_id': references[0]['task_id']},
+                {'$set': {'status': 'completed', 'result': {'ok': True}}},
             )
-            assert priorities == [config['RABBITMQ_REPORT_PRIORITY']]
+            assert priorities == [app.config['RABBITMQ_REPORT_PRIORITY']]
+            assert references[0]['storage'] == 'shared'
+            assert 'html_json' not in source.find_one({'_id': 'cve:report-1'})
             assert wait_for_summaries(references, 1) == [{'ok': True}]
         finally:
+            task_collection.delete_many({'source_key': {'$regex': '^upload:'}})
             source.drop()

@@ -4,12 +4,6 @@ from bootstrap import _load_env
 from configuration import DEFAULT_JSON_ERROR_MESSAGE, load_application_config
 
 
-def _write_preprocessing_priorities(tmp_path, content='{}'):
-    config_dir = tmp_path / 'config'
-    config_dir.mkdir(exist_ok=True)
-    (config_dir / 'preprocessing_priorities.json').write_text(content, encoding='utf-8')
-
-
 def _set_required_env(monkeypatch, **overrides):
     values = {
         'ATLAS_MONGO_URI': 'mongodb://example/',
@@ -26,6 +20,8 @@ def _set_required_env(monkeypatch, **overrides):
         'RABBITMQ_URL': 'amqp://rabbit.example/',
         'RABBITMQ_INTAKE_QUEUE': 'summaries',
         'RABBITMQ_QUEUE_NAME': 'summaries',
+        'RABBITMQ_GPU_QUEUE': 'gpu_preprocessing',
+        'GPU_ENABLED': 'false',
     }
     values.update(overrides)
     for key, value in values.items():
@@ -86,7 +82,6 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         REPORT_PREVIEW_AFTER_EACH_ITEM='false',
     )
 
-    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://example/'
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
@@ -150,6 +145,7 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['COMPANY_AI_SCAN_INTERVAL_SECONDS'] == 30
     assert loaded['COMPANY_AI_STALE_PROCESSING_SECONDS'] == 600
     assert loaded['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'] == 45
+    assert loaded['BACKGROUND_PREPROCESSING_ENABLED'] is False
     assert loaded['GPU_QUEUE_BACKLOG_LIMIT'] == 20
     assert loaded['GPU_ENABLED'] is False
     assert loaded['GPU_DEFAULT_EWMA_SECONDS'] == 30
@@ -181,6 +177,9 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     monkeypatch.setenv('RABBITMQ_QUEUE_NAME', 'legacy-environment-intake')
     legacy_queue = load_application_config(str(tmp_path))
     assert legacy_queue['RABBITMQ_INTAKE_QUEUE'] == 'legacy-environment-intake'
+    monkeypatch.setenv('BACKGROUND_PREPROCESSING_ENABLED', 'true')
+    background_enabled = load_application_config(str(tmp_path))
+    assert background_enabled['BACKGROUND_PREPROCESSING_ENABLED'] is True
 
 
 def test_separate_mongo_connections(tmp_path, monkeypatch):
@@ -191,7 +190,6 @@ def test_separate_mongo_connections(tmp_path, monkeypatch):
         LOCAL_DATABASE='local_app',
     )
 
-    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb+srv://atlas.example/'
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
@@ -208,7 +206,6 @@ def test_mongo_connections_are_required(tmp_path, monkeypatch):
     monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
     monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
 
-    _write_preprocessing_priorities(tmp_path)
     with pytest.raises(ValueError, match='Missing required environment variable'):
         load_application_config(str(tmp_path))
 
@@ -217,8 +214,12 @@ def test_worker_configuration_requires_atlas_but_not_local_mongo(tmp_path, monke
     monkeypatch.setenv('ATLAS_MONGO_URI', 'mongodb://atlas.example/')
     monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
     monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
+    for name in (
+        'DEEPSEEK_ENABLED', 'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
+        'GEMINI_ENABLED', 'GEMINI_API_KEY', 'GEMINI_MODEL',
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path), require_local=False)
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://atlas.example/'
     assert loaded['LOCAL_MONGO_URI'] == ''
@@ -258,7 +259,6 @@ def test_environment_list_and_report_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv('REPORT_MAX_STRING_CHARS', '5000')
     monkeypatch.setenv('REPORT_PREVIEW_AFTER_EACH_ITEM', 'false')
 
-    _write_preprocessing_priorities(tmp_path)
     loaded = load_application_config(str(tmp_path))
     assert loaded['COMPANY_AI_START_PROMPT'] == 'from-env'
     assert loaded['COMPANY_AI_PUBLIC_KEY_B64'] == 'env-key'
@@ -286,7 +286,8 @@ def test_load_dotenv_from_file(tmp_path, monkeypatch):
         'COMPANY_AI_BASE_URL', 'COMPANY_AI_USERNAME', 'COMPANY_AI_PASSWORD',
         'COMPANY_AI_START_PROMPT', 'COMPANY_AI_SUMMARY_PROMPT',
         'COMPANY_AI_PUBLIC_KEY_B64', 'COMPANY_AI_SIGN_SECRET', 'COMPANY_AI_MODEL',
-        'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL', 'GEMINI_API_KEY', 'GEMINI_MODEL',
+        'DEEPSEEK_ENABLED', 'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL',
+        'GEMINI_ENABLED', 'GEMINI_API_KEY', 'GEMINI_MODEL',
         'RABBITMQ_URL',
     ):
         monkeypatch.delenv(name, raising=False)
@@ -314,7 +315,6 @@ def test_load_dotenv_from_file(tmp_path, monkeypatch):
         encoding='utf-8',
     )
 
-    _write_preprocessing_priorities(tmp_path)
     _load_env(str(tmp_path))
     loaded = load_application_config(str(tmp_path))
     assert loaded['ATLAS_MONGO_URI'] == 'mongodb://dotenv-atlas/'

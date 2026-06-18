@@ -3,20 +3,28 @@
 
 {% block content %}
 <style>
-    .review-collections-toggle.dropdown-toggle::after {
-        margin-left: auto;
-        float: right;
+    .review-mode .btn {
+        min-width: 7rem;
     }
-    .review-collections-options {
-        max-height: 12rem;
-        overflow-y: auto;
+    .related-modal-table {
+        min-width: 900px;
+    }
+    .review-results-table {
+        table-layout: fixed;
+        min-width: 900px;
+    }
+    .truncate-cell {
+        max-width: 1px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 </style>
-<div class="container">
+<div class="container-fluid px-3 px-lg-4">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
         <div>
             <h2 class="mb-1"><i class="bi bi-shield-check me-2"></i>Vulnerability Reviews</h2>
-            <p class="text-muted mb-0">Read-only MongoDB review views</p>
+            <p class="text-muted mb-0">Filter review records and prepare selections for reports.</p>
         </div>
         <div class="d-flex flex-wrap align-items-center gap-2">
             <span id="selected-count" class="badge text-bg-primary">0 selected</span>
@@ -25,6 +33,9 @@
             </button>
             <button id="export-btn" class="btn btn-success btn-sm" disabled>
                 <i class="bi bi-download me-1"></i>Export JSON
+            </button>
+            <button id="auto-select-best-btn" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-magic me-1"></i>Auto Select Best
             </button>
             <a id="generate-report-btn" class="btn btn-primary btn-sm disabled" aria-disabled="true" href="{{ url_for('report.reports') }}">
                 <i class="bi bi-stars me-1"></i>Generate HTML
@@ -37,18 +48,19 @@
 
     <form id="global-filter-form" class="card shadow-sm border-0 mb-4">
         <div class="card-body">
-            <div class="row g-3">
-                <div class="col-12 col-lg-4">
-                    <label for="filter-search" class="form-label">Global search</label>
-                    <input id="filter-search" name="search" class="form-control" placeholder="Search summary fields">
+            <div class="row g-3 align-items-end">
+                <div class="col-12 col-lg-auto">
+                    <label class="form-label d-block">Review type</label>
+                    <div class="btn-group review-mode" role="group" aria-label="Review type">
+                        <input id="mode-cve" class="btn-check" type="radio" name="mode" value="cve" checked>
+                        <label class="btn btn-outline-primary" for="mode-cve">CVE</label>
+                        <input id="mode-non-cve" class="btn-check" type="radio" name="mode" value="non_cve">
+                        <label class="btn btn-outline-primary" for="mode-non-cve">Non-CVE</label>
+                    </div>
                 </div>
-                <div class="col-12 col-md-6 col-lg-2">
-                    <label for="filter-code" class="form-label">Code / CVE</label>
-                    <input id="filter-code" name="code" class="form-control">
-                </div>
-                <div class="col-12 col-md-6 col-lg-3">
-                    <label for="filter-title" class="form-label">Title</label>
-                    <input id="filter-title" name="title" class="form-control">
+                <div class="col-12 col-lg-5">
+                    <label for="filter-search" class="form-label">Search keyword</label>
+                    <input id="filter-search" name="search" class="form-control" placeholder="Search keyword">
                 </div>
                 <div class="col-12 col-md-6 col-lg-2">
                     <label for="filter-status" class="form-label">Severity</label>
@@ -66,53 +78,44 @@
                         <label class="form-check-label" for="filter-include-unknown">Include unknown severity</label>
                     </div>
                 </div>
-                <div class="col-12 col-md-6 col-lg-4">
-                    <label for="filter-affected" class="form-label">Affected product / system</label>
-                    <input id="filter-affected" name="affected" class="form-control">
+                <div class="col-12 col-md-6 col-lg-2">
+                    <label for="filter-time-window" class="form-label">Scrape time</label>
+                    <select id="filter-time-window" name="time_window" class="form-select">
+                        <option value="all">All time</option>
+                        <option value="daily">Today</option>
+                        <option value="week">Last 7 days</option>
+                        <option value="custom">Custom</option>
+                    </select>
                 </div>
-                <div class="col-12 col-md-6 col-lg-4">
-                    <label for="filter-collections-toggle" class="form-label">Review collections</label>
-                    <div class="dropdown w-100">
-                        <button id="filter-collections-toggle" type="button" class="form-select dropdown-toggle review-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">All review collections</button>
-                        <div id="filter-collections-menu" class="dropdown-menu w-100 shadow-sm p-2">
-                            <input id="filter-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="Search collections..." autocomplete="off">
-                            <div id="filter-collections-options" class="review-collections-options"></div>
-                            <div class="dropdown-divider my-2"></div>
-                            <div class="d-flex justify-content-between px-1">
-                                <button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">Select all</button>
-                                <button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="clear">Clear</button>
-                            </div>
+                <div id="filter-custom-window" class="col-12 d-none">
+                    <div class="row g-3">
+                        <div class="col-12 col-md-6">
+                            <label for="filter-start" class="form-label">Start</label>
+                            <input id="filter-start" name="start" type="datetime-local" class="form-control">
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <label for="filter-end" class="form-label">End</label>
+                            <input id="filter-end" name="end" type="datetime-local" class="form-control">
                         </div>
                     </div>
                 </div>
-                <div class="col-12 col-md-6 col-lg-4 d-flex align-items-end gap-2">
+                <div class="col-12 col-md-6 col-lg d-flex gap-2">
                     <button class="btn btn-primary flex-grow-1" type="submit">
                         <i class="bi bi-search me-1"></i>Apply Filter
                     </button>
-                    <button id="clear-filter-btn" class="btn btn-outline-secondary" type="button">Clear Filter</button>
+                    <button id="clear-filter-btn" class="btn btn-outline-secondary" type="button">Clear</button>
                 </div>
             </div>
         </div>
     </form>
 
     <div id="error-alert" class="alert alert-danger d-none" role="alert"></div>
-    <div id="collection-overview">
-        <div id="loading" class="text-center text-muted py-5">
-            <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading review collections...
-        </div>
-        <div id="empty-state" class="card shadow-sm border-0 d-none">
-            <div class="card-body text-center py-5 text-muted">
-                <i class="bi bi-database-x display-4 d-block mb-2"></i>
-                No review views were found.
-            </div>
-        </div>
-        <div id="collection-grid" class="row g-3"></div>
-    </div>
+    <div id="status-alert" class="alert alert-success d-none" role="status"></div>
 
-    <div id="search-results" class="card shadow-sm border-0 d-none">
+    <div id="search-results" class="card shadow-sm border-0">
         <div class="card-body">
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-                <h5 class="mb-0">Combined Results</h5>
+                <h5 id="results-title" class="mb-0">CVE Results</h5>
                 <div class="d-flex align-items-center gap-2">
                     <span id="results-count" class="text-muted small"></span>
                     <select id="page-size" class="form-select form-select-sm" aria-label="Results per page">
@@ -127,17 +130,9 @@
             </div>
             <div id="results-empty" class="text-center text-muted py-5 d-none">No matching review documents.</div>
             <div id="results-table-wrap" class="table-responsive d-none">
-                <table class="table table-hover align-middle">
+                <table class="table table-hover align-middle review-results-table">
                     <thead>
-                        <tr>
-                            <th scope="col">Select</th>
-                            <th scope="col">Collection</th>
-                            <th scope="col">Code / CVE</th>
-                            <th scope="col">Title</th>
-                            <th scope="col">Severity</th>
-                            <th scope="col">Affected</th>
-                            <th scope="col">Action</th>
-                        </tr>
+                        <tr id="results-head"></tr>
                     </thead>
                     <tbody id="results-body"></tbody>
                 </table>
@@ -162,49 +157,95 @@
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="related-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 id="related-modal-title" class="modal-title">Related CVE Records</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                    <span id="related-count" class="text-muted small"></span>
+                    <div class="d-flex gap-2">
+                        <button id="related-select-all" type="button" class="btn btn-outline-primary btn-sm">Select all</button>
+                        <button id="related-clear" type="button" class="btn btn-outline-secondary btn-sm">Clear</button>
+                    </div>
+                </div>
+                <div id="related-empty" class="text-center text-muted py-4 d-none">No related CVE records.</div>
+                <div id="related-table-wrap" class="table-responsive">
+                    <table class="table table-hover align-middle related-modal-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Select</th>
+                                <th scope="col">Collection</th>
+                                <th scope="col">Code / CVE</th>
+                                <th scope="col">Title</th>
+                                <th scope="col">Severity</th>
+                                <th scope="col">Affected</th>
+                                <th scope="col">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="related-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block script %}
 <script>
 (function () {
-    const grid = document.getElementById('collection-grid');
-    const overview = document.getElementById('collection-overview');
-    const loading = document.getElementById('loading');
-    const empty = document.getElementById('empty-state');
     const error = document.getElementById('error-alert');
+    const statusAlert = document.getElementById('status-alert');
     const refresh = document.getElementById('refresh-btn');
     const filterForm = document.getElementById('global-filter-form');
     const clearFilter = document.getElementById('clear-filter-btn');
-    const collectionsToggle = document.getElementById('filter-collections-toggle');
-    const collectionsMenu = document.getElementById('filter-collections-menu');
-    const collectionsSearch = document.getElementById('filter-collections-search');
-    const collectionsOptions = document.getElementById('filter-collections-options');
-    const searchResults = document.getElementById('search-results');
     const resultsLoading = document.getElementById('results-loading');
     const resultsEmpty = document.getElementById('results-empty');
     const resultsTableWrap = document.getElementById('results-table-wrap');
+    const resultsHead = document.getElementById('results-head');
     const resultsBody = document.getElementById('results-body');
+    const resultsTitle = document.getElementById('results-title');
     const resultsCount = document.getElementById('results-count');
+    const timeWindow = document.getElementById('filter-time-window');
+    const customWindow = document.getElementById('filter-custom-window');
     const pagination = document.getElementById('pagination');
     const previousPage = document.getElementById('previous-page');
     const nextPage = document.getElementById('next-page');
     const pageLabel = document.getElementById('page-label');
     const pageSize = document.getElementById('page-size');
     const exportButton = document.getElementById('export-btn');
+    const autoSelectBest = document.getElementById('auto-select-best-btn');
     const clearSelection = document.getElementById('clear-selection-btn');
     const selectedCount = document.getElementById('selected-count');
     const generateReportButton = document.getElementById('generate-report-btn');
     const documentModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('document-modal'));
     const documentModalTitle = document.getElementById('document-modal-title');
     const documentJson = document.getElementById('document-json');
+    const relatedModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('related-modal'));
+    const relatedModalTitle = document.getElementById('related-modal-title');
+    const relatedCount = document.getElementById('related-count');
+    const relatedEmpty = document.getElementById('related-empty');
+    const relatedTableWrap = document.getElementById('related-table-wrap');
+    const relatedBody = document.getElementById('related-body');
+    const relatedSelectAll = document.getElementById('related-select-all');
+    const relatedClear = document.getElementById('related-clear');
+    const relatedModalElement = document.getElementById('related-modal');
+    const documentModalElement = document.getElementById('document-modal');
     const selectionStorageKey = 'vulnerabilityReviewSelections';
-    const detailUrl = {{ url_for('review.review_collection', collection_name='__collection__')|tojson }};
     const exportUrl = {{ url_for('review.export_review_documents')|tojson }};
     const searchUrl = {{ url_for('review.search_review_documents')|tojson }};
-    let collections = [];
+    const autoSelectUrl = {{ url_for('review.auto_select_best_review_documents')|tojson }};
     let activeFilters = null;
     let currentPage = 1;
     let totalPages = 1;
+    let currentBody = null;
+    let currentRelated = [];
+    let restoreRelatedModalAfterDocument = false;
 
     function getSelections() {
         try {
@@ -229,13 +270,6 @@
         }));
     }
 
-    function selectedCountsByCollection() {
-        return getSelections().reduce(function (counts, selection) {
-            counts[selection.collection] = (counts[selection.collection] || 0) + 1;
-            return counts;
-        }, {});
-    }
-
     function updateSelectedCount() {
         const count = getSelections().length;
         selectedCount.textContent = count + ' selected';
@@ -243,12 +277,31 @@
         exportButton.disabled = count === 0;
         generateReportButton.classList.toggle('disabled', count === 0);
         generateReportButton.setAttribute('aria-disabled', count === 0 ? 'true' : 'false');
-        if (collections.length) renderCollections();
+    }
+
+    function updateModeActions() {
+        const isCveMode = activeMode() === 'cve';
+        autoSelectBest.classList.toggle('d-none', !isCveMode);
+        autoSelectBest.disabled = !isCveMode;
+    }
+
+    function syncVisibleSelections() {
+        const keys = selectedKeys();
+        document.querySelectorAll('[data-selection-collection][data-selection-id]').forEach(function (input) {
+            input.checked = keys.has(selectionKey(input.dataset.selectionCollection, input.dataset.selectionId));
+        });
     }
 
     function showError(message) {
+        statusAlert.classList.add('d-none');
         error.textContent = message;
         error.classList.remove('d-none');
+    }
+
+    function showStatus(message) {
+        error.classList.add('d-none');
+        statusAlert.textContent = message;
+        statusAlert.classList.remove('d-none');
     }
 
     function summaryValue(value) {
@@ -266,183 +319,56 @@
         return '';
     }
 
-    function getCollectionCheckboxes() {
-        return Array.from(collectionsOptions.querySelectorAll('.review-collection-checkbox'));
-    }
-
-    function getVisibleCollectionCheckboxes() {
-        return getCollectionCheckboxes().filter(function (input) {
-            return !input.closest('.form-check').classList.contains('d-none');
-        });
-    }
-
-    function filterCollectionOptions() {
-        const query = collectionsSearch.value.trim().toLowerCase();
-        collectionsOptions.querySelectorAll('.form-check').forEach(function (wrap) {
-            const name = wrap.querySelector('.review-collection-checkbox').value.toLowerCase();
-            wrap.classList.toggle('d-none', query !== '' && !name.includes(query));
-        });
-    }
-
-    function clearCollectionSearch() {
-        collectionsSearch.value = '';
-        filterCollectionOptions();
-    }
-
-    function updateCollectionsLabel() {
-        const checked = getCollectionCheckboxes().filter(function (input) { return input.checked; });
-        if (checked.length === 0) {
-            collectionsToggle.textContent = 'All review collections';
-        } else if (checked.length === 1) {
-            collectionsToggle.textContent = checked[0].value;
-        } else {
-            collectionsToggle.textContent = checked.length + ' collections';
-        }
-    }
-
-    function populateCollectionFilter(selected) {
-        collectionsOptions.replaceChildren();
-        collections.forEach(function (collection) {
-            const wrap = document.createElement('div');
-            wrap.className = 'form-check mb-1';
-            const input = document.createElement('input');
-            input.type = 'checkbox';
-            input.className = 'form-check-input review-collection-checkbox';
-            input.id = 'filter-collection-' + collection.name.replace(/[^a-zA-Z0-9_-]/g, '_');
-            input.value = collection.name;
-            input.checked = selected.includes(collection.name);
-            const label = document.createElement('label');
-            label.className = 'form-check-label small';
-            label.htmlFor = input.id;
-            label.textContent = collection.name;
-            wrap.append(input, label);
-            collectionsOptions.append(wrap);
-        });
-        clearCollectionSearch();
-        updateCollectionsLabel();
-    }
-
-    function selectedCollectionNames() {
-        return getCollectionCheckboxes()
-            .filter(function (input) { return input.checked; })
-            .map(function (input) { return input.value; });
-    }
-
-    function clearCollectionSelection() {
-        getCollectionCheckboxes().forEach(function (input) { input.checked = false; });
-        updateCollectionsLabel();
-    }
-
     function severityValue(document) {
         return firstValue(document, ['severity', 'status', 'impacts']);
     }
 
+    function activeMode() {
+        const checked = filterForm.querySelector('input[name="mode"]:checked');
+        return checked ? checked.value : 'cve';
+    }
+
     function buildFilterParams() {
         const params = new URLSearchParams();
-        new FormData(filterForm).forEach(function (value, key) {
-            if (key === 'include_unknown') return;
-            value = value.trim();
-            if (value) params.set(key, value);
-        });
+        params.set('mode', activeMode());
+        const search = document.getElementById('filter-search').value.trim();
+        const status = document.getElementById('filter-status').value.trim();
+        const windowValue = timeWindow.value;
+        if (search) params.set('search', search);
+        if (status) params.set('status', status);
         if (document.getElementById('filter-include-unknown').checked) {
             params.set('include_unknown', 'true');
         }
-        selectedCollectionNames().forEach(function (name) {
-            params.append('collection', name);
-        });
+        if (windowValue && windowValue !== 'all') {
+            params.set('time_window', windowValue);
+            if (windowValue === 'custom') {
+                const start = document.getElementById('filter-start').value.trim();
+                const end = document.getElementById('filter-end').value.trim();
+                if (start) params.set('start', start);
+                if (end) params.set('end', end);
+            }
+        }
         return params;
     }
 
-    collectionsSearch.addEventListener('input', filterCollectionOptions);
-    collectionsSearch.addEventListener('click', function (event) { event.stopPropagation(); });
-    collectionsSearch.addEventListener('keydown', function (event) { event.stopPropagation(); });
-    collectionsOptions.addEventListener('change', updateCollectionsLabel);
-    collectionsMenu.addEventListener('click', function (event) {
-        const action = event.target.closest('.collections-action');
-        if (!action) return;
-        event.preventDefault();
-        const checkboxes = action.dataset.action === 'all'
-            ? getVisibleCollectionCheckboxes()
-            : getCollectionCheckboxes();
-        checkboxes.forEach(function (input) {
-            input.checked = action.dataset.action === 'all';
-        });
-        updateCollectionsLabel();
-    });
-
-    function renderCollections() {
-        grid.replaceChildren();
-        const selectedCounts = selectedCountsByCollection();
-
-        collections.forEach(function (collection) {
-            const column = document.createElement('div');
-            column.className = 'col-12 col-md-6 col-lg-4';
-
-            const card = document.createElement('a');
-            card.className = 'card h-100 shadow-sm border-0 text-decoration-none text-body';
-            card.href = detailUrl.replace('__collection__', encodeURIComponent(collection.name));
-
-            const cardBody = document.createElement('div');
-            cardBody.className = 'card-body d-flex align-items-center gap-3';
-            const icon = document.createElement('i');
-            icon.className = 'bi bi-database-check fs-2 text-primary';
-            const text = document.createElement('div');
-            text.className = 'flex-grow-1';
-            const title = document.createElement('h5');
-            title.className = 'mb-1';
-            title.textContent = collection.name;
-            const meta = document.createElement('div');
-            meta.className = 'text-muted small';
-            meta.textContent = collection.count + ' document' + (collection.count === 1 ? '' : 's');
-            const selected = document.createElement('span');
-            selected.className = 'badge text-bg-primary ms-auto';
-            selected.textContent = (selectedCounts[collection.name] || 0) + ' selected';
-
-            text.append(title, meta);
-            cardBody.append(icon, text, selected);
-            card.append(cardBody);
-            column.append(card);
-            grid.append(column);
-        });
-    }
-
-    function populateCollectionFilterFromActive() {
-        const selected = activeFilters ? activeFilters.getAll('collection') : [];
-        populateCollectionFilter(selected);
-    }
-
-    function loadCollections() {
-        loading.classList.remove('d-none');
-        empty.classList.add('d-none');
-        error.classList.add('d-none');
-        grid.replaceChildren();
-        refresh.disabled = true;
-
-        fetch({{ url_for('review.get_review_collections')|tojson }})
-            .then(function (response) {
-                return response.json().then(function (body) {
-                    if (!response.ok) throw new Error(body.error || 'Unable to load review collections.');
-                    return body;
-                });
-            })
-            .then(function (body) {
-                collections = body.data;
-                populateCollectionFilterFromActive();
-                if (!body.data.length) {
-                    empty.classList.remove('d-none');
-                    return;
-                }
-
-                renderCollections();
-            })
-            .catch(function (reason) {
-                error.textContent = reason.message;
-                error.classList.remove('d-none');
-            })
-            .finally(function () {
-                loading.classList.add('d-none');
-                refresh.disabled = false;
+    function parseJsonResponse(response, fallback) {
+        const contentType = response.headers.get('Content-Type') || '';
+        if (contentType.includes('application/json')) {
+            return response.json().then(function (body) {
+                if (!response.ok) throw new Error(body.error || fallback);
+                return body;
             });
+        }
+        return response.text().then(function (text) {
+            if (!response.ok) {
+                throw new Error(text ? text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : fallback);
+            }
+            throw new Error(fallback);
+        });
+    }
+
+    function updateCustomWindow() {
+        customWindow.classList.toggle('d-none', timeWindow.value !== 'custom');
     }
 
     function updateSelection(collection, selectionId, checked) {
@@ -453,47 +379,234 @@
         if (checked) selections.push({ collection: collection, selection_id: selectionId });
         setSelections(selections);
         updateSelectedCount();
+        syncVisibleSelections();
     }
 
-    function addCell(row, value) {
+    function updateRelatedSelections(related, checked) {
+        const relatedKeys = new Set(related.map(function (item) {
+            return selectionKey(item.collection, item.selection_id);
+        }));
+        let selections = getSelections().filter(function (selection) {
+            return !relatedKeys.has(selectionKey(selection.collection, selection.selection_id));
+        });
+        if (checked) {
+            related.forEach(function (item) {
+                selections.push({ collection: item.collection, selection_id: item.selection_id });
+            });
+        }
+        setSelections(selections);
+        updateSelectedCount();
+        syncVisibleSelections();
+    }
+
+    function addHeader(label) {
+        const cell = document.createElement('th');
+        cell.scope = 'col';
+        cell.textContent = label;
+        resultsHead.append(cell);
+        return cell;
+    }
+
+    function addCell(row, value, className, truncate) {
         const cell = document.createElement('td');
-        cell.textContent = value || '—';
+        const text = value || '-';
+        cell.className = [className || '', truncate ? 'truncate-cell' : ''].filter(Boolean).join(' ');
+        cell.textContent = text;
+        if (truncate && text !== '-') cell.title = text;
+        row.append(cell);
+        return cell;
+    }
+
+    function classificationDisplay(document) {
+        const classification = document && document.classification;
+        if (!classification || typeof classification !== 'object') {
+            return { vendor: '-', product: '-' };
+        }
+        if (classification.status === 'unclassified') {
+            return { vendor: 'unclassified', product: 'unclassified' };
+        }
+        return {
+            vendor: classification.vendor || classification.best_vendor || '-',
+            product: classification.product || classification.best_product || '-',
+        };
+    }
+
+    function renderHeaders(mode) {
+        resultsHead.replaceChildren();
+        addHeader(mode === 'cve' ? 'Relate' : 'Select');
+        if (mode !== 'cve') addHeader('Collection');
+        if (mode !== 'cve') addHeader('Code / CVE');
+        addHeader('Title');
+        addHeader('Severity');
+        addHeader('Affected');
+        if (mode === 'cve') {
+            addHeader('Vendor');
+            addHeader('Product');
+        }
+        addHeader('Action');
+    }
+
+    function renderRelatedButtonCell(row, item) {
+        const cell = document.createElement('td');
+        const related = Array.isArray(item.related) ? item.related : [];
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-outline-primary btn-sm';
+        button.textContent = 'Relate (' + related.length + ')';
+        button.disabled = related.length === 0;
+        button.addEventListener('click', function () {
+            openRelatedModal(item);
+        });
+        cell.append(button);
         row.append(cell);
     }
 
-    function renderResults(body) {
-        resultsBody.replaceChildren();
-        const keys = selectedKeys();
+    function addRelatedCell(row, value, className) {
+        const cell = document.createElement('td');
+        const text = value || '-';
+        cell.className = [className || '', 'truncate-cell'].filter(Boolean).join(' ');
+        cell.textContent = text;
+        if (text !== '-') cell.title = text;
+        row.append(cell);
+    }
 
-        body.data.forEach(function (item) {
-            const projectedDocument = item.document;
+    function showDocument(title, reviewDocument, options) {
+        options = options || {};
+        documentModalTitle.textContent = title;
+        documentJson.textContent = JSON.stringify(reviewDocument || {}, null, 2);
+
+        if (options.fromRelatedModal && relatedModalElement.classList.contains('show')) {
+            restoreRelatedModalAfterDocument = true;
+            relatedModalElement.addEventListener('hidden.bs.modal', function onRelatedHidden() {
+                documentModal.show();
+            }, { once: true });
+            relatedModal.hide();
+            return;
+        }
+
+        restoreRelatedModalAfterDocument = false;
+        documentModal.show();
+    }
+
+    function renderRelatedModalRows(related) {
+        const keys = selectedKeys();
+        relatedBody.replaceChildren();
+        related.forEach(function (relatedItem) {
             const row = document.createElement('tr');
             const selectCell = document.createElement('td');
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
-            checkbox.className = 'form-check-input';
-            checkbox.checked = keys.has(selectionKey(item.collection, item.selection_id));
-            checkbox.setAttribute('aria-label', 'Select review document');
+            checkbox.className = 'form-check-input related-selection';
+            checkbox.dataset.selectionCollection = relatedItem.collection;
+            checkbox.dataset.selectionId = relatedItem.selection_id;
+            checkbox.checked = keys.has(selectionKey(relatedItem.collection, relatedItem.selection_id));
+            checkbox.setAttribute('aria-label', 'Select related ' + (relatedItem.code || relatedItem.title || relatedItem.selection_id));
             checkbox.addEventListener('change', function () {
-                updateSelection(item.collection, item.selection_id, checkbox.checked);
+                updateSelection(relatedItem.collection, relatedItem.selection_id, checkbox.checked);
             });
             selectCell.append(checkbox);
             row.append(selectCell);
-            addCell(row, item.collection);
-            addCell(row, firstValue(projectedDocument, ['code', 'cve']));
-            addCell(row, firstValue(projectedDocument, ['title']));
-            addCell(row, severityValue(projectedDocument));
-            addCell(row, firstValue(projectedDocument, ['affected', 'affected_products']));
+            addRelatedCell(row, relatedItem.collection);
+
+            const codeCell = document.createElement('td');
+            const codeText = relatedItem.code || relatedItem.selection_id || '-';
+            codeCell.className = 'fw-medium truncate-cell';
+            codeCell.textContent = codeText;
+            if (codeText !== '-') codeCell.title = codeText;
+            if (relatedItem.is_self) {
+                const self = document.createElement('span');
+                self.className = 'badge text-bg-secondary ms-2';
+                self.textContent = 'self';
+                codeCell.append(self);
+            }
+            row.append(codeCell);
+
+            addRelatedCell(row, relatedItem.title);
+            addRelatedCell(row, relatedItem.severity);
+            addRelatedCell(row, relatedItem.affected, 'small');
 
             const actionCell = document.createElement('td');
             const viewButton = document.createElement('button');
             viewButton.type = 'button';
             viewButton.className = 'btn btn-outline-primary btn-sm';
-            viewButton.textContent = 'View';
+            viewButton.innerHTML = '<i class="bi bi-eye me-1"></i>View';
             viewButton.addEventListener('click', function () {
-                documentModalTitle.textContent = item.collection + ' Document';
-                documentJson.textContent = JSON.stringify(projectedDocument, null, 2);
-                documentModal.show();
+                showDocument(relatedItem.collection + ' Document', relatedItem.document, { fromRelatedModal: true });
+            });
+            actionCell.append(viewButton);
+            row.append(actionCell);
+            relatedBody.append(row);
+        });
+    }
+
+    function openRelatedModal(item) {
+        currentRelated = Array.isArray(item.related) ? item.related : [];
+        const code = firstValue(item.document, ['code', 'cve']) || item.selection_id;
+        relatedModalTitle.textContent = 'Related CVE Records: ' + code;
+        relatedCount.textContent = currentRelated.length + ' related record' + (currentRelated.length === 1 ? '' : 's');
+        relatedEmpty.classList.toggle('d-none', currentRelated.length !== 0);
+        relatedTableWrap.classList.toggle('d-none', currentRelated.length === 0);
+        relatedSelectAll.disabled = currentRelated.length === 0;
+        relatedClear.disabled = currentRelated.length === 0;
+        renderRelatedModalRows(currentRelated);
+        relatedModal.show();
+    }
+
+    function renderSelectCell(row, item, keys) {
+        const selectCell = document.createElement('td');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'form-check-input';
+        checkbox.dataset.selectionCollection = item.collection;
+        checkbox.dataset.selectionId = item.selection_id;
+        checkbox.checked = keys.has(selectionKey(item.collection, item.selection_id));
+        checkbox.setAttribute('aria-label', 'Select review document');
+        checkbox.addEventListener('change', function () {
+            updateSelection(item.collection, item.selection_id, checkbox.checked);
+        });
+        selectCell.append(checkbox);
+        row.append(selectCell);
+    }
+
+    function renderResults(body) {
+        currentBody = body;
+        const mode = activeMode();
+        const keys = selectedKeys();
+        resultsBody.replaceChildren();
+        renderHeaders(mode);
+        updateModeActions();
+        resultsTitle.textContent = mode === 'cve' ? 'CVE Results' : 'Non-CVE Results';
+
+        body.data.forEach(function (item) {
+            const projectedDocument = item.document;
+            const row = document.createElement('tr');
+            if (mode === 'cve') {
+                renderRelatedButtonCell(row, item);
+            } else {
+                renderSelectCell(row, item, keys);
+            }
+            if (mode !== 'cve') {
+                addCell(row, item.collection, '', true);
+            }
+            if (mode !== 'cve') {
+                addCell(row, firstValue(projectedDocument, ['code', 'cve']), 'fw-medium', true);
+            }
+            addCell(row, firstValue(projectedDocument, ['title']), '', true);
+            addCell(row, severityValue(projectedDocument), '', true);
+            addCell(row, firstValue(projectedDocument, ['affected', 'affected_products']), 'small', true);
+            if (mode === 'cve') {
+                const classified = classificationDisplay(projectedDocument);
+                addCell(row, classified.vendor, '', true);
+                addCell(row, classified.product, '', true);
+            }
+
+            const actionCell = document.createElement('td');
+            const viewButton = document.createElement('button');
+            viewButton.type = 'button';
+            viewButton.className = 'btn btn-outline-primary btn-sm';
+            viewButton.innerHTML = '<i class="bi bi-eye me-1"></i>View';
+            viewButton.addEventListener('click', function () {
+                showDocument(item.collection + ' Document', projectedDocument);
             });
             actionCell.append(viewButton);
             row.append(actionCell);
@@ -512,58 +625,130 @@
     }
 
     function runSearch(page) {
-        if (!activeFilters) return;
-        overview.classList.add('d-none');
-        searchResults.classList.remove('d-none');
+        activeFilters = buildFilterParams();
         resultsLoading.classList.remove('d-none');
         resultsEmpty.classList.add('d-none');
         resultsTableWrap.classList.add('d-none');
         pagination.classList.add('d-none');
         error.classList.add('d-none');
+        statusAlert.classList.add('d-none');
+        refresh.disabled = true;
+        autoSelectBest.disabled = true;
 
         const params = new URLSearchParams(activeFilters);
         params.set('page', page);
         params.set('page_size', pageSize.value);
         fetch(searchUrl + '?' + params.toString())
-            .then(function (response) {
-                return response.json().then(function (body) {
-                    if (!response.ok) throw new Error(body.error || 'Unable to search review documents.');
-                    return body;
-                });
-            })
+            .then(function (response) { return parseJsonResponse(response, 'Unable to search review documents.'); })
             .then(renderResults)
             .catch(function (reason) {
                 showError(reason.message);
             })
             .finally(function () {
                 resultsLoading.classList.add('d-none');
+                refresh.disabled = false;
+                updateModeActions();
             });
     }
 
-    function showCollectionOverview() {
-        activeFilters = null;
-        filterForm.reset();
-        clearCollectionSelection();
-        searchResults.classList.add('d-none');
-        overview.classList.remove('d-none');
+    function applyAutoSelectResult(body) {
+        const removeKeys = new Set(Array.isArray(body.selection_keys_to_remove) ? body.selection_keys_to_remove : []);
+        const selectionsToAdd = Array.isArray(body.selections) ? body.selections : [];
+        const selected = new Set();
+        let selections = getSelections().filter(function (selection) {
+            const key = selectionKey(selection.collection, selection.selection_id);
+            if (removeKeys.has(key)) return false;
+            selected.add(key);
+            return true;
+        });
+
+        selectionsToAdd.forEach(function (selection) {
+            const key = selectionKey(selection.collection, selection.selection_id);
+            if (selected.has(key)) return;
+            selected.add(key);
+            selections.push({
+                collection: selection.collection,
+                selection_id: selection.selection_id,
+            });
+        });
+
+        setSelections(selections);
+        updateSelectedCount();
+        syncVisibleSelections();
+        if (currentRelated.length) renderRelatedModalRows(currentRelated);
+        showStatus(
+            'Auto selected ' + body.selected + ' best detail record'
+            + (body.selected === 1 ? '' : 's')
+            + ' from ' + body.processed + ' matching CVE'
+            + (body.processed === 1 ? '' : 's')
+            + (body.skipped ? '; skipped ' + body.skipped + '.' : '.')
+        );
+    }
+
+    function runAutoSelectBest() {
+        if (activeMode() !== 'cve') return;
+        const params = buildFilterParams();
+        params.set('mode', 'cve');
         error.classList.add('d-none');
+        statusAlert.classList.add('d-none');
+        autoSelectBest.disabled = true;
+        autoSelectBest.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Auto selecting...';
+
+        fetch(autoSelectUrl + '?' + params.toString())
+            .then(function (response) { return parseJsonResponse(response, 'Unable to auto-select best records.'); })
+            .then(applyAutoSelectResult)
+            .catch(function (reason) {
+                showError(reason.message);
+            })
+            .finally(function () {
+                autoSelectBest.innerHTML = '<i class="bi bi-magic me-1"></i>Auto Select Best';
+                updateModeActions();
+            });
     }
 
     filterForm.addEventListener('submit', function (event) {
         event.preventDefault();
-        activeFilters = buildFilterParams();
         runSearch(1);
     });
-
-    clearFilter.addEventListener('click', showCollectionOverview);
+    filterForm.querySelectorAll('input[name="mode"]').forEach(function (input) {
+        input.addEventListener('change', function () {
+            updateModeActions();
+            runSearch(1);
+        });
+    });
+    timeWindow.addEventListener('change', function () {
+        updateCustomWindow();
+        if (timeWindow.value !== 'custom') runSearch(1);
+    });
+    clearFilter.addEventListener('click', function () {
+        filterForm.reset();
+        document.getElementById('mode-cve').checked = true;
+        updateCustomWindow();
+        runSearch(1);
+    });
     previousPage.addEventListener('click', function () { runSearch(currentPage - 1); });
     nextPage.addEventListener('click', function () { runSearch(currentPage + 1); });
     pageSize.addEventListener('change', function () { runSearch(1); });
+    refresh.addEventListener('click', function () { runSearch(currentPage); });
+    autoSelectBest.addEventListener('click', runAutoSelectBest);
+    relatedSelectAll.addEventListener('click', function () {
+        updateRelatedSelections(currentRelated, true);
+    });
+    relatedClear.addEventListener('click', function () {
+        updateRelatedSelections(currentRelated, false);
+    });
+    documentModalElement.addEventListener('hidden.bs.modal', function () {
+        if (!restoreRelatedModalAfterDocument || !currentRelated.length) {
+            return;
+        }
+        restoreRelatedModalAfterDocument = false;
+        relatedModal.show();
+    });
 
     clearSelection.addEventListener('click', function () {
         localStorage.removeItem(selectionStorageKey);
         updateSelectedCount();
-        if (activeFilters) runSearch(currentPage);
+        if (currentBody) renderResults(currentBody);
     });
 
     exportButton.addEventListener('click', function () {
@@ -602,7 +787,7 @@
                 URL.revokeObjectURL(url);
                 localStorage.removeItem(selectionStorageKey);
                 updateSelectedCount();
-                if (activeFilters) runSearch(currentPage);
+                if (currentBody) renderResults(currentBody);
             })
             .catch(function (reason) {
                 showError(reason.message);
@@ -613,9 +798,10 @@
             });
     });
 
-    refresh.addEventListener('click', loadCollections);
     updateSelectedCount();
-    loadCollections();
+    updateModeActions();
+    updateCustomWindow();
+    runSearch(1);
 })();
 </script>
 {% endblock %}
