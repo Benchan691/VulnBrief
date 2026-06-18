@@ -253,9 +253,11 @@
             tr.children[2].textContent = item.report_profile.enabled ? (item.report_profile.schedule_enabled ? 'Scheduled · next ' + displayDate(item.report_profile.next_run_at) : 'Manual') : 'Disabled';
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
             if (item.newsletter_profile.enabled) actions.innerHTML += '<a class="btn btn-outline-primary btn-sm" href="/subscriptions/' + encodeURIComponent(item.email) + '/newsletter-feed">View Feed</a>';
-            actions.innerHTML += '<button class="btn btn-success btn-sm run">Run Report</button><button class="btn btn-outline-primary btn-sm edit">Edit</button><button class="btn btn-outline-danger btn-sm remove">Delete</button>';
-            actions.querySelector('.run').disabled = !item.report_profile.enabled;
-            actions.querySelector('.run').onclick = function () { requestJson(apiUrl(item.email, '/run'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(body){ if (!body.count) return showMessage('No records matched the report profile.', 'warning'); localStorage.setItem(selectionKey, JSON.stringify(body.selections)); window.location.href = reviewsPageUrl; }).catch(function(e){showMessage(e.message,'danger');}); };
+            if (item.report_profile.enabled) {
+                actions.innerHTML += '<button class="btn btn-success btn-sm run">Run Report</button>';
+                actions.querySelector('.run').onclick = function () { requestJson(apiUrl(item.email, '/run'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(body){ if (!body.count) return showMessage('No records matched the report profile.', 'warning'); localStorage.setItem(selectionKey, JSON.stringify(body.selections)); window.location.href = reviewsPageUrl; }).catch(function(e){showMessage(e.message,'danger');}); };
+            }
+            actions.innerHTML += '<button class="btn btn-outline-primary btn-sm edit">Edit</button><button class="btn btn-outline-danger btn-sm remove">Delete</button>';
             actions.querySelector('.edit').onclick = function () { openEditor(item); };
             actions.querySelector('.remove').onclick = function () { if (confirm('Delete subscription for ' + item.email + '?')) requestJson(apiUrl(item.email), {method:'DELETE'}).then(load).catch(function(e){showMessage(e.message,'danger');}); };
             tr.children[3].append(actions); rows.append(tr);
