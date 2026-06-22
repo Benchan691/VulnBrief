@@ -61,7 +61,6 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         ENRICHED_LLM_MODEL='qwen-test',
         ENRICHED_LLM_TIMEOUT_SECONDS='121',
         ENRICHED_LLM_MAX_OUTPUT_TOKENS='3000',
-        ENRICHED_LLM_JSON_RETRIES='3',
         ENRICHED_LLM_PAGE_CHARS='9000',
         RABBITMQ_MAX_PRIORITY='8',
         RABBITMQ_MAX_QUEUE_SIZE='19999',
@@ -119,7 +118,6 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['ENRICHED_LLM_MODEL'] == 'qwen-test'
     assert loaded['ENRICHED_LLM_TIMEOUT_SECONDS'] == 121
     assert loaded['ENRICHED_LLM_MAX_OUTPUT_TOKENS'] == 3000
-    assert loaded['ENRICHED_LLM_JSON_RETRIES'] == 3
     assert loaded['ENRICHED_LLM_PAGE_CHARS'] == 9000
     assert loaded['RABBITMQ_URL'] == 'amqp://rabbit.example/'
     assert loaded['RABBITMQ_QUEUE_NAME'] == 'summaries'

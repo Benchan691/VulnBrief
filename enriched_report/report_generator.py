@@ -2,8 +2,18 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from .llama_client import EnrichedLlamaClient
+from jsonschema import ValidationError
+
+from .llama_client import EnrichedLlamaClient, EnrichedLLMError
 from .schemas import ENRICHED_REPORT_SCHEMA, validate_enriched_report
+from .section_parsers import (
+    SECTION_TEXT_FORMATS,
+    SectionParseError,
+    build_appendix,
+    build_vulnerability_detail_table,
+    parse_section_text,
+    validate_section,
+)
 from .verifier import verify_and_finalize_report
 
 logger = logging.getLogger(__name__)
@@ -18,6 +28,8 @@ SECTION_SCHEMAS = {
     'executive_summary': ENRICHED_REPORT_SCHEMA['properties']['executive_summary'],
     'management_brief': ENRICHED_REPORT_SCHEMA['properties']['management_brief'],
 }
+
+DETERMINISTIC_SECTIONS = frozenset({'vulnerability_detail_table', 'appendix'})
 
 
 def _card_payload(cards):
@@ -68,25 +80,49 @@ def _section_prompt(section_name, cards, metrics, evidence_cards, language):
     }, ensure_ascii=False, default=str)
 
 
-def _normalize_section(section_name, raw):
-    if section_name in raw and isinstance(raw[section_name], dict):
-        return raw[section_name]
-    return raw
+def _build_deterministic_section(section_name, cards, metrics, evidence_cards):
+    if section_name == 'vulnerability_detail_table':
+        return build_vulnerability_detail_table(cards)
+    if section_name == 'appendix':
+        return build_appendix(cards, evidence_cards, metrics)
+    raise ValueError(f'Unsupported deterministic section: {section_name}')
+
+
+def _section_system_prompt(section_name):
+    output_format = SECTION_TEXT_FORMATS[section_name]
+    return (
+        'You write one section of an enriched weekly cybersecurity report in plain text. '
+        'Use only the supplied vulnerability_cards, report_metrics, and evidence references. '
+        'Do not invent facts. Do not return JSON, markdown, bullet lists outside the format, '
+        'or field labels other than those shown below. '
+        f'Use exactly this output format:\n{output_format}'
+    )
+
+
+def _generate_text_section(section_name, cards, metrics, evidence_cards, client, language):
+    schema = SECTION_SCHEMAS[section_name]
+    system = _section_system_prompt(section_name)
+    user_prompt = _section_prompt(section_name, cards, metrics, evidence_cards, language)
+    try:
+        text, _ = client.complete_text(
+            system,
+            user_prompt,
+            max_output_tokens=client.report_max_output_tokens,
+        )
+        section = parse_section_text(section_name, text)
+        return validate_section(section_name, section, schema)
+    except EnrichedLLMError:
+        raise
+    except (SectionParseError, ValidationError) as exc:
+        raise EnrichedLLMError(str(exc)) from exc
 
 
 def _generate_section(section_name, cards, metrics, evidence_cards, client, language):
-    system = (
-        'You write one section of an enriched weekly cybersecurity report as valid JSON. '
-        'Follow the provided JSON schema exactly.'
-    )
-    raw, _ = client.complete_json(
-        system,
-        _section_prompt(section_name, cards, metrics, evidence_cards, language),
-        SECTION_SCHEMAS[section_name],
-        f'enriched_{section_name}',
-        max_output_tokens=client.report_max_output_tokens,
-    )
-    return _normalize_section(section_name, raw)
+    schema = SECTION_SCHEMAS[section_name]
+    if section_name in DETERMINISTIC_SECTIONS:
+        section = _build_deterministic_section(section_name, cards, metrics, evidence_cards)
+        return validate_section(section_name, section, schema)
+    return _generate_text_section(section_name, cards, metrics, evidence_cards, client, language)
 
 
 def generate_enriched_report(
@@ -96,6 +132,7 @@ def generate_enriched_report(
     config,
     report_language='en',
     client=None,
+    progress_callback=None,
 ):
     client = client or EnrichedLlamaClient(config)
     cards = sorted(vulnerability_cards, key=lambda item: item.get('priority_score', 0), reverse=True)
@@ -121,6 +158,12 @@ def generate_enriched_report(
         sections[section_name] = _generate_section(
             section_name, cards, report_metrics, evidence_cards, client, report_language,
         )
+        if progress_callback is not None:
+            progress_callback(
+                index,
+                total_sections,
+                f'Generated report section {section_name}',
+            )
 
     report = {
         'title': 'Enriched Weekly Cybersecurity Report',

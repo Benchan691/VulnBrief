@@ -2,19 +2,11 @@ import copy
 import json
 from datetime import datetime, timezone
 
+from jsonschema import ValidationError
+
+from .llama_client import EnrichedLLMError
 from .schemas import validate_enriched_report
-
-
-AI_VERIFICATION_SCHEMA = {
-    'type': 'object',
-    'required': ['unsupported_claims'],
-    'properties': {
-        'unsupported_claims': {
-            'type': 'array',
-            'items': {'type': 'string'},
-        },
-    },
-}
+from .section_parsers import SectionParseError, parse_unsupported_claims
 
 
 def _now_iso():
@@ -99,23 +91,32 @@ def ai_verify(report, vulnerability_cards, evidence_cards, client):
         for card in evidence_cards
     ]
     system = (
-        'You verify a cybersecurity report against structured evidence. Return JSON with '
-        'unsupported_claims: an array of exact report text snippets that are not supported. '
-        'Do not add commentary.'
+        'You verify a cybersecurity report against structured evidence. Return plain text only. '
+        'List exact unsupported report text snippets under UNSUPPORTED_CLAIMS. '
+        'Use one bullet per snippet. If nothing is unsupported, return exactly:\n'
+        'UNSUPPORTED_CLAIMS:\n'
+        'NONE\n'
+        'Do not return JSON or commentary.'
     )
     prompt = json.dumps({
         'report': report,
         'vulnerability_cards': vulnerability_cards,
         'source_evidence_cards': evidence,
     }, ensure_ascii=False, default=str)
-    result, _ = client.complete_json(
-        system,
-        prompt,
-        AI_VERIFICATION_SCHEMA,
-        'enriched_report_verification',
-        max_output_tokens=client.report_max_output_tokens,
-    )
-    return result.get('unsupported_claims') or []
+    try:
+        text, _ = client.complete_text(
+            system,
+            prompt,
+            max_output_tokens=client.report_max_output_tokens,
+        )
+        claims = parse_unsupported_claims(text)
+        if not all(isinstance(claim, str) and claim.strip() for claim in claims):
+            raise SectionParseError('Unsupported claims must be non-empty strings.')
+        return claims
+    except EnrichedLLMError:
+        raise
+    except (SectionParseError, ValidationError) as exc:
+        raise EnrichedLLMError(str(exc)) from exc
 
 
 def verify_and_finalize_report(report, vulnerability_cards, report_metrics, evidence_cards, client):
@@ -130,4 +131,3 @@ def verify_and_finalize_report(report, vulnerability_cards, report_metrics, evid
         'verified_at': _now_iso(),
     }
     return validate_enriched_report(report)
-

@@ -4,12 +4,18 @@ import logging
 from bson import ObjectId
 
 from mongo import get_vulnerabilities_database, get_web_database
+from report_job_progress import (
+    JobLogHandler,
+    append_job_log,
+    mark_job_started,
+    update_job_progress,
+)
 
 from .candidate_loader import load_candidates_from_inputs
 from .card_merger import merge_vulnerability_cards
 from .evidence_extractor import extract_evidence_cards
 from .llama_client import EnrichedLlamaClient
-from .pipeline_collections import ensure_indexes
+from .pipeline_collections import collection, ensure_indexes
 from .report_generator import generate_enriched_report
 from .result_ranker import rank_results_for_run
 from .scorer import score_cards_and_metrics
@@ -28,6 +34,59 @@ def _job_collection():
 
 def _input_collection():
     return get_web_database()['report_job_inputs']
+
+
+FIXED_STAGE_UNITS = 6
+REPORT_SECTION_UNITS = 7
+
+
+class _EnrichedProgress:
+    def __init__(self, job_id):
+        self.job_id = job_id
+        self.tavily_total = 0
+        self.evidence_total = 0
+        self.total = 1
+
+    def set_tavily_total(self, tavily_total):
+        self.tavily_total = max(int(tavily_total), 0)
+        self._refresh_total(self.evidence_total or self.tavily_total)
+
+    def set_evidence_total(self, evidence_total):
+        self.evidence_total = max(int(evidence_total), 0)
+        self._refresh_total(self.evidence_total)
+
+    def _refresh_total(self, evidence_total):
+        self.total = FIXED_STAGE_UNITS + self.tavily_total + evidence_total + REPORT_SECTION_UNITS
+
+    def step(self, current, label, message=None):
+        update_job_progress(
+            self.job_id,
+            current=current,
+            total=self.total,
+            label=label,
+            message=message,
+        )
+
+    def tavily_progress(self, completed, message):
+        self.step(
+            3 + completed,
+            f'Searching Tavily {completed}/{self.tavily_total}',
+            message,
+        )
+
+    def evidence_progress(self, index, message):
+        self.step(
+            4 + self.tavily_total + index,
+            f'Extracting evidence {index}/{self.evidence_total}',
+            message,
+        )
+
+    def report_progress(self, index, message):
+        self.step(
+            6 + self.tavily_total + self.evidence_total + index,
+            f'Generating report section {index}/{REPORT_SECTION_UNITS}',
+            message,
+        )
 
 
 def _stage(job_id, stage, extra=None):
@@ -61,12 +120,17 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
         web_database = get_web_database()
         vulnerability_database = get_vulnerabilities_database()
         config = app.config
+        log_handler = JobLogHandler(job_id)
+        enriched_logger = logging.getLogger('enriched_report')
+        enriched_logger.addHandler(log_handler)
+        progress = _EnrichedProgress(job_id)
         try:
             job = jobs.find_one({'_id': job_object_id})
             if job is None or job.get('status') == 'cancelled':
                 return
             if job.get('status') not in ('queued', 'running'):
                 return
+            mark_job_started(job_id)
             jobs.update_one(
                 {'_id': job_object_id, 'status': {'$in': ['queued', 'running']}},
                 {'$set': {
@@ -86,6 +150,8 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 config.get('ENRICHED_LLM_BASE_URL'),
                 config.get('ENRICHED_LLM_MODEL'),
             )
+            append_job_log(job_id, 'Starting enriched weekly pipeline.')
+            progress.step(1, 'Starting pipeline', 'Starting enriched weekly pipeline.')
 
             inputs = list(inputs_collection.find({'job_id': job_object_id}).sort('position', 1))
             if not inputs:
@@ -94,6 +160,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'loading_candidates')
+            progress.step(2, 'Loading candidates', 'Loading CVE candidates.')
             candidates = load_candidates_from_inputs(
                 run_id,
                 vulnerability_database,
@@ -107,18 +174,30 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'creating_search_tasks', {'processed_count': 0})
+            progress.step(3, 'Creating search tasks', 'Creating Tavily search tasks.')
             write_search_tasks(web_database, run_id, candidates)
+            tavily_total = collection(web_database, 'search_enrichment_tasks').count_documents({'run_id': run_id})
+            progress.set_tavily_total(tavily_total)
 
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'searching_tavily')
-            tavily_client = tavily_client or TavilyClient(
-                config.get('TAVILY_API_KEY'),
-                config.get('TAVILY_SEARCH_DEPTH', 'basic'),
-                config.get('TAVILY_MAX_RESULTS', 5),
-                config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
+
+            def on_tavily_progress(completed, total, message):
+                progress.tavily_progress(completed, message)
+
+            execute_pending_search_tasks(
+                web_database,
+                run_id,
+                config,
+                tavily_client or TavilyClient(
+                    config.get('TAVILY_API_KEY'),
+                    config.get('TAVILY_SEARCH_DEPTH', 'basic'),
+                    config.get('TAVILY_MAX_RESULTS', 5),
+                    config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
+                ),
+                progress_callback=on_tavily_progress,
             )
-            execute_pending_search_tasks(web_database, run_id, config, tavily_client)
 
             if _cancelled(job_object_id):
                 return
@@ -130,26 +209,57 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
             )
             if not filtered:
                 raise ValueError('No relevant Tavily enrichment results were found for selected CVEs.')
+            evidence_total = len(filtered)
+            progress.set_evidence_total(evidence_total)
+            progress.step(
+                4 + tavily_total,
+                'Ranking results',
+                f'Ranked {evidence_total} enrichment results.',
+            )
 
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'extracting_evidence')
             llama_client = llama_client or EnrichedLlamaClient(config)
-            evidence_cards = extract_evidence_cards(web_database, run_id, config, llama_client)
+
+            def on_evidence_progress(index, total, message):
+                progress.evidence_progress(index, message)
+
+            evidence_cards = extract_evidence_cards(
+                web_database,
+                run_id,
+                config,
+                llama_client,
+                progress_callback=on_evidence_progress,
+            )
 
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'merging_cards')
+            progress.step(
+                5 + tavily_total + evidence_total,
+                'Merging vulnerability cards',
+                'Merging evidence into vulnerability cards.',
+            )
             vulnerability_cards = merge_vulnerability_cards(web_database, run_id)
 
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'scoring')
+            progress.step(
+                6 + tavily_total + evidence_total,
+                'Scoring vulnerabilities',
+                'Scoring vulnerability cards.',
+            )
             vulnerability_cards, metrics = score_cards_and_metrics(web_database, run_id)
 
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'generating_report')
+
+            def on_report_progress(index, total, message):
+                progress.report_progress(index, message)
+
             report = generate_enriched_report(
                 vulnerability_cards,
                 metrics,
@@ -157,6 +267,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 config,
                 job.get('report_language', 'en'),
                 llama_client,
+                progress_callback=on_report_progress,
             )
 
             jobs.update_one(
@@ -168,13 +279,20 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                     'processed_count': len(vulnerability_cards),
                     'current_position': len(vulnerability_cards),
                     'source_count': len(candidates),
+                    'progress_percent': 100,
+                    'progress_current': progress.total,
+                    'progress_total': progress.total,
+                    'progress_label': 'Completed',
+                    'estimated_seconds_remaining': 0,
                     'completed_at': _now(),
                     'updated_at': _now(),
                 }},
             )
+            append_job_log(job_id, 'Enriched weekly report completed.')
         except Exception as exc:
             if _cancelled(job_object_id):
                 return
+            append_job_log(job_id, f'Pipeline failed: {exc}')
             jobs.update_one(
                 {'_id': job_object_id, 'status': {'$ne': 'cancelled'}},
                 {'$set': {
@@ -184,5 +302,5 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 }},
             )
         finally:
+            enriched_logger.removeHandler(log_handler)
             inputs_collection.delete_many({'job_id': job_object_id})
-

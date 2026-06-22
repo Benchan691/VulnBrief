@@ -607,12 +607,6 @@ def load_application_config(base_dir, require_local=True):
             ('enriched', 'llm_report_max_output_tokens'),
             4096,
         ),
-        'ENRICHED_LLM_JSON_RETRIES': _resolve_int(
-            'ENRICHED_LLM_JSON_RETRIES',
-            file_config,
-            ('enriched', 'llm_json_retries'),
-            2,
-        ),
         'ENRICHED_LLM_CONNECTION_RETRIES': _resolve_int(
             'ENRICHED_LLM_CONNECTION_RETRIES',
             file_config,
@@ -630,12 +624,6 @@ def load_application_config(base_dir, require_local=True):
             file_config,
             ('enriched', 'llm_page_chars'),
             4500,
-        ),
-        'ENRICHED_LLM_USE_STRICT_SCHEMA': _resolve_bool(
-            'ENRICHED_LLM_USE_STRICT_SCHEMA',
-            file_config,
-            ('enriched', 'llm_use_strict_schema'),
-            False,
         ),
         'ENRICHED_LLM_DISABLE_THINKING': _resolve_bool(
             'ENRICHED_LLM_DISABLE_THINKING',

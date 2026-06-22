@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from .evidence_cache import lookup_cached_payload, store_cached_payload
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
 from .pipeline_collections import collection
-from .schemas import SOURCE_EVIDENCE_CARD_SCHEMA, validate_source_evidence_card
+from .schemas import TASK_TYPES, validate_source_evidence_card
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +85,9 @@ def _prompt(result, candidate, page_char_limit):
     task_type = result['task_type']
     system = (
         'You extract cybersecurity evidence from one source page. Use only the supplied page '
-        'content. Do not infer or invent facts. Return one flat JSON object that follows the '
-        'JSON schema exactly. Copy context fields unchanged. Escape double quotes inside string '
-        'values. For text fields use null when unsupported. For cisa_kev use true, false, or null.'
+        'content. Do not infer or invent facts. Answer only the requested task_type in plain text. '
+        'Write 2-4 sentences maximum. If the page does not support an answer, return exactly: NULL. '
+        'Do not return JSON, markdown, bullet lists, or field labels.'
     )
     user = {
         'task_type': task_type,
@@ -98,35 +98,20 @@ def _prompt(result, candidate, page_char_limit):
             'title': candidate.get('title'),
         },
         'source': source,
-        'context': {
-            'run_id': result['run_id'],
-            'candidate_id': result['candidate_id'],
-            'source_url': result.get('url'),
-        },
-        'example_response': {
-            'run_id': result['run_id'],
-            'candidate_id': result['candidate_id'],
-            'cve_id': result['cve_id'],
-            'task_type': task_type,
-            'source_url': result.get('url') or '',
-            'confidence': 'medium',
-            'extracted_at': _now_iso(),
-            'title': None,
-            'what_happened': None,
-            'why_matters': None,
-            'how_to_respond': None,
-            'affected_versions': [],
-            'fixed_versions': [],
-            'cvss_score': None,
-            'cvss_vector': None,
-            'exploit_status': None,
-            'cisa_kev': None,
-            'epss': None,
-            'business_impact': None,
-            'references': [],
-        },
     }
     return system, json.dumps(user, ensure_ascii=False, default=str)
+
+
+def _parse_text_response(text, task_type):
+    if task_type not in TASK_TYPES:
+        return {}
+    cleaned = (text or '').strip()
+    if not cleaned or cleaned.upper() == 'NULL':
+        return {}
+    return {
+        task_type: cleaned,
+        'confidence': 'medium',
+    }
 
 
 def _unwrap_card_payload(raw):
@@ -189,7 +174,7 @@ def _normalize_card(raw, result):
     return validate_source_evidence_card(card)
 
 
-def extract_evidence_cards(web_database, run_id, config, client=None):
+def extract_evidence_cards(web_database, run_id, config, client=None, progress_callback=None):
     candidates = {
         item['candidate_id']: item
         for item in collection(web_database, 'candidate_vulnerability_items').find({'run_id': run_id})
@@ -220,6 +205,12 @@ def extract_evidence_cards(web_database, run_id, config, client=None):
                 result.get('url'),
             )
             cards.append(_normalize_card(cached_payload, result))
+            if progress_callback is not None:
+                progress_callback(
+                    index,
+                    total,
+                    f'Evidence cache hit {index}/{total} {result.get("cve_id")} {result.get("task_type")}',
+                )
             continue
         logger.info(
             'enriched llm evidence task %d/%d cve=%s task_type=%s',
@@ -231,13 +222,12 @@ def extract_evidence_cards(web_database, run_id, config, client=None):
         system, prompt = _prompt(result, candidate, page_char_limit)
         extracted = False
         try:
-            raw, _ = client.complete_json(
+            text, _ = client.complete_text(
                 system,
                 prompt,
-                schema=SOURCE_EVIDENCE_CARD_SCHEMA,
-                schema_name='source_evidence_card',
                 max_output_tokens=client.evidence_max_output_tokens,
             )
+            raw = _parse_text_response(text, result['task_type'])
             card = _normalize_card(raw, result)
             extracted = True
         except EnrichedLLMError as exc:
@@ -252,6 +242,12 @@ def extract_evidence_cards(web_database, run_id, config, client=None):
         if cache_enabled and extracted:
             store_cached_payload(web_database, result, card, cache_version)
         cards.append(card)
+        if progress_callback is not None:
+            progress_callback(
+                index,
+                total,
+                f'Evidence extracted {index}/{total} {result.get("cve_id")} {result.get("task_type")}',
+            )
 
     if cache_enabled:
         logger.info(

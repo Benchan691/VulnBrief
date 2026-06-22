@@ -1224,6 +1224,33 @@ def test_running_report_preview_renders_stored_item_results(client):
             get_web_database()['report_job_results'].delete_many({'job_id': job_id})
 
 
+def test_report_job_logs_endpoint_returns_pipeline_logs(client):
+    authenticate(client)
+    with app.app_context():
+        job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'running',
+            'source_count': 1,
+            'pipeline_logs': ['Starting job.', 'Halfway done.'],
+            'progress_percent': 50,
+            'status_message': 'Halfway done.',
+        }).inserted_id
+    try:
+        response = client.get(f'/api/reports/{job_id}/logs')
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body['logs'] == ['Starting job.', 'Halfway done.']
+
+        listed = client.get('/api/reports')
+        assert listed.status_code == 200
+        job = next(item for item in listed.get_json()['data'] if item['id'] == str(job_id))
+        assert job['progress_percent'] == 50
+        assert job['status_message'] == 'Halfway done.'
+        assert 'pipeline_logs' not in job
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_one({'_id': job_id})
+
+
 def test_legacy_html_only_report_is_not_served_and_is_cleaned_up(client):
     authenticate(client)
     with app.app_context():

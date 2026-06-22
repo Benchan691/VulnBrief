@@ -24,6 +24,12 @@ from pymongo.errors import DuplicateKeyError
 
 from newsletter_store import normalize_newsletter
 from mongo import get_vulnerabilities_database, get_web_database
+from report_job_progress import (
+    append_job_log,
+    init_job_progress,
+    mark_job_started,
+    update_job_progress,
+)
 from company_ai_auth_cache import (
     get_tokens,
     invalidate,
@@ -1330,6 +1336,14 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
         'updated_at': now,
         'provider': provider,
         'model': model,
+        'progress_percent': 0,
+        'progress_current': 0,
+        'progress_total': max(len(inputs), 1),
+        'progress_label': None,
+        'status_message': None,
+        'estimated_seconds_remaining': None,
+        'started_at': now if generation_mode == 'template' else None,
+        'pipeline_logs': [],
     }
     job_id = _job_collection().insert_one(job).inserted_id
     _input_collection().insert_many([
@@ -1504,6 +1518,7 @@ def run_template_job(app, job_id):
             raw_mode = job.get('generation_mode', 'company_ai')
             if LEGACY_GENERATION_MODES.get(raw_mode, raw_mode) != 'template':
                 raise ValueError('Independent template runner received a non-template job.')
+            mark_job_started(job_id)
             if job.get('status') == 'queued':
                 collection.update_one(
                     {'_id': job_object_id, 'status': 'queued'},
@@ -1511,16 +1526,35 @@ def run_template_job(app, job_id):
                 )
 
             inputs = list(_input_collection().find({'job_id': job_object_id}).sort('position', 1))
+            init_job_progress(
+                job_id,
+                total_units=max(len(inputs), 1),
+                label='Loading sources',
+                message='Loading template report sources.',
+            )
             records = []
-            for item in inputs:
+            for position, item in enumerate(inputs, start=1):
                 if _job_is_cancelled(job_object_id):
                     return
                 details = compact_details(_load_input_details(item), current_app.config)
                 normalized = next(iter(details.values()), details) if len(details) == 1 else details
                 records.append({**_source_record_for_item(item), 'details': normalized})
+                update_job_progress(
+                    job_id,
+                    current=position,
+                    label=f'Loading source {position}/{len(inputs)}',
+                    message=f'Loaded source {position}/{len(inputs)}.',
+                )
             if _job_is_cancelled(job_object_id):
                 return
 
+            append_job_log(job_id, 'Building fixed template report.')
+            update_job_progress(
+                job_id,
+                current=len(inputs),
+                label='Building report',
+                message='Building fixed template report.',
+            )
             report = generate_template_report_data(records)
             collection.update_one(
                 {'_id': job_object_id, 'status': {'$ne': 'cancelled'}},
@@ -1529,10 +1563,16 @@ def run_template_job(app, job_id):
                     'processed_count': len(inputs),
                     'current_position': len(inputs),
                     'report': report,
+                    'progress_percent': 100,
+                    'progress_current': len(inputs),
+                    'progress_total': max(len(inputs), 1),
+                    'progress_label': 'Completed',
+                    'estimated_seconds_remaining': 0,
                     'completed_at': datetime.now(timezone.utc),
                     'updated_at': datetime.now(timezone.utc),
                 }},
             )
+            append_job_log(job_id, 'Fixed template report completed.')
         except Exception as exc:
             if _job_is_cancelled(job_object_id):
                 return
@@ -1581,6 +1621,7 @@ def run_job(app, job_id):
                         'updated_at': now,
                     }, '$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
                 )
+                mark_job_started(job_id)
                 if started.modified_count == 0:
                     if _job_is_cancelled(job_object_id):
                         return
@@ -1598,6 +1639,14 @@ def run_job(app, job_id):
                     compact_details(_load_input_details(item), current_app.config)
                     for item in inputs
                 ]
+                total_units = max(len(inputs) + 1, 1)
+                init_job_progress(
+                    job_id,
+                    total_units=total_units,
+                    label='Waiting for Company AI summaries',
+                    message='Waiting for Company AI summaries.',
+                )
+                update_job_progress(job_id, current=0, percent=5, label='Waiting for Company AI summaries')
                 company_cache_warning = None
                 try:
                     from company_ai_preprocessor import enqueue_report_items, wait_for_summaries
@@ -1671,8 +1720,23 @@ def run_job(app, job_id):
                         'updated_at': datetime.now(timezone.utc),
                     }
                     collection.update_one({'_id': job_object_id}, {'$set': progress})
+                    update_job_progress(
+                        job_id,
+                        current=position,
+                        total=total_units,
+                        label=f'Processed item {position}/{len(inputs)}',
+                        message=f'Processed item {position}/{len(inputs)}: {identifier}',
+                    )
+                    append_job_log(job_id, f'Processed item {position}/{len(inputs)}: {identifier}')
                 if _job_is_cancelled(job_object_id):
                     return
+                update_job_progress(
+                    job_id,
+                    percent=95,
+                    label='Generating executive summary',
+                    message='Generating executive summary.',
+                )
+                append_job_log(job_id, 'Generating executive summary.')
                 final_fallback_reason = None
                 try:
                     from company_ai_preprocessor import enqueue_final_summary, wait_for_summaries
@@ -1709,6 +1773,11 @@ def run_job(app, job_id):
                     'current_position': len(item_results),
                     'item_fallback_count': fallback_count,
                     'item_errors': item_errors,
+                    'progress_percent': 100,
+                    'progress_current': total_units,
+                    'progress_total': total_units,
+                    'progress_label': 'Completed',
+                    'estimated_seconds_remaining': 0,
                 }
                 if final_fallback_reason:
                     completed['final_summary_fallback_reason'] = final_fallback_reason
@@ -1716,6 +1785,7 @@ def run_job(app, job_id):
                     {'_id': job_object_id},
                     {'$set': completed},
                 )
+                append_job_log(job_id, 'Company AI report completed.')
             except Exception as exc:
                 if _job_is_cancelled(ObjectId(job_id)):
                     return

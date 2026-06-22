@@ -14,6 +14,7 @@ from report_harness import (
     resolve_review_selections,
     start_job,
 )
+from report_job_progress import get_job_logs
 from . import report_blueprint
 from .common import login_required
 
@@ -41,6 +42,7 @@ def _serialize_job(job):
     job.pop('html_updated_at', None)
     job.pop('html_path', None)
     job.pop('report', None)
+    job.pop('pipeline_logs', None)
     return json_util.loads(json_util.dumps(job))
 
 
@@ -124,6 +126,19 @@ def delete_report_job(job_id):
         return jsonify({'error': str(exc)}), status
     except PyMongoError:
         return jsonify({'error': 'Unable to delete report job.'}), 503
+
+
+@report_blueprint.route('/api/reports/<job_id>/logs')
+@login_required
+def get_report_job_logs(job_id):
+    try:
+        job = _get_job(job_id)
+        if job is None:
+            return jsonify({'error': 'Report job not found.'}), 404
+        logs = get_job_logs(job_id)
+        return jsonify({'logs': logs or []})
+    except PyMongoError:
+        return jsonify({'error': 'Unable to load report job logs.'}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>')

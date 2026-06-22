@@ -59,7 +59,7 @@ def _execute_one(client, task, max_retries):
     raise SearchTaskError(task, attempts, last_error)
 
 
-def execute_pending_search_tasks(web_database, run_id, config, client=None):
+def execute_pending_search_tasks(web_database, run_id, config, client=None, progress_callback=None):
     tasks_collection = collection(web_database, 'search_enrichment_tasks')
     results_collection = collection(web_database, 'search_enrichment_results')
     tasks = list(tasks_collection.find({'run_id': run_id, 'status': 'pending'}))
@@ -74,6 +74,7 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None):
     )
     concurrency = max(1, int(config.get('TAVILY_MAX_CONCURRENT_REQUESTS', 4)))
     max_retries = max(0, int(config.get('TAVILY_MAX_RETRIES', 1)))
+    total_tasks = len(tasks)
     completed = 0
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = [executor.submit(_execute_one, client, task, max_retries) for task in tasks]
@@ -97,6 +98,12 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None):
                     }, '$inc': {'attempts': attempts}},
                 )
                 completed += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        completed,
+                        total_tasks,
+                        f'Completed Tavily search {completed}/{total_tasks} for {task.get("cve_id")}',
+                    )
             except SearchTaskError as exc:
                 task = exc.task
                 tasks_collection.update_one(

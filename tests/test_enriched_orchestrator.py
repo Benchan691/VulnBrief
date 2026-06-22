@@ -1,3 +1,5 @@
+import json
+
 from bson import ObjectId
 
 from app import app
@@ -24,71 +26,56 @@ class FakeLlamaClient:
     evidence_max_output_tokens = 1024
     report_max_output_tokens = 4096
 
-    def complete_json(self, system_prompt, user_prompt, schema=None, schema_name='response', **kwargs):
-        if schema_name == 'source_evidence_card':
-            return {
-                'run_id': 'ignored',
-                'candidate_id': 'ignored',
-                'cve_id': 'CVE-2026-7000',
-                'task_type': 'what_happened',
-                'source_url': 'https://acme.example/advisory',
-                'confidence': 'high',
-                'title': 'Acme advisory',
-                'what_happened': 'Acme Widget has a remote code execution vulnerability.',
-                'why_matters': 'Remote code execution can affect internet-facing systems.',
-                'how_to_respond': 'Upgrade to version 2.0.',
-                'affected_versions': ['before 2.0'],
-                'fixed_versions': ['2.0'],
-                'cvss_score': 9.8,
-                'cvss_vector': 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',
-                'exploit_status': 'not confirmed',
-                'cisa_kev': False,
-                'epss': 0.2,
-                'business_impact': 'Potential service compromise.',
-                'references': ['https://acme.example/advisory'],
-                'extracted_at': '2026-06-18T00:00:00+00:00',
-            }, {}
-        if schema_name == 'enriched_vulnerability_detail_table':
-            return {'rows': [{
-                'cve_id': 'CVE-2026-7000',
-                'title': 'Acme Widget RCE',
-                'vendor': 'Acme',
-                'product': 'Widget',
-                'severity': 'Critical',
-                'priority_score': 58,
-                'patch_priority': 'Critical',
-                'what_happened': 'Acme Widget has a remote code execution vulnerability.',
-                'why_matters': 'Remote code execution can affect internet-facing systems.',
-                'how_to_respond': 'Upgrade to version 2.0.',
-                'source_urls': ['https://acme.example/advisory'],
-            }]}, {}
-        if schema_name == 'enriched_remediation_playbook':
-            return {'summary': 'Patch Acme Widget first.', 'actions': [{
-                'priority': 'High',
-                'action': 'Upgrade Acme Widget to version 2.0.',
-                'cve_ids': ['CVE-2026-7000'],
-            }]}, {}
-        if schema_name == 'enriched_appendix':
-            return {'source_references': [{
-                'cve_id': 'CVE-2026-7000',
-                'url': 'https://acme.example/advisory',
-                'source_type': 'vendor_advisory',
-            }], 'metrics': {'total_vulnerabilities': 1}}, {}
-        if schema_name == 'enriched_weekly_risk_trend':
-            return {'summary': 'Risk is concentrated in one critical CVE.', 'trend_points': ['One critical Acme issue.']}, {}
-        if schema_name == 'enriched_research_scope':
-            return {'summary': 'CVE-only Mongo discovery with Tavily enrichment.', 'criteria': ['cve_review only']}, {}
-        if schema_name == 'enriched_executive_summary':
-            return {'summary': 'One Acme Widget CVE requires patching.', 'key_findings': ['Upgrade to 2.0.']}, {}
-        if schema_name == 'enriched_management_brief':
-            return {
-                'summary': 'Prioritize remediation for Acme Widget.',
-                'business_impact': 'Potential service compromise.',
-                'decisions_needed': ['Approve emergency patching.'],
-            }, {}
-        if schema_name == 'enriched_report_verification':
-            return {'unsupported_claims': []}, {}
-        raise AssertionError(schema_name)
+    def complete_text(self, system_prompt, user_prompt, **kwargs):
+        payload = json.loads(user_prompt)
+        task_type = payload.get('task_type')
+        if task_type == 'what_happened':
+            return 'Acme Widget has a remote code execution vulnerability.', {}
+        if task_type == 'why_matters':
+            return 'Remote code execution can affect internet-facing systems.', {}
+        if task_type == 'how_to_respond':
+            return 'Upgrade to version 2.0.', {}
+        if 'report' in payload:
+            return 'UNSUPPORTED_CLAIMS:\nNONE', {}
+        section_name = payload.get('section_name')
+        if section_name == 'remediation_playbook':
+            return (
+                'SUMMARY:\n'
+                'Patch Acme Widget first.\n\n'
+                'ACTIONS:\n'
+                'High | Upgrade Acme Widget to version 2.0. | CVE-2026-7000'
+            ), {}
+        if section_name == 'weekly_risk_trend':
+            return (
+                'SUMMARY:\n'
+                'Risk is concentrated in one critical CVE.\n\n'
+                'TREND_POINTS:\n'
+                '- One critical Acme issue.'
+            ), {}
+        if section_name == 'research_scope':
+            return (
+                'SUMMARY:\n'
+                'CVE-only Mongo discovery with Tavily enrichment.\n\n'
+                'CRITERIA:\n'
+                '- cve_review only'
+            ), {}
+        if section_name == 'executive_summary':
+            return (
+                'SUMMARY:\n'
+                'One Acme Widget CVE requires patching.\n\n'
+                'KEY_FINDINGS:\n'
+                '- Upgrade to 2.0.'
+            ), {}
+        if section_name == 'management_brief':
+            return (
+                'SUMMARY:\n'
+                'Prioritize remediation for Acme Widget.\n\n'
+                'BUSINESS_IMPACT:\n'
+                'Potential service compromise.\n\n'
+                'DECISIONS_NEEDED:\n'
+                '- Approve emergency patching.'
+            ), {}
+        raise AssertionError(payload)
 
 
 def test_run_enriched_pipeline_completes_with_mocked_tavily_and_llm(monkeypatch):
@@ -119,8 +106,14 @@ def test_run_enriched_pipeline_completes_with_mocked_tavily_and_llm(monkeypatch)
             job = web['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
             assert job['pipeline_stage'] == 'completed'
+            assert job['progress_percent'] == 100
+            assert job.get('status_message')
             assert job['report']['title'] == 'Enriched Weekly Cybersecurity Report'
-            assert job['report']['vulnerability_detail_table']['rows'][0]['cve_id'] == 'CVE-2026-7000'
+            row = job['report']['vulnerability_detail_table']['rows'][0]
+            assert row['cve_id'] == 'CVE-2026-7000'
+            assert row['what_happened'] == 'Acme Widget has a remote code execution vulnerability.'
+            assert row['source_urls'] == ['https://acme.example/advisory']
+            assert job['report']['executive_summary']['summary'] == 'One Acme Widget CVE requires patching.'
             assert web['candidate_vulnerability_items'].count_documents({'run_id': job_id}) == 1
         finally:
             purge_run_artifacts(web, job_id)

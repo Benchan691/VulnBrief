@@ -5,7 +5,13 @@ from enriched_report.evidence_cache import (
     lookup_cached_payload,
     store_cached_payload,
 )
-from enriched_report.evidence_extractor import _normalize_card, _prompt, _unwrap_card_payload, extract_evidence_cards
+from enriched_report.evidence_extractor import (
+    _normalize_card,
+    _parse_text_response,
+    _prompt,
+    _unwrap_card_payload,
+    extract_evidence_cards,
+)
 from enriched_report.llama_client import EnrichedLLMError
 
 
@@ -58,15 +64,9 @@ class FakeLlamaClient:
     evidence_max_output_tokens = 1024
     calls = 0
 
-    def complete_json(self, *args, **kwargs):
+    def complete_text(self, *args, **kwargs):
         type(self).calls += 1
-        return {
-            'confidence': 'high',
-            'what_happened': 'Fresh extraction.',
-            'why_matters': 'Important.',
-            'how_to_respond': 'Patch now.',
-            'references': ['https://example.com/advisory'],
-        }, {}
+        return 'Fresh extraction.', {}
 
 
 def test_evidence_cache_key_is_stable_for_same_source():
@@ -144,7 +144,7 @@ def test_extract_evidence_cards_reuses_cache_on_second_run():
     config = {
         'ENRICHED_LLM_PAGE_CHARS': 12000,
         'ENRICHED_EVIDENCE_CACHE_ENABLED': True,
-        'ENRICHED_EVIDENCE_CACHE_VERSION': '1',
+        'ENRICHED_EVIDENCE_CACHE_VERSION': '2',
     }
 
     first = extract_evidence_cards(database, 'run-1', config, FakeLlamaClient())
@@ -191,10 +191,26 @@ def test_prompt_omits_snippet_when_page_content_present():
         'page_content': 'P' * 6000,
     }
     candidate = {'cve_id': 'CVE-2026-46847', 'vendor': 'Acme', 'product': 'W', 'title': 'T'}
-    _, user_json = _prompt(result, candidate, 4500)
+    system, user_json = _prompt(result, candidate, 4500)
     user = json.loads(user_json)
+    assert 'plain text' in system
+    assert 'NULL' in system
+    assert 'example_response' not in user
     assert len(user['source']['page_content']) == 4500
     assert 'snippet' not in user['source']
+
+
+def test_parse_text_response_returns_field_for_normal_text():
+    assert _parse_text_response('Confirmed issue.', 'what_happened') == {
+        'what_happened': 'Confirmed issue.',
+        'confidence': 'medium',
+    }
+
+
+def test_parse_text_response_treats_null_as_empty():
+    assert _parse_text_response('NULL', 'why_matters') == {}
+    assert _parse_text_response('  null  ', 'why_matters') == {}
+    assert _parse_text_response('', 'how_to_respond') == {}
 
 
 def test_unwrap_card_payload_reads_nested_required_output():
@@ -236,12 +252,12 @@ def test_extract_evidence_cards_continues_after_llm_failure():
     FakeLlamaClient.fail_once = True
 
     class FailingLlamaClient(FakeLlamaClient):
-        def complete_json(self, *args, **kwargs):
+        def complete_text(self, *args, **kwargs):
             type(self).calls += 1
             if getattr(type(self), 'fail_once', False):
                 type(self).fail_once = False
-                raise EnrichedLLMError('llama-server returned invalid JSON: test')
-            return {'confidence': 'high', 'what_happened': 'Recovered.'}, {}
+                raise EnrichedLLMError('llama-server returned an empty response.')
+            return 'Recovered.', {}
 
     database = FakeDatabase({
         'source_evidence_cache': FakeCacheCollection(),
@@ -283,5 +299,5 @@ def test_extract_evidence_cards_continues_after_llm_failure():
     cards = extract_evidence_cards(database, 'run-1', config, FailingLlamaClient())
     assert len(cards) == 2
     assert cards[0]['what_happened'] is None
-    assert cards[1]['what_happened'] == 'Recovered.'
+    assert cards[1]['why_matters'] == 'Recovered.'
     assert FailingLlamaClient.calls == 2

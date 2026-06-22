@@ -5,12 +5,7 @@ import threading
 import time
 
 import requests
-from jsonschema import ValidationError, validate
 from requests.adapters import HTTPAdapter
-
-from configuration import DEFAULT_JSON_ERROR_MESSAGE
-
-from .schemas import prepare_strict_llm_schema
 
 logger = logging.getLogger(__name__)
 NO_THINK_DIRECTIVE = '/no_think'
@@ -61,41 +56,6 @@ def _completion_message_text(response_json):
     return text
 
 
-def _extract_json_object(text):
-    start = text.find('{')
-    end = text.rfind('}')
-    if start >= 0 and end > start:
-        return text[start:end + 1]
-    return text
-
-
-def _repair_json_text(text):
-    repaired = re.sub(r',\s*([}\]])', r'\1', text)
-    repaired = repaired.replace('\u201c', '"').replace('\u201d', '"')
-    return repaired
-
-
-def _parse_json_text(content):
-    if not isinstance(content, str) or not content.strip():
-        raise EnrichedLLMError('llama-server returned an empty response.')
-    text = content.strip()
-    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, flags=re.IGNORECASE | re.DOTALL)
-    if fenced:
-        text = fenced.group(1)
-    candidates = [text.strip(), _extract_json_object(text)]
-    last_error = None
-    for candidate in candidates:
-        for attempt_text in (candidate, _repair_json_text(candidate)):
-            try:
-                result = json.loads(attempt_text)
-                if isinstance(result, dict):
-                    return result
-                raise EnrichedLLMError('llama-server JSON response must be an object.')
-            except json.JSONDecodeError as exc:
-                last_error = exc
-    raise EnrichedLLMError(f'llama-server returned invalid JSON: {last_error}') from last_error
-
-
 def _http_post(url, payload, timeout):
     session = requests.Session()
     adapter = HTTPAdapter(max_retries=0)
@@ -128,11 +88,8 @@ class EnrichedLlamaClient:
         self.report_max_output_tokens = int(
             config.get('ENRICHED_LLM_REPORT_MAX_OUTPUT_TOKENS', min(self.max_output_tokens, 4096)),
         )
-        self.retries = int(config.get('ENRICHED_LLM_JSON_RETRIES', 2))
         self.connection_retries = max(0, int(config.get('ENRICHED_LLM_CONNECTION_RETRIES', 5)))
         self.retry_wait_seconds = max(0, int(config.get('ENRICHED_LLM_RETRY_WAIT_SECONDS', 10)))
-        self.json_error_message = config.get('REPORT_JSON_ERROR_MESSAGE', DEFAULT_JSON_ERROR_MESSAGE)
-        self.use_strict_schema = bool(config.get('ENRICHED_LLM_USE_STRICT_SCHEMA', False))
         self.disable_thinking = bool(config.get('ENRICHED_LLM_DISABLE_THINKING', True))
 
     def _prepare_system_prompt(self, system_prompt):
@@ -141,21 +98,6 @@ class EnrichedLlamaClient:
         if system_prompt.lstrip().startswith(NO_THINK_DIRECTIVE):
             return system_prompt
         return NO_THINK_DIRECTIVE + '\n' + system_prompt
-
-    def _response_format(self, schema, schema_name):
-        if schema is None:
-            return None, None
-        if self.use_strict_schema:
-            return {
-                'type': 'json_schema',
-                'json_schema': {
-                    'name': schema_name,
-                    'strict': True,
-                    'schema': prepare_strict_llm_schema(schema),
-                },
-            }, 'json_schema_strict'
-        # IPEX crashes on json_object/json_schema at ~8k payloads; validate client-side instead.
-        return None, 'prompt_only'
 
     def _timeouts(self):
         return (self.connect_timeout, self.timeout)
@@ -166,7 +108,7 @@ class EnrichedLlamaClient:
     def _payload_size(self, payload):
         return len(json.dumps(payload, ensure_ascii=False, default=str))
 
-    def _completion(self, messages, schema=None, schema_name='enriched_response', max_output_tokens=None):
+    def _completion(self, messages, max_output_tokens=None):
         output_tokens = max_output_tokens or self.max_output_tokens
         payload = {
             'model': self.model,
@@ -174,9 +116,6 @@ class EnrichedLlamaClient:
             'temperature': 0.1,
             'max_tokens': output_tokens,
         }
-        response_format, schema_mode = self._response_format(schema, schema_name)
-        if response_format is not None:
-            payload['response_format'] = response_format
         url = self.base_url + '/chat/completions'
         payload_chars = self._payload_size(payload)
         last_error = None
@@ -184,15 +123,12 @@ class EnrichedLlamaClient:
             for attempt in range(self.connection_retries + 1):
                 logger.info(
                     'enriched llm request attempt=%d/%d model=%s url=%s messages=%d '
-                    'schema=%s schema_mode=%s max_tokens=%d payload_chars=%d '
-                    'connect_timeout=%ss read_timeout=%ss',
+                    'max_tokens=%d payload_chars=%d connect_timeout=%ss read_timeout=%ss',
                     attempt + 1,
                     self.connection_retries + 1,
                     self.model,
                     url,
                     len(messages),
-                    schema_name if schema is not None else None,
-                    schema_mode,
                     output_tokens,
                     payload_chars,
                     self.connect_timeout,
@@ -234,42 +170,12 @@ class EnrichedLlamaClient:
         )
         raise last_error
 
-    def _error_prompt(self, error):
-        return self.json_error_message.replace('${error}', str(error))
-
-    def complete_json(
-        self,
-        system_prompt,
-        user_prompt,
-        schema=None,
-        schema_name='enriched_response',
-        max_output_tokens=None,
-    ):
-        error = None
-        bad_answer = None
-        for attempt in range(self.retries + 1):
-            messages = [
-                {'role': 'system', 'content': self._prepare_system_prompt(system_prompt)},
-                {'role': 'user', 'content': user_prompt},
-            ]
-            if bad_answer is not None:
-                messages.append({'role': 'assistant', 'content': bad_answer})
-                messages.append({'role': 'user', 'content': self._error_prompt(error)})
-            answer = None
-            try:
-                answer = self._completion(
-                    messages,
-                    schema,
-                    schema_name,
-                    max_output_tokens=max_output_tokens,
-                )
-                result = _parse_json_text(answer)
-                if schema is not None:
-                    validate(instance=result, schema=schema)
-                return result, {}
-            except requests.RequestException as exc:
-                raise EnrichedLLMError(str(exc)) from exc
-            except (KeyError, ValueError, ValidationError, EnrichedLLMError) as exc:
-                error = exc
-                bad_answer = answer
-        raise EnrichedLLMError(str(error))
+    def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+        messages = [
+            {'role': 'system', 'content': self._prepare_system_prompt(system_prompt)},
+            {'role': 'user', 'content': user_prompt},
+        ]
+        try:
+            return self._completion(messages, max_output_tokens=max_output_tokens), {}
+        except requests.RequestException as exc:
+            raise EnrichedLLMError(str(exc)) from exc

@@ -69,6 +69,20 @@
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="log-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Report Job Log</h5>
+                <button class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="log-content" class="small mb-0" style="white-space:pre-wrap"></pre>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block script %}
@@ -77,6 +91,7 @@
     const jobsUrl = {{ url_for('report.get_report_jobs')|tojson }};
     const cancelUrlTemplate = {{ url_for('report.cancel_report_job', job_id='__JOB_ID__')|tojson }};
     const deleteUrlTemplate = {{ url_for('report.delete_report_job', job_id='__JOB_ID__')|tojson }};
+    const logsUrlTemplate = {{ url_for('report.get_report_job_logs', job_id='__JOB_ID__')|tojson }};
     const selectionStorageKey = 'vulnerabilityReviewSelections';
     const reportModeStorageKey = 'vulnerabilityReportGenerationMode';
     const reportLanguageStorageKey = 'vulnerabilityReportLanguage';
@@ -84,6 +99,7 @@
     const empty = document.getElementById('empty');
     const message = document.getElementById('message');
     const previewModal = new bootstrap.Modal(document.getElementById('preview-modal'));
+    const logModal = new bootstrap.Modal(document.getElementById('log-modal'));
     const generationMode = document.getElementById('generation-mode');
     const reportLanguage = document.getElementById('report-language');
     const languageField = document.getElementById('language-field');
@@ -117,6 +133,114 @@
                 return body;
             });
         });
+    }
+    function parseJobDate(value) {
+        if (!value) return null;
+        if (value.$date) return new Date(value.$date);
+        return new Date(value);
+    }
+    function jobProgressPercent(job) {
+        if (typeof job.progress_percent === 'number') return Math.max(0, Math.min(100, job.progress_percent));
+        if (!job.source_count) return 0;
+        return Math.round(((job.processed_count || 0) / job.source_count) * 100);
+    }
+    function formatDuration(seconds) {
+        if (seconds === null || seconds === undefined || seconds < 0) return null;
+        if (seconds < 60) return '<1 min';
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        if (hours > 0) return hours + 'h ' + minutes + 'm';
+        return minutes + ' min';
+    }
+    function jobEtaText(job) {
+        if (job.status === 'queued') return 'Estimating\u2026';
+        if (job.status !== 'running') return null;
+        const percent = jobProgressPercent(job);
+        if (percent >= 100) return null;
+        if (!percent) return 'Estimating\u2026';
+        const duration = formatDuration(job.estimated_seconds_remaining);
+        if (!duration) return 'Estimating\u2026';
+        return '~' + duration + ' left';
+    }
+    function jobFinishTimeText(job) {
+        if (job.status !== 'running' || !job.estimated_seconds_remaining) return null;
+        const finish = new Date(Date.now() + (job.estimated_seconds_remaining * 1000));
+        return 'Est. finish ' + finish.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    function truncateText(text, maxLength) {
+        if (!text) return '';
+        return text.length > maxLength ? text.slice(0, maxLength - 1) + '\u2026' : text;
+    }
+    function openJobLog(job) {
+        const target = document.getElementById('log-content');
+        target.textContent = 'Loading log\u2026';
+        logModal.show();
+        requestJson(logsUrlTemplate.replace('__JOB_ID__', job.id))
+            .then(function (body) {
+                const lines = body.logs || [];
+                target.textContent = lines.length ? lines.join('\n') : 'No log entries yet.';
+            })
+            .catch(function (reason) {
+                target.textContent = reason.message;
+            });
+    }
+    function appendViewLogButton(container, job) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-outline-secondary btn-sm view-log-btn ms-1';
+        button.textContent = 'View log';
+        button.addEventListener('click', function () { openJobLog(job); });
+        container.append(button);
+    }
+    function buildStatusCell(job) {
+        const cell = document.createElement('td');
+        const primary = document.createElement('div');
+        const statusLabel = job.status.charAt(0).toUpperCase() + job.status.slice(1);
+        const percent = jobProgressPercent(job);
+        const eta = jobEtaText(job);
+        let primaryText = statusLabel;
+        if (job.status === 'queued' || job.status === 'running') {
+            primaryText = statusLabel + ' ' + percent + '%';
+            if (eta) primaryText += ' \u00b7 ' + eta;
+        }
+        primary.textContent = primaryText;
+        cell.append(primary);
+        if (job.progress_label && (job.status === 'queued' || job.status === 'running')) {
+            const label = document.createElement('div');
+            label.className = 'text-muted small';
+            label.textContent = job.progress_label;
+            cell.append(label);
+        }
+        const finish = jobFinishTimeText(job);
+        if (finish) {
+            const finishLine = document.createElement('div');
+            finishLine.className = 'text-muted small';
+            finishLine.textContent = finish;
+            cell.append(finishLine);
+        }
+        if (job.status_message) {
+            const logLine = document.createElement('div');
+            logLine.className = 'text-muted small text-truncate';
+            logLine.style.maxWidth = '280px';
+            logLine.title = job.status_message;
+            logLine.textContent = truncateText(job.status_message, 80);
+            cell.append(logLine);
+        }
+        if (job.status === 'failed' && job.error) {
+            const error = document.createElement('div');
+            error.className = 'text-danger small';
+            error.textContent = truncateText(job.error, 120);
+            cell.append(error);
+        }
+        if (job.status === 'queued' || job.status === 'running' || job.status === 'failed') {
+            const logButton = document.createElement('button');
+            logButton.type = 'button';
+            logButton.className = 'btn btn-link btn-sm p-0 mt-1';
+            logButton.textContent = 'View log';
+            logButton.addEventListener('click', function () { openJobLog(job); });
+            cell.append(logButton);
+        }
+        return cell;
     }
     function appendDeleteButton(container, job) {
         const button = document.createElement('button');
@@ -166,12 +290,7 @@
                 generatorCell.append(reason);
             }
             row.append(generatorCell);
-            const status = document.createElement('td');
-            status.textContent = job.status;
-            if (job.status === 'running') {
-                status.textContent += ' (' + (job.processed_count || 0) + '/' + job.source_count + ')';
-            }
-            row.append(status);
+            row.append(buildStatusCell(job));
             const action = document.createElement('td');
             if (job.status === 'completed') {
                 action.innerHTML = '<button class="btn btn-outline-primary btn-sm me-1 preview-btn">Preview</button>' +
@@ -186,6 +305,7 @@
                 error.className = 'text-danger small me-1';
                 error.textContent = job.error || 'Generation failed.';
                 action.append(error);
+                appendViewLogButton(action, job);
                 appendDeleteButton(action, job);
             } else if (job.status === 'cancelled') {
                 if ((job.processed_count || 0) > 0) {

@@ -8,7 +8,6 @@ from enriched_report.llama_client import (
     EnrichedLLMError,
     _completion_message_text,
     _message_text,
-    _parse_json_text,
 )
 
 
@@ -93,73 +92,6 @@ def test_completion_message_text_from_reasoning_only_response():
     assert _completion_message_text(body) == '{"ok": true}'
 
 
-def test_uses_strict_json_schema_when_enabled():
-    client = EnrichedLlamaClient(_config(ENRICHED_LLM_USE_STRICT_SCHEMA=True))
-    response = requests.Response()
-    response.status_code = 200
-    response._content = b'{"choices":[{"message":{"content":"{\\"ok\\": true}"}}]}'
-    schema = {'type': 'object', 'properties': {'ok': {'type': 'boolean'}}}
-
-    with patch('enriched_report.llama_client._http_post') as post:
-        post.return_value = response
-        client._completion(
-            [{'role': 'user', 'content': 'ping'}],
-            schema=schema,
-            schema_name='test_schema',
-        )
-
-    payload = post.call_args[0][1]
-    response_format = payload['response_format']
-    assert response_format['type'] == 'json_schema'
-    assert response_format['json_schema']['strict'] is True
-    assert response_format['json_schema']['schema']['additionalProperties'] is False
-
-
-def test_omits_response_format_when_strict_schema_disabled():
-    client = EnrichedLlamaClient(_config(ENRICHED_LLM_USE_STRICT_SCHEMA=False))
-    response = requests.Response()
-    response.status_code = 200
-    response._content = b'{"choices":[{"message":{"content":"{\\"ok\\": true}"}}]}'
-    schema = {'type': 'object', 'properties': {'ok': {'type': 'boolean'}}}
-
-    with patch('enriched_report.llama_client._http_post') as post:
-        post.return_value = response
-        client._completion(
-            [{'role': 'user', 'content': 'ping'}],
-            schema=schema,
-            schema_name='test_schema',
-        )
-
-    payload = post.call_args[0][1]
-    assert 'response_format' not in payload
-    assert payload['max_tokens'] == 2048
-
-
-def test_complete_json_retry_includes_failed_assistant_reply():
-    client = EnrichedLlamaClient(_config(ENRICHED_LLM_JSON_RETRIES=1))
-    bad = requests.Response()
-    bad.status_code = 200
-    bad._content = b'{"choices":[{"message":{"content":"not json"}}]}'
-    good = requests.Response()
-    good.status_code = 200
-    good._content = b'{"choices":[{"message":{"content":"{\\"ok\\": true}"}}]}'
-
-    with patch('enriched_report.llama_client._http_post') as post:
-        post.side_effect = [bad, good]
-        result, _ = client.complete_json('system', 'user')
-
-    assert result == {'ok': True}
-    retry_messages = post.call_args_list[1][0][1]['messages']
-    assert retry_messages[2]['role'] == 'assistant'
-    assert retry_messages[2]['content'] == 'not json'
-    assert retry_messages[3]['role'] == 'user'
-    assert 'invalid JSON' in retry_messages[3]['content']
-
-
-def test_parse_json_text_repairs_trailing_comma():
-    assert _parse_json_text('{"ok": true,}') == {'ok': True}
-
-
 def test_prepare_system_prompt_adds_no_think():
     client = EnrichedLlamaClient(_config(ENRICHED_LLM_DISABLE_THINKING=True))
     prepared = client._prepare_system_prompt('Return JSON only.')
@@ -170,3 +102,32 @@ def test_prepare_system_prompt_skips_duplicate_no_think():
     client = EnrichedLlamaClient(_config(ENRICHED_LLM_DISABLE_THINKING=True))
     prepared = client._prepare_system_prompt('/no_think\nReturn JSON only.')
     assert prepared == '/no_think\nReturn JSON only.'
+
+
+def test_complete_text_omits_response_format():
+    client = EnrichedLlamaClient(_config())
+    response = requests.Response()
+    response.status_code = 200
+    response._content = b'{"choices":[{"message":{"content":"Plain answer."}}]}'
+
+    with patch('enriched_report.llama_client._http_post') as post:
+        post.return_value = response
+        text, _ = client.complete_text('system', 'user')
+
+    assert text == 'Plain answer.'
+    payload = post.call_args[0][1]
+    assert 'response_format' not in payload
+
+
+def test_complete_text_raises_on_empty_response():
+    client = EnrichedLlamaClient(_config())
+    empty = requests.Response()
+    empty.status_code = 200
+    empty._content = b'{"choices":[{"message":{"content":""}}]}'
+
+    with patch('enriched_report.llama_client._http_post') as post:
+        post.return_value = empty
+        with pytest.raises(EnrichedLLMError, match='empty response'):
+            client.complete_text('system', 'user')
+
+    assert post.call_count == 1
