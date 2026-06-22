@@ -10,6 +10,8 @@ from requests.adapters import HTTPAdapter
 
 from configuration import DEFAULT_JSON_ERROR_MESSAGE
 
+from .schemas import prepare_strict_llm_schema
+
 logger = logging.getLogger(__name__)
 NO_THINK_DIRECTIVE = '/no_think'
 _REQUEST_LOCK = threading.Lock()
@@ -67,6 +69,12 @@ def _extract_json_object(text):
     return text
 
 
+def _repair_json_text(text):
+    repaired = re.sub(r',\s*([}\]])', r'\1', text)
+    repaired = repaired.replace('\u201c', '"').replace('\u201d', '"')
+    return repaired
+
+
 def _parse_json_text(content):
     if not isinstance(content, str) or not content.strip():
         raise EnrichedLLMError('llama-server returned an empty response.')
@@ -74,17 +82,18 @@ def _parse_json_text(content):
     fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, flags=re.IGNORECASE | re.DOTALL)
     if fenced:
         text = fenced.group(1)
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
-        text = _extract_json_object(text)
-        try:
-            result = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise EnrichedLLMError(f'llama-server returned invalid JSON: {exc}') from exc
-    if not isinstance(result, dict):
-        raise EnrichedLLMError('llama-server JSON response must be an object.')
-    return result
+    candidates = [text.strip(), _extract_json_object(text)]
+    last_error = None
+    for candidate in candidates:
+        for attempt_text in (candidate, _repair_json_text(candidate)):
+            try:
+                result = json.loads(attempt_text)
+                if isinstance(result, dict):
+                    return result
+                raise EnrichedLLMError('llama-server JSON response must be an object.')
+            except json.JSONDecodeError as exc:
+                last_error = exc
+    raise EnrichedLLMError(f'llama-server returned invalid JSON: {last_error}') from last_error
 
 
 def _http_post(url, payload, timeout):
@@ -142,7 +151,7 @@ class EnrichedLlamaClient:
                 'json_schema': {
                     'name': schema_name,
                     'strict': True,
-                    'schema': schema,
+                    'schema': prepare_strict_llm_schema(schema),
                 },
             }, 'json_schema_strict'
         # IPEX crashes on json_object/json_schema at ~8k payloads; validate client-side instead.
@@ -237,13 +246,16 @@ class EnrichedLlamaClient:
         max_output_tokens=None,
     ):
         error = None
+        bad_answer = None
         for attempt in range(self.retries + 1):
             messages = [
                 {'role': 'system', 'content': self._prepare_system_prompt(system_prompt)},
                 {'role': 'user', 'content': user_prompt},
             ]
-            if error is not None:
+            if bad_answer is not None:
+                messages.append({'role': 'assistant', 'content': bad_answer})
                 messages.append({'role': 'user', 'content': self._error_prompt(error)})
+            answer = None
             try:
                 answer = self._completion(
                     messages,
@@ -259,4 +271,5 @@ class EnrichedLlamaClient:
                 raise EnrichedLLMError(str(exc)) from exc
             except (KeyError, ValueError, ValidationError, EnrichedLLMError) as exc:
                 error = exc
+                bad_answer = answer
         raise EnrichedLLMError(str(error))

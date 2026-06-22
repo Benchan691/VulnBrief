@@ -1,38 +1,13 @@
 import json
 import logging
-import os
-import time
 from datetime import datetime, timezone
 
 from .evidence_cache import lookup_cached_payload, store_cached_payload
-from .llama_client import EnrichedLlamaClient
+from .llama_client import EnrichedLlamaClient, EnrichedLLMError
 from .pipeline_collections import collection
-from .schemas import validate_source_evidence_card
+from .schemas import SOURCE_EVIDENCE_CARD_SCHEMA, validate_source_evidence_card
 
 logger = logging.getLogger(__name__)
-_DEBUG_LOG_PATH = os.environ.get(
-    'DEBUG_LOG_PATH',
-    '/Users/chankokpan/Documents/webserver/.cursor/debug-0a9f10.log',
-)
-
-
-def _debug_log(location, message, data=None, hypothesis_id=None):
-    payload = {
-        'sessionId': '0a9f10',
-        'timestamp': int(time.time() * 1000),
-        'location': location,
-        'message': message,
-        'data': data or {},
-        'runId': 'pre-fix',
-    }
-    if hypothesis_id:
-        payload['hypothesisId'] = hypothesis_id
-    try:
-        with open(_DEBUG_LOG_PATH, 'a', encoding='utf-8') as handle:
-            handle.write(json.dumps(payload, default=str) + '\n')
-    except OSError:
-        pass
-
 
 _UNCONFIRMED_PREFIX = 'not confirmed'
 
@@ -110,8 +85,9 @@ def _prompt(result, candidate, page_char_limit):
     task_type = result['task_type']
     system = (
         'You extract cybersecurity evidence from one source page. Use only the supplied page '
-        'content. Do not infer or invent facts. For text fields, return null or "Not confirmed" '
-        'when unsupported. For cisa_kev return true, false, or null only. Return valid JSON only.'
+        'content. Do not infer or invent facts. Return one flat JSON object that follows the '
+        'JSON schema exactly. Copy context fields unchanged. Escape double quotes inside string '
+        'values. For text fields use null when unsupported. For cisa_kev use true, false, or null.'
     )
     user = {
         'task_type': task_type,
@@ -122,18 +98,32 @@ def _prompt(result, candidate, page_char_limit):
             'title': candidate.get('title'),
         },
         'source': source,
-        'required_output': {
+        'context': {
+            'run_id': result['run_id'],
+            'candidate_id': result['candidate_id'],
+            'source_url': result.get('url'),
+        },
+        'example_response': {
             'run_id': result['run_id'],
             'candidate_id': result['candidate_id'],
             'cve_id': result['cve_id'],
             'task_type': task_type,
-            'source_url': result.get('url'),
-            'optional_fields': [
-                'confidence', 'title', 'what_happened', 'why_matters', 'how_to_respond',
-                'affected_versions', 'fixed_versions', 'cvss_score', 'cvss_vector',
-                'exploit_status', 'cisa_kev', 'epss', 'business_impact', 'references',
-                'extracted_at',
-            ],
+            'source_url': result.get('url') or '',
+            'confidence': 'medium',
+            'extracted_at': _now_iso(),
+            'title': None,
+            'what_happened': None,
+            'why_matters': None,
+            'how_to_respond': None,
+            'affected_versions': [],
+            'fixed_versions': [],
+            'cvss_score': None,
+            'cvss_vector': None,
+            'exploit_status': None,
+            'cisa_kev': None,
+            'epss': None,
+            'business_impact': None,
+            'references': [],
         },
     }
     return system, json.dumps(user, ensure_ascii=False, default=str)
@@ -173,7 +163,6 @@ def _normalize_card(raw, result):
         'extracted_at': _now_iso(),
     }
     card.update(_unwrap_card_payload(raw))
-    raw_cisa_kev = card.get('cisa_kev')
     card.update({
         'run_id': result['run_id'],
         'candidate_id': result['candidate_id'],
@@ -192,18 +181,6 @@ def _normalize_card(raw, result):
         'epss': _nullable_number(card.get('epss')),
         'business_impact': _nullable_string(card.get('business_impact')),
     })
-    # #region agent log
-    _debug_log(
-        'evidence_extractor.py:_normalize_card',
-        'typed fields normalized',
-        {
-            'cve_id': card.get('cve_id'),
-            'raw_cisa_kev': raw_cisa_kev,
-            'normalized_cisa_kev': card.get('cisa_kev'),
-        },
-        hypothesis_id='H1-H2',
-    )
-    # #endregion
     if card.get('confidence') not in {'high', 'medium', 'low'}:
         card['confidence'] = 'low'
     card['affected_versions'] = _list(card.get('affected_versions'))
@@ -252,15 +229,27 @@ def extract_evidence_cards(web_database, run_id, config, client=None):
             result.get('task_type'),
         )
         system, prompt = _prompt(result, candidate, page_char_limit)
-        raw, _ = client.complete_json(
-            system,
-            prompt,
-            schema=None,
-            schema_name='source_evidence_card',
-            max_output_tokens=client.evidence_max_output_tokens,
-        )
-        card = _normalize_card(raw, result)
-        if cache_enabled:
+        extracted = False
+        try:
+            raw, _ = client.complete_json(
+                system,
+                prompt,
+                schema=SOURCE_EVIDENCE_CARD_SCHEMA,
+                schema_name='source_evidence_card',
+                max_output_tokens=client.evidence_max_output_tokens,
+            )
+            card = _normalize_card(raw, result)
+            extracted = True
+        except EnrichedLLMError as exc:
+            logger.warning(
+                'enriched llm evidence failed cve=%s task_type=%s url=%s error=%s',
+                result.get('cve_id'),
+                result.get('task_type'),
+                result.get('url'),
+                exc,
+            )
+            card = _normalize_card({}, result)
+        if cache_enabled and extracted:
             store_cached_payload(web_database, result, card, cache_version)
         cards.append(card)
 

@@ -6,6 +6,7 @@ from enriched_report.evidence_cache import (
     store_cached_payload,
 )
 from enriched_report.evidence_extractor import _normalize_card, _prompt, _unwrap_card_payload, extract_evidence_cards
+from enriched_report.llama_client import EnrichedLLMError
 
 
 class FakeCacheCollection:
@@ -228,3 +229,59 @@ def test_normalize_card_preserves_boolean_cisa_kev():
     }
     card = _normalize_card({'cisa_kev': True, 'confidence': 'high'}, result)
     assert card['cisa_kev'] is True
+
+
+def test_extract_evidence_cards_continues_after_llm_failure():
+    FakeLlamaClient.calls = 0
+    FakeLlamaClient.fail_once = True
+
+    class FailingLlamaClient(FakeLlamaClient):
+        def complete_json(self, *args, **kwargs):
+            type(self).calls += 1
+            if getattr(type(self), 'fail_once', False):
+                type(self).fail_once = False
+                raise EnrichedLLMError('llama-server returned invalid JSON: test')
+            return {'confidence': 'high', 'what_happened': 'Recovered.'}, {}
+
+    database = FakeDatabase({
+        'source_evidence_cache': FakeCacheCollection(),
+        'source_evidence_cards': FakeCollection([]),
+        'candidate_vulnerability_items': FakeCollection([{
+            'run_id': 'run-1',
+            'candidate_id': 'candidate-1',
+            'cve_id': 'CVE-2026-1000',
+            'vendor': 'Acme',
+            'product': 'Widget',
+            'title': 'Acme Widget',
+        }]),
+        'filtered_enrichment_results': FakeCollection([
+            {
+                'run_id': 'run-1',
+                'candidate_id': 'candidate-1',
+                'cve_id': 'CVE-2026-1000',
+                'task_type': 'what_happened',
+                'url': 'https://example.com/one',
+                'content_hash': 'hash-1',
+                'page_content': 'Advisory one.',
+            },
+            {
+                'run_id': 'run-1',
+                'candidate_id': 'candidate-1',
+                'cve_id': 'CVE-2026-1000',
+                'task_type': 'why_matters',
+                'url': 'https://example.com/two',
+                'content_hash': 'hash-2',
+                'page_content': 'Advisory two.',
+            },
+        ]),
+    })
+    config = {
+        'ENRICHED_LLM_PAGE_CHARS': 12000,
+        'ENRICHED_EVIDENCE_CACHE_ENABLED': False,
+    }
+
+    cards = extract_evidence_cards(database, 'run-1', config, FailingLlamaClient())
+    assert len(cards) == 2
+    assert cards[0]['what_happened'] is None
+    assert cards[1]['what_happened'] == 'Recovered.'
+    assert FailingLlamaClient.calls == 2

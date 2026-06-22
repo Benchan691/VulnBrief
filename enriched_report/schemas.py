@@ -1,3 +1,5 @@
+import copy
+
 from jsonschema import validate
 
 
@@ -204,6 +206,13 @@ ENRICHED_REPORT_SCHEMA = {
         },
     },
 }
+
+
+def prepare_strict_llm_schema(schema):
+    prepared = copy.deepcopy(schema)
+    if isinstance(prepared, dict) and prepared.get('type') == 'object':
+        prepared['additionalProperties'] = False
+    return prepared
 
 
 def validate_source_evidence_card(card):
