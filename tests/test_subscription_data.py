@@ -8,8 +8,10 @@ from subscription_data import (
     next_cron_run,
     parse_hong_kong_datetime,
     parse_include_unknown,
+    query_profile_matches,
     validate_cron,
     validate_filters,
+    validate_profile,
 )
 
 
@@ -83,3 +85,52 @@ def test_five_field_cron_validation_and_next_run_use_hong_kong_time():
         datetime(2026, 6, 11, 0, 30, tzinfo=timezone.utc),
     )
     assert next_run == datetime(2026, 6, 11, 1, 0, tzinfo=timezone.utc)
+
+
+class FakeDatabase:
+    def list_collections(self, filter=None):
+        return [
+            {'name': 'cve_review', 'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+            {'name': 'avd_review', 'options': {'viewOn': 'avd', 'pipeline': [{'$project': {'title': 1}}]}},
+        ]
+
+    def __getitem__(self, name):
+        return self
+
+    def aggregate(self, pipeline):
+        return iter([])
+
+
+def test_enriched_weekly_profile_forces_cve_review_only():
+    profile = validate_profile(FakeDatabase(), {
+        'generation_mode': 'enriched_weekly',
+        'filters': {},
+    }, 'report')
+
+    assert profile['filters']['collections'] == ['cve_review']
+
+    with pytest.raises(ValueError, match='cve_review'):
+        validate_profile(FakeDatabase(), {
+            'generation_mode': 'enriched_weekly',
+            'filters': {'collections': ['avd_review']},
+        }, 'report')
+
+
+def test_enriched_filters_include_target_fields_threshold_and_scope_limit():
+    filters = validate_filters(FakeDatabase(), {
+        'target_vendor': 'Acme',
+        'target_product': 'Widget',
+        'severity_threshold': 'High',
+        'report_scope': {'max_count': 3, 'kev_only': True},
+    })
+    mongo_filter = build_match_filter(filters)
+
+    assert '$and' in mongo_filter
+    assert filters['report_scope']['max_count'] == 3
+    assert filters['report_scope']['kev_only'] is True
+    assert any('classification.best_vendor' in str(clause) for clause in mongo_filter['$and'])
+    assert any('classification.best_product' in str(clause) for clause in mongo_filter['$and'])
+    assert any('details.cve.kev' in str(clause) for clause in mongo_filter['$and'])
+
+    profile = {'generation_mode': 'enriched_weekly', 'filters': filters}
+    assert query_profile_matches(FakeDatabase(), profile, limit=10) == []

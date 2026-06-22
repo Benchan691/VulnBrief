@@ -61,6 +61,23 @@ def test_resolve_vulnerability_document_by_cve_code():
     assert document['_id'] == 'cnnvd:202606-1876'
 
 
+def test_resolve_vulnerability_document_by_object_id():
+    from bson import ObjectId
+
+    object_id = ObjectId('6a34241d4ab03604f78c2d5a')
+    database = FakeDatabase({
+        'cve': FakeCollection([
+            {
+                '_id': object_id,
+                'cveMetadata': {'cveId': 'CVE-2026-56012'},
+                'details': {'cve': {}},
+            },
+        ]),
+    })
+    document = resolve_vulnerability_document(database, 'cve', str(object_id))
+    assert document['_id'] == object_id
+
+
 def test_resolve_vulnerability_document_returns_none_when_missing():
     database = FakeDatabase({'avd': FakeCollection([])})
     assert resolve_vulnerability_document(database, 'avd', 'avd:missing') is None

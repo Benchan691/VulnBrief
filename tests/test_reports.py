@@ -975,7 +975,7 @@ def test_reports_api_upload_and_authentication(client, monkeypatch):
     })
     assert response.status_code == 400
     assert response.get_json()['error'] == (
-        'Generation mode must be "company_ai" or "template".'
+        'Generation mode must be "company_ai", "template", or "enriched_weekly".'
     )
 
     response = client.post('/api/reports', data={
@@ -1033,6 +1033,33 @@ def test_reports_api_upload_and_authentication(client, monkeypatch):
         assert job['effective_report_language'] == 'en'
         get_web_database()['report_jobs'].delete_one({'_id': job_id})
         get_web_database()['report_job_inputs'].delete_many({'job_id': job_id})
+
+
+def test_create_enriched_weekly_job_requires_cve_review_selections():
+    with app.app_context():
+        job_id = create_job([{
+            'collection': 'cve_review',
+            'source_collection': 'cve',
+            'selection_id': 'cve:test',
+        }], 'review_selections', 'enriched_weekly')
+        job_object_id = ObjectId(job_id)
+        try:
+            job = get_web_database()['report_jobs'].find_one({'_id': job_object_id})
+            assert job['generation_mode'] == 'enriched_weekly'
+            assert job['status'] == 'queued'
+            assert job['provider'] == 'Tavily + llama-server'
+        finally:
+            get_web_database()['report_jobs'].delete_one({'_id': job_object_id})
+            get_web_database()['report_job_inputs'].delete_many({'job_id': job_object_id})
+
+    with pytest.raises(ValueError, match='cve_review'):
+        create_job([{
+            'collection': 'avd_review',
+            'source_collection': 'avd',
+            'selection_id': 'avd:test',
+        }], 'review_selections', 'enriched_weekly')
+    with pytest.raises(ValueError, match='uploaded JSON'):
+        create_job([sample_document()], 'upload', 'enriched_weekly')
 
 
 def test_cancel_report_job_api(client, monkeypatch):

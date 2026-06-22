@@ -51,7 +51,8 @@ DEFAULT_JSON_ERROR_MESSAGE = (
     'with `json.loads()`.'
 )
 REPORT_TEMPLATE = 'generated_report.html'
-GENERATION_MODES = {'company_ai', 'template'}
+ENRICHED_REPORT_TEMPLATE = 'enriched_report.html'
+GENERATION_MODES = {'company_ai', 'template', 'enriched_weekly'}
 LEGACY_GENERATION_MODES = {'ai': 'company_ai'}
 REPORT_LANGUAGES = {
     'en': 'English',
@@ -1268,7 +1269,7 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
         raise ValueError('At least one vulnerability record is required.')
     generation_mode = LEGACY_GENERATION_MODES.get(generation_mode, generation_mode)
     if generation_mode not in GENERATION_MODES:
-        raise ValueError('Generation mode must be "company_ai" or "template".')
+        raise ValueError('Generation mode must be "company_ai", "template", or "enriched_weekly".')
     if report_language not in REPORT_LANGUAGES:
         raise ValueError('Report language must be "en", "zh", or "ch".')
     if generation_mode == 'template':
@@ -1278,12 +1279,18 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
     queued_inputs = []
     for position, item in enumerate(inputs):
         if input_source == 'review_selections':
+            if generation_mode == 'enriched_weekly' and (
+                item.get('collection') != 'cve_review' or item.get('source_collection') != 'cve'
+            ):
+                raise ValueError('enriched_weekly reports only support cve_review selections.')
             queued = {
                 'source_collection': item['source_collection'],
                 'selection_id': item['selection_id'],
                 'identifier': item['selection_id'],
             }
         else:
+            if generation_mode == 'enriched_weekly':
+                raise ValueError('enriched_weekly reports require cve_review selections, not uploaded JSON.')
             if not isinstance(item.get('details'), dict):
                 raise ValueError('Each uploaded document must contain a details object.')
             source_record = {
@@ -1302,6 +1309,9 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
     if generation_mode == 'company_ai':
         provider = 'RabbitMQ + Atlas'
         model = 'Shared AI Workers'
+    elif generation_mode == 'enriched_weekly':
+        provider = 'Tavily + llama-server'
+        model = 'Enriched Weekly'
     else:
         provider = None
         model = 'Fixed Template'
@@ -1315,7 +1325,7 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
         'processed_count': 0,
         'current_position': 0,
         'item_fallback_count': 0,
-        'status': 'queued' if generation_mode == 'company_ai' else 'running',
+        'status': 'queued' if generation_mode in {'company_ai', 'enriched_weekly'} else 'running',
         'created_at': now,
         'updated_at': now,
         'provider': provider,
@@ -1384,6 +1394,17 @@ def _assemble_report(final_data, item_results, report_language='en'):
 
 
 def _render_job_html(job, report, relative_path=None):
+    raw_mode = job.get('generation_mode', 'company_ai')
+    generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
+    if generation_mode == 'enriched_weekly':
+        return render_template(
+            ENRICHED_REPORT_TEMPLATE,
+            report=report,
+            generated_at=datetime.now(timezone.utc),
+            source_count=job['source_count'],
+            report_language=job.get('effective_report_language', job.get('report_language', 'en')),
+            html_language=HTML_LANGUAGE_CODES[job.get('effective_report_language', job.get('report_language', 'en'))],
+        )
     return render_template(
         REPORT_TEMPLATE,
         report=report,
@@ -1461,6 +1482,11 @@ def delete_job(job_id):
         raise ValueError('Cancel the report job before deleting it.')
     _result_collection().delete_many({'job_id': job_object_id})
     _input_collection().delete_many({'job_id': job_object_id})
+    try:
+        from enriched_report.pipeline_collections import purge_run_artifacts
+        purge_run_artifacts(get_web_database(), str(job_object_id))
+    except Exception:
+        pass
     _job_collection().delete_one({'_id': job_object_id})
     return str(job_object_id)
 
@@ -1526,8 +1552,13 @@ def run_job(app, job_id):
     with app.app_context():
         job = _job_collection().find_one({'_id': ObjectId(job_id)}, {'generation_mode': 1})
         raw_mode = (job or {}).get('generation_mode', 'company_ai')
-        if LEGACY_GENERATION_MODES.get(raw_mode, raw_mode) == 'template':
+        generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
+        if generation_mode == 'template':
             run_template_job(app, job_id)
+            return
+        if generation_mode == 'enriched_weekly':
+            from enriched_report.orchestrator import run_enriched_pipeline
+            run_enriched_pipeline(app, job_id)
             return
 
     with WORKER_LOCK:

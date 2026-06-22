@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="{{ html_language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ report.title }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1180px; margin: 0 auto; padding: 32px; color: #1f2933; line-height: 1.55; }
+        h1 { border-bottom: 3px solid #0f766e; padding-bottom: 12px; }
+        h2 { margin-top: 30px; color: #0f4f4a; }
+        h3 { margin-bottom: 6px; }
+        .meta { color: #667085; font-size: 0.9rem; }
+        .section { margin: 16px 0 24px; }
+        .brief { background: #f7faf9; border-left: 4px solid #0f766e; padding: 14px 18px; }
+        table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.92rem; }
+        th, td { border: 1px solid #d0d5dd; padding: 8px 10px; text-align: left; vertical-align: top; }
+        th { background: #eef8f6; }
+        ul, ol { padding-left: 22px; }
+        li { margin-bottom: 6px; }
+        .priority-critical { color: #b42318; font-weight: 700; }
+        .priority-high { color: #b54708; font-weight: 700; }
+        .priority-medium { color: #175cd3; font-weight: 700; }
+        .priority-low { color: #027a48; font-weight: 700; }
+        .small { font-size: 0.88rem; }
+    </style>
+</head>
+<body>
+    <h1>{{ report.title }}</h1>
+    <p class="meta">Generated {{ generated_at.strftime('%Y-%m-%d %H:%M UTC') }} from {{ source_count }} CVE candidate(s).</p>
+
+    <h2>Executive Summary</h2>
+    <div class="section brief">
+        <p>{{ report.executive_summary.summary }}</p>
+        <ul>{% for finding in report.executive_summary.key_findings or [] %}<li>{{ finding }}</li>{% endfor %}</ul>
+    </div>
+
+    <h2>Research Scope</h2>
+    <div class="section">
+        <p>{{ report.research_scope.summary }}</p>
+        <ul>{% for criterion in report.research_scope.criteria or [] %}<li>{{ criterion }}</li>{% endfor %}</ul>
+    </div>
+
+    <h2>Weekly Risk Trend</h2>
+    <div class="section">
+        <p>{{ report.weekly_risk_trend.summary }}</p>
+        <ul>{% for point in report.weekly_risk_trend.trend_points or [] %}<li>{{ point }}</li>{% endfor %}</ul>
+    </div>
+
+    <h2>Vulnerability Detail Table</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>CVE</th><th>Title</th><th>Vendor</th><th>Product</th><th>Severity</th>
+                <th>Priority</th><th>What Happened</th><th>Why It Matters</th><th>How To Respond</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in report.vulnerability_detail_table.rows or [] %}
+            <tr>
+                <td>{{ row.cve_id }}</td>
+                <td>{{ row.title }}</td>
+                <td>{{ row.vendor or '' }}</td>
+                <td>{{ row.product or '' }}</td>
+                <td>{{ row.severity or '' }}</td>
+                <td class="priority-{{ (row.patch_priority or 'low')|lower }}">{{ row.patch_priority }} ({{ row.priority_score }})</td>
+                <td>{{ row.what_happened }}</td>
+                <td>{{ row.why_matters }}</td>
+                <td>{{ row.how_to_respond }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h2>Remediation Playbook</h2>
+    <div class="section">
+        <p>{{ report.remediation_playbook.summary }}</p>
+        <ol>
+            {% for action in report.remediation_playbook.actions or [] %}
+            <li><strong>{{ action.priority }}:</strong> {{ action.action }} <span class="meta">{{ action.cve_ids|join(', ') }}</span></li>
+            {% endfor %}
+        </ol>
+    </div>
+
+    <h2>Management Brief</h2>
+    <div class="section brief">
+        <p>{{ report.management_brief.summary }}</p>
+        <p><strong>Business impact:</strong> {{ report.management_brief.business_impact }}</p>
+        <ul>{% for decision in report.management_brief.decisions_needed or [] %}<li>{{ decision }}</li>{% endfor %}</ul>
+    </div>
+
+    <h2>Appendix</h2>
+    <div class="section">
+        <h3>Source References</h3>
+        <ul class="small">
+            {% for reference in report.appendix.source_references or [] %}
+            <li>{{ reference.cve_id }}: <a href="{{ reference.url }}" rel="noopener">{{ reference.url }}</a>{% if reference.source_type %} ({{ reference.source_type }}){% endif %}</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <h2>Verification</h2>
+    <div class="section">
+        <p><strong>Python checks:</strong> {{ report.verification.python_checks }}</p>
+        <p><strong>AI checks:</strong> {{ report.verification.ai_checks }}</p>
+        {% if report.verification.issues %}
+        <ul>{% for issue in report.verification.issues %}<li>{{ issue }}</li>{% endfor %}</ul>
+        {% endif %}
+    </div>
+</body>
+</html>
+

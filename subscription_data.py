@@ -11,10 +11,11 @@ from review_data import MAX_EXPORT_SELECTIONS, review_views
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')
 FILTER_TEXT_FIELDS = (
     'search', 'code', 'title', 'impact', 'affected', 'source',
+    'target_vendor', 'target_product', 'affected_product_name',
 )
 VALID_SEVERITIES = {'', 'Critical', 'High', 'Medium', 'Low'}
 VALID_WINDOWS = {'all', 'daily', 'week', 'custom'}
-VALID_GENERATION_MODES = {'company_ai', 'template'}
+VALID_GENERATION_MODES = {'company_ai', 'template', 'enriched_weekly'}
 VALID_LANGUAGES = {'en', 'zh', 'ch'}
 
 DEFAULT_FILTERS = {
@@ -25,11 +26,17 @@ DEFAULT_FILTERS = {
     'impact': '',
     'affected': '',
     'status': '',
+    'severity_threshold': '',
     'include_unknown': False,
     'source': '',
+    'target_vendor': '',
+    'target_product': '',
+    'affected_product_name': '',
     'time_window': 'all',
     'start': '',
     'end': '',
+    'source_timestamp': {},
+    'report_scope': {},
 }
 DEFAULT_NEWSLETTER_PROFILE = {
     'enabled': False,
@@ -132,9 +139,13 @@ def validate_filters(database, value):
         status = ''
     if not isinstance(status, str) or status not in VALID_SEVERITIES:
         raise ValueError('Severity/status must be Critical, High, Medium, or Low.')
+    severity_threshold = value.get('severity_threshold', '')
+    if not isinstance(severity_threshold, str) or severity_threshold not in VALID_SEVERITIES:
+        raise ValueError('Severity threshold must be Critical, High, Medium, or Low.')
     if not isinstance(include_unknown, bool):
         raise ValueError('Include unknown must be true or false.')
     filters['status'] = status
+    filters['severity_threshold'] = severity_threshold
     filters['include_unknown'] = include_unknown
     filters['time_window'] = value.get('time_window', 'all')
     if filters['time_window'] not in VALID_WINDOWS:
@@ -146,6 +157,21 @@ def validate_filters(database, value):
         end = parse_hong_kong_datetime(filters['end'])
         if start is None or end is None or start >= end:
             raise ValueError('Custom filter window requires a valid start before end.')
+    source_timestamp = value.get('source_timestamp') or {}
+    if not isinstance(source_timestamp, dict):
+        raise ValueError('Source timestamp filter must be an object.')
+    filters['source_timestamp'] = dict(source_timestamp)
+    report_scope = value.get('report_scope') or {}
+    if not isinstance(report_scope, dict):
+        raise ValueError('Report scope must be an object.')
+    if 'max_count' in report_scope and report_scope['max_count'] not in (None, ''):
+        max_count = int(report_scope['max_count'])
+        if max_count <= 0 or max_count > MAX_EXPORT_SELECTIONS:
+            raise ValueError(f'Report scope max count must be between 1 and {MAX_EXPORT_SELECTIONS}.')
+        report_scope['max_count'] = max_count
+    if 'kev_only' in report_scope:
+        report_scope['kev_only'] = bool(report_scope['kev_only'])
+    filters['report_scope'] = report_scope
     return filters
 
 
@@ -169,6 +195,11 @@ def validate_profile(database, value, profile_type):
             raise ValueError('Invalid report language.')
         if profile['generation_mode'] == 'template':
             profile['report_language'] = 'en'
+        if profile['generation_mode'] == 'enriched_weekly':
+            collections = profile['filters'].get('collections') or []
+            if collections and collections != ['cve_review']:
+                raise ValueError('enriched_weekly report profiles only support cve_review.')
+            profile['filters']['collections'] = ['cve_review']
         for field in ('next_run_at', 'last_run_at', 'last_job_id', 'last_error', 'last_match_count'):
             if field in value:
                 profile[field] = value[field]
@@ -241,6 +272,25 @@ def build_severity_filter(status='', include_unknown=False):
     return None
 
 
+def build_severity_threshold_filter(threshold='', include_unknown=False):
+    threshold = (threshold or '').strip()
+    if not threshold:
+        return None
+    order = ['Critical', 'High', 'Medium', 'Low']
+    if threshold not in order:
+        raise ValueError('Severity threshold must be Critical, High, Medium, or Low.')
+    allowed = order[:order.index(threshold) + 1]
+    severity_clause = {
+        '$or': [
+            {'severity': {'$regex': f'^{re.escape(value)}(?:\\s+Risk)?$', '$options': 'i'}}
+            for value in allowed
+        ],
+    }
+    if include_unknown:
+        return {'$or': [severity_clause, *unknown_severity_clauses()]}
+    return severity_clause
+
+
 def severity_projection_fields():
     return {
         'status': 1,
@@ -290,6 +340,18 @@ def build_match_filter(filters, now=None):
         'impact': ('impacts',),
         'affected': ('affected',),
         'source': ('source_provider',),
+        'target_vendor': (
+            'classification.best_vendor', 'classification.vendor',
+            'details.cve.affected_products.vendor', 'vendor',
+        ),
+        'target_product': (
+            'classification.best_product', 'classification.product',
+            'details.cve.affected_products.product', 'affected', 'affected_products',
+        ),
+        'affected_product_name': (
+            'classification.best_product', 'details.cve.affected_products.product',
+            'affected', 'affected_products',
+        ),
     }
     for parameter, fields in mapping.items():
         value = filters.get(parameter, '')
@@ -300,6 +362,12 @@ def build_match_filter(filters, now=None):
     severity_clause = build_severity_filter(status, include_unknown)
     if severity_clause:
         clauses.append(severity_clause)
+    severity_threshold_clause = build_severity_threshold_filter(
+        filters.get('severity_threshold', ''),
+        include_unknown,
+    )
+    if severity_threshold_clause:
+        clauses.append(severity_threshold_clause)
     bounds = _window_bounds(filters, now)
     if bounds:
         start, end = bounds
@@ -309,6 +377,28 @@ def build_match_filter(filters, now=None):
                 '$lt': end.astimezone(timezone.utc).isoformat(),
             },
         })
+    source_timestamp = filters.get('source_timestamp') or {}
+    if source_timestamp:
+        source_clause = build_scraped_at_window(
+            source_timestamp.get('time_window') or source_timestamp.get('window') or 'all',
+            source_timestamp.get('start', ''),
+            source_timestamp.get('end', ''),
+            now,
+        )
+        if source_clause:
+            bounds_clause = source_clause['scraped_at']
+            clauses.append({'$or': [
+                {'scraped_at': bounds_clause},
+                {'disclosure_date': bounds_clause},
+            ]})
+    report_scope = filters.get('report_scope') or {}
+    if report_scope.get('kev_only'):
+        clauses.append({'$or': [
+            {'cisa_kev': True},
+            {'kev': True},
+            {'details.cve.cisa_kev': True},
+            {'details.cve.kev': True},
+        ]})
     if not clauses:
         return {}
     return clauses[0] if len(clauses) == 1 else {'$and': clauses}
@@ -336,6 +426,11 @@ def query_profile_matches(database, profile, limit=MAX_EXPORT_SELECTIONS, includ
     filters = profile['filters']
     views = review_views(database)
     collection_names = filters['collections'] or sorted(views)
+    if profile.get('generation_mode') == 'enriched_weekly':
+        collection_names = ['cve_review']
+        scope_limit = (filters.get('report_scope') or {}).get('max_count')
+        if scope_limit:
+            limit = min(limit, int(scope_limit)) if limit is not None else int(scope_limit)
     mongo_filter = build_match_filter(filters)
     results = []
     for view_name in collection_names:

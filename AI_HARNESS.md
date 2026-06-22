@@ -1,9 +1,13 @@
 # Report Harness
 
-The Reports page supports two explicit generation modes:
+The Reports page supports three explicit generation modes:
 
 - **Company AI** queues item and final-summary work through RabbitMQ. Isolated
   Company AI or GPU workers store results in shared Atlas records.
+- **Enriched Weekly** loads candidates only from MongoDB `cve` / `cve_review`,
+  enriches those already-selected CVEs with Tavily search, extracts evidence and
+  report sections through the configured llama-server OpenAI-compatible API, and
+  validates the final 8-section report with Python plus an AI verification pass.
 - **Fixed Template** copies source fields into a structured report and generates
   factual coverage and distribution summaries for severity/status, affected
   products or systems, remediation guidance, and references. Each template
@@ -14,6 +18,15 @@ The Reports page supports two explicit generation modes:
 Company AI report jobs accept `report_language` values `en` (English), `zh`
 (Traditional Chinese), and `ch` (Simplified Chinese). Fixed Template reports
 remain English.
+
+`enriched_weekly` jobs are CVE-only by design. Subscription profiles using this
+mode force `filters.collections = ['cve_review']`, and manual report generation
+rejects non-`cve_review` selections or uploaded JSON. Tavily is used only after
+MongoDB has produced a known CVE candidate; it must not discover or add new CVEs.
+The pipeline stores run-scoped artifacts in the local `web` database under
+`candidate_vulnerability_items`, `search_enrichment_tasks`,
+`search_enrichment_results`, `filtered_enrichment_results`,
+`source_evidence_cards`, `vulnerability_cards`, and `report_metrics`.
 
 Company AI item JSON is generated on demand for each report through RabbitMQ and
 stored temporarily in Atlas `ai_generation_tasks`. Report jobs never write
@@ -58,9 +71,11 @@ Report profile Run actions prepare the browser's Vulnerability Reviews selection
 list. Enabled five-field cron schedules are executed in `Asia/Hong_Kong` by the
 dedicated `scheduler.py` process and generate report jobs automatically.
 
-Company AI, GPU, and RabbitMQ settings live in the same `.env` file. See
-[`.env.example`](.env.example). `COMPANY_AI_ENABLED` and `GPU_ENABLED` are the
-router's provider status flags. Set a provider false before stopping it; the
+Company AI, GPU, and RabbitMQ settings are split between
+[`config/config.json`](config/config.json) (non-sensitive) and `.env`
+(secrets). See [`.env.example`](.env.example). `flags.company_ai_enabled` and
+`flags.gpu_enabled` in JSON are the provider toggles; environment variables
+still override when set. Set a provider false before stopping it; the
 router never publishes work to a disabled provider.
 `start_prompt` primes preprocessor rooms for per-item vulnerability JSON work.
 `summary_prompt` drives the report final executive summary. It supports
@@ -81,6 +96,16 @@ are preserved across restarts. With the default
 or republish stale shared tasks; report jobs rely on their timeout and template
 fallback if queued AI work is unavailable. Queue purging is an explicit
 `company_ai_preprocessor.py --purge-queues` maintenance action.
+
+Enriched Weekly secrets live in `.env` (`TAVILY_API_KEY`). Other enriched
+settings live in `config/config.json` under `enriched.*`. `TAVILY_API_KEY` is required
+for Tavily enrichment. `ENRICHED_LLM_BASE_URL` is required for all enriched AI
+steps and must point at a llama-server OpenAI-compatible `/v1` base URL. The
+pipeline calls that endpoint directly for evidence extraction, report section
+generation, and AI verification. It does not use Company AI, the RabbitMQ GPU
+queue, DeepSeek, or Gemini. `ENRICHED_LLM_MODEL`,
+`ENRICHED_LLM_TIMEOUT_SECONDS`, `ENRICHED_LLM_MAX_OUTPUT_TOKENS`, and
+`ENRICHED_LLM_JSON_RETRIES` tune llama-server calls.
 
 Background preprocessing is disabled by default
 (`BACKGROUND_PREPROCESSING_ENABLED=false`) and is no longer required for normal
@@ -118,8 +143,9 @@ start-prompt responses are ignored. Cleanup calls
 `success: true` and `data: true`; cleanup failure leaves the completed report
 intact and stores a warning.
 
-Per-item cleanup, retry, and preview behavior is configured with `REPORT_*`
-variables in `.env`. `REPORT_JSON_ERROR_MESSAGE` configures the full correction
+Per-item cleanup, retry, and preview behavior is configured under `report.*` in
+`config/config.json` (or via `REPORT_*` environment overrides). `report.json_error_message`
+configures the full correction
 prompt sent to Company AI when a JSON response needs correction. Use `${error}`
 where the parser or schema validation error should be inserted.
 

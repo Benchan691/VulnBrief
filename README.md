@@ -58,15 +58,19 @@ flowchart LR
 
 ## Configuration
 
-**All configuration lives in `.env`.** Do not use `config/config.json`.
+Non-sensitive settings live in **[`config/config.json`](config/config.json)**.
+Secrets and connection strings live in **`.env`** (gitignored).
 
 ```sh
 cp .env.example .env
-# edit .env with your values
+# edit .env with secrets; tune config/config.json for queues, prompts, and limits
 ```
 
-The app loads `.env` automatically on startup. See [`.env.example`](.env.example)
-for every variable. Minimum for local web:
+The app loads `.env` first, then merges `config/config.json`. Environment
+variables override JSON when both are set. Set `APP_CONFIG` to use a different
+JSON path.
+
+Minimum `.env` for local web:
 
 | Variable | Purpose |
 |----------|---------|
@@ -75,11 +79,7 @@ for every variable. Minimum for local web:
 | `FLASK_SECRET_KEY` | Session signing |
 | `RABBITMQ_URL` | CloudAMQP (for AI reports / preprocessor) |
 
-List values accept JSON arrays (`["a","b"]`) or comma-separated strings (`a,b`).
-Long prompts can use `\n` inside double-quoted `.env` strings.
-
-See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full setup, migration from
-`config/config.json`, and troubleshooting.
+See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full setup and troubleshooting.
 
 TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them local if your deployment uses them.
 
@@ -138,7 +138,7 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 
 | Path | Description |
 |------|-------------|
-| `app.py` | Flask application entry |
+| `config/config.json` | Non-sensitive application settings (queues, prompts, limits) |
 | `company_ai_preprocessor.py` | RabbitMQ scanner, router, and Company AI worker entrypoint |
 | `company_ai_auth_cache.py` | Process-wide Company AI token cache |
 | `scheduler.py` | Scheduled report generation worker |

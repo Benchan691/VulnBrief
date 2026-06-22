@@ -419,26 +419,34 @@
 
     function classificationDisplay(document) {
         const classification = document && document.classification;
-        if (!classification || typeof classification !== 'object') {
-            return { vendor: '-', product: '-' };
+        if (classification && typeof classification === 'object') {
+            if (classification.status === 'unclassified') {
+                return { vendor: '-', product: '-' };
+            }
+            const vendor = classification.vendor || classification.best_vendor || (document && document.vendor) || '';
+            const product = classification.product || classification.best_product || (document && document.product) || '';
+            return {
+                vendor: vendor || '-',
+                product: product || '-',
+            };
         }
-        if (classification.status === 'unclassified') {
-            return { vendor: 'unclassified', product: 'unclassified' };
+        const vendor = document && document.vendor;
+        const product = document && document.product;
+        if (vendor || product) {
+            return { vendor: vendor || '-', product: product || '-' };
         }
-        return {
-            vendor: classification.vendor || classification.best_vendor || '-',
-            product: classification.product || classification.best_product || '-',
-        };
+        return { vendor: '-', product: '-' };
     }
 
     function renderHeaders(mode) {
         resultsHead.replaceChildren();
-        addHeader(mode === 'cve' ? 'Relate' : 'Select');
+        addHeader('Select');
+        if (mode === 'cve') addHeader('Relate');
         if (mode !== 'cve') addHeader('Collection');
         if (mode !== 'cve') addHeader('Code / CVE');
-        addHeader('Title');
+        addHeader(mode === 'cve' ? 'CVE' : 'Title');
         addHeader('Severity');
-        addHeader('Affected');
+        addHeader('Description');
         if (mode === 'cve') {
             addHeader('Vendor');
             addHeader('Product');
@@ -580,10 +588,9 @@
         body.data.forEach(function (item) {
             const projectedDocument = item.document;
             const row = document.createElement('tr');
+            renderSelectCell(row, item, keys);
             if (mode === 'cve') {
                 renderRelatedButtonCell(row, item);
-            } else {
-                renderSelectCell(row, item, keys);
             }
             if (mode !== 'cve') {
                 addCell(row, item.collection, '', true);
@@ -591,9 +598,28 @@
             if (mode !== 'cve') {
                 addCell(row, firstValue(projectedDocument, ['code', 'cve']), 'fw-medium', true);
             }
-            addCell(row, firstValue(projectedDocument, ['title']), '', true);
-            addCell(row, severityValue(projectedDocument), '', true);
-            addCell(row, firstValue(projectedDocument, ['affected', 'affected_products']), 'small', true);
+            addCell(
+                row,
+                mode === 'cve'
+                    ? firstValue(projectedDocument, ['code', 'cve', 'title'])
+                    : firstValue(projectedDocument, ['title']),
+                mode === 'cve' ? 'fw-medium' : '',
+                true
+            );
+            addCell(
+                row,
+                mode === 'cve'
+                    ? firstValue(projectedDocument, ['severity', 'impacts', 'status'])
+                    : severityValue(projectedDocument),
+                '',
+                true
+            );
+            addCell(
+                row,
+                firstValue(projectedDocument, ['description', 'summary', 'overview', 'intro']),
+                'small',
+                true
+            );
             if (mode === 'cve') {
                 const classified = classificationDisplay(projectedDocument);
                 addCell(row, classified.vendor, '', true);

@@ -100,20 +100,25 @@ Start Docker Compose only after local Mongo responds to the ping above.
 
 ## 5. Create configuration
 
-**All configuration lives in `.env`. Do not use `config/config.json`.**
+**Non-sensitive settings:** [`config/config.json`](config/config.json) (committed)
 
-`.env` is gitignored. Create it from the committed template:
+**Secrets and connection strings:** `.env` (gitignored)
 
 ```sh
 cp .env.example .env
 chmod 600 .env
 ```
 
-Edit `.env` with your values. The app loads this file automatically when any
-process starts (`app.py`, `company_ai_preprocessor.py`, `scheduler.py`) — you do
-not need to run `source .env` manually.
+Edit `.env` with MongoDB URIs, RabbitMQ URL, Company AI secrets, and other
+credentials. Tune queues, prompts, model names, and report limits in
+`config/config.json`. The app loads `.env` automatically when any process starts
+(`app.py`, `company_ai_preprocessor.py`, `scheduler.py`) — you do not need to
+run `source .env` manually.
 
-### Minimum variables for local dev
+Environment variables override `config/config.json` when both are set. Point at
+a different JSON file with `APP_CONFIG=/path/to/config.json`.
+
+### Minimum `.env` for local dev
 
 | Variable | Purpose |
 |----------|---------|
@@ -121,54 +126,40 @@ not need to run `source .env` manually.
 | `LOCAL_MONGO_URI` | Local MongoDB (default `mongodb://localhost:27017/`) |
 | `FLASK_SECRET_KEY` | Flask session signing (use a long random string) |
 | `RABBITMQ_URL` | CloudAMQP URL (required for AI reports and preprocessor) |
-| `COMPANY_AI_*` | Company AI credentials (required when `COMPANY_AI_ENABLED=true`) |
+| `COMPANY_AI_PASSWORD`, `COMPANY_AI_PUBLIC_KEY_B64`, `COMPANY_AI_SIGN_SECRET` | Company AI auth (when `company_ai.enabled` is true in JSON) |
 
-Background preprocessing is disabled by default with
-`BACKGROUND_PREPROCESSING_ENABLED=false`. Normal report generation enqueues
-selected items into shared `ai_generation_tasks` at `RABBITMQ_REPORT_PRIORITY`;
-it does not write source `html_json`. Existing `html_json` fields are legacy
-read-only cache data and do not require migration.
+Background preprocessing is disabled by default in `config/config.json`
+(`flags.background_preprocessing_enabled`). Normal report generation enqueues
+selected items into shared `ai_generation_tasks` at the configured report
+priority; it does not write source `html_json`. Existing `html_json` fields are
+legacy read-only cache data and do not require migration.
 
-### Multiline values
+Long prompts and report messages can be edited directly in `config/config.json`
+as normal JSON strings (including `\n` escapes).
 
-Long prompts (`COMPANY_AI_START_PROMPT`, `COMPANY_AI_SUMMARY_PROMPT`,
-`REPORT_JSON_ERROR_MESSAGE`) can use `\n` inside double-quoted strings in
-`.env`. See [`.env.example`](.env.example) for the full variable list.
+### Common `config/config.json` sections
 
-### Migrating from `config/config.json`
+| JSON path | Purpose |
+|-----------|---------|
+| `mongodb.*` | Database and collection names |
+| `rabbitmq.*` | Queue names and priorities |
+| `company_ai.*` | Company AI URL, username, prompts, timeouts (no password) |
+| `flags.*` | Feature toggles |
+| `report.*` | Report compaction and JSON retry settings |
+| `enriched.*` | Enriched Weekly Tavily/llama tuning |
 
-If you previously used `config/config.json`, copy values into `.env`:
+When running the GPU worker stack (`GPU_server/`), align webserver
+`config/config.json` with `GPU_server/config/gpu_server.json`:
 
-| Old JSON path | Env variable |
-|---------------|--------------|
-| `atlas_mongo_uri` | `ATLAS_MONGO_URI` |
-| `local_mongo_uri` | `LOCAL_MONGO_URI` |
-| `local_database` / `web_database` | `LOCAL_DATABASE` |
-| `vulnerabilities_database` | `VULNERABILITIES_DATABASE` |
-| `flask_secret_key` | `FLASK_SECRET_KEY` |
-| `review_view_suffix` | `REVIEW_VIEW_SUFFIX` |
-| `rabbitmq.url` | `RABBITMQ_URL` |
-| `rabbitmq.intake_queue` | `RABBITMQ_INTAKE_QUEUE` |
-| `company_ai.base_url` | `COMPANY_AI_BASE_URL` |
-| `company_ai.username` | `COMPANY_AI_USERNAME` |
-| `company_ai.password` | `COMPANY_AI_PASSWORD` |
-| `company_ai.enabled` | `COMPANY_AI_ENABLED` |
-| `web_auth.bootstrap_username` | `WEB_AUTH_BOOTSTRAP_USERNAME` |
-| `web_auth.bootstrap_password` | `WEB_AUTH_BOOTSTRAP_PASSWORD` |
-| `gpu_preprocessing.enabled` | `GPU_ENABLED` |
+| Webserver JSON | GPU JSON / default |
+|----------------|-------------------|
+| `rabbitmq.gpu_queue` | `rabbitmq.gpu_queue` |
+| `gpu.worker_concurrency` | `inference.worker_concurrency` |
+| `preprocessing.cache_version` | `processing.cache_version` |
+| `report.max_depth` | `report_compaction.max_depth` |
 
-When running the GPU worker stack (`GPU_server/`), align these webserver variables
-with `GPU_server/config/gpu_server.json`:
-
-| Webserver `.env` | GPU JSON / default |
-|------------------|-------------------|
-| `RABBITMQ_GPU_QUEUE=gpu_processing` | `rabbitmq.gpu_queue` |
-| `GPU_WORKER_CONCURRENCY=1` | `inference.worker_concurrency` |
-| `PREPROCESSING_CACHE_VERSION=1` | `processing.cache_version` |
-| `REPORT_MAX_DEPTH=10` | `report_compaction.max_depth` |
-
-See [`.env.example`](.env.example) and [configuration.py](configuration.py) for
-every supported variable and its default.
+See [`.env.example`](.env.example), [`config/config.json`](config/config.json),
+and [configuration.py](configuration.py) for every supported setting.
 
 ## 6. TLS certificates (dev server only)
 

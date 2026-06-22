@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from bootstrap import _load_env
@@ -48,6 +50,19 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         COMPANY_AI_ENABLED='true',
         COMPANY_AI_DEFAULT_EWMA_SECONDS='55.5',
         AI_PROVIDER_METRICS_COLLECTION='provider_metrics',
+        TAVILY_API_KEY='tavily-key',
+        TAVILY_SEARCH_DEPTH='advanced',
+        TAVILY_MAX_RESULTS='7',
+        TAVILY_REQUEST_TIMEOUT_SECONDS='31',
+        TAVILY_MAX_CONCURRENT_REQUESTS='2',
+        ENRICHED_VENDOR_DOMAIN_MAP='{"Acme":"acme.example"}',
+        ENRICHED_RESULTS_PER_TASK='5',
+        ENRICHED_LLM_BASE_URL='https://llama.example/v1',
+        ENRICHED_LLM_MODEL='qwen-test',
+        ENRICHED_LLM_TIMEOUT_SECONDS='121',
+        ENRICHED_LLM_MAX_OUTPUT_TOKENS='3000',
+        ENRICHED_LLM_JSON_RETRIES='3',
+        ENRICHED_LLM_PAGE_CHARS='9000',
         RABBITMQ_MAX_PRIORITY='8',
         RABBITMQ_MAX_QUEUE_SIZE='19999',
         RABBITMQ_BACKGROUND_PRIORITY='2',
@@ -93,6 +108,19 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['COMPANY_AI_ENABLED'] is True
     assert loaded['COMPANY_AI_DEFAULT_EWMA_SECONDS'] == 55.5
     assert loaded['AI_PROVIDER_METRICS_COLLECTION'] == 'provider_metrics'
+    assert loaded['TAVILY_API_KEY'] == 'tavily-key'
+    assert loaded['TAVILY_SEARCH_DEPTH'] == 'advanced'
+    assert loaded['TAVILY_MAX_RESULTS'] == 7
+    assert loaded['TAVILY_REQUEST_TIMEOUT_SECONDS'] == 31
+    assert loaded['TAVILY_MAX_CONCURRENT_REQUESTS'] == 2
+    assert loaded['ENRICHED_VENDOR_DOMAIN_MAP'] == {'Acme': 'acme.example'}
+    assert loaded['ENRICHED_RESULTS_PER_TASK'] == 5
+    assert loaded['ENRICHED_LLM_BASE_URL'] == 'https://llama.example/v1'
+    assert loaded['ENRICHED_LLM_MODEL'] == 'qwen-test'
+    assert loaded['ENRICHED_LLM_TIMEOUT_SECONDS'] == 121
+    assert loaded['ENRICHED_LLM_MAX_OUTPUT_TOKENS'] == 3000
+    assert loaded['ENRICHED_LLM_JSON_RETRIES'] == 3
+    assert loaded['ENRICHED_LLM_PAGE_CHARS'] == 9000
     assert loaded['RABBITMQ_URL'] == 'amqp://rabbit.example/'
     assert loaded['RABBITMQ_QUEUE_NAME'] == 'summaries'
     assert loaded['RABBITMQ_INTAKE_QUEUE'] == 'summaries'
@@ -220,6 +248,50 @@ def test_environment_list_and_report_defaults(tmp_path, monkeypatch):
     assert loaded['REPORT_MAX_STRING_CHARS'] == 5000
     assert loaded['REPORT_PREVIEW_AFTER_EACH_ITEM'] is False
     assert loaded['REPORT_JSON_ERROR_MESSAGE'] == DEFAULT_JSON_ERROR_MESSAGE
+
+
+def test_settings_load_from_config_json(tmp_path, monkeypatch):
+    _set_required_env(monkeypatch)
+    for name in (
+        'COMPANY_AI_BASE_URL', 'COMPANY_AI_USERNAME', 'COMPANY_AI_START_PROMPT',
+        'COMPANY_AI_SUMMARY_PROMPT', 'COMPANY_AI_MODEL', 'RABBITMQ_INTAKE_QUEUE',
+        'RABBITMQ_GPU_QUEUE', 'COMPANY_AI_PARALLEL_CHATS', 'REPORT_MAX_DEPTH',
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.json').write_text(
+        json.dumps({
+            'company_ai': {
+                'base_url': 'https://json.example',
+                'username': 'json-user',
+                'start_prompt': 'json-start',
+                'summary_prompt': 'json-summary',
+                'model': 'json-model',
+                'parallel_chats': 2,
+            },
+            'rabbitmq': {
+                'intake_queue': 'json-intake',
+                'gpu_queue': 'json-gpu',
+            },
+            'report': {
+                'max_depth': 11,
+            },
+        }),
+        encoding='utf-8',
+    )
+
+    loaded = load_application_config(str(tmp_path))
+    assert loaded['COMPANY_AI_BASE_URL'] == 'https://json.example'
+    assert loaded['COMPANY_AI_USERNAME'] == 'json-user'
+    assert loaded['COMPANY_AI_START_PROMPT'] == 'json-start'
+    assert loaded['COMPANY_AI_SUMMARY_PROMPT'] == 'json-summary'
+    assert loaded['COMPANY_AI_MODEL'] == 'json-model'
+    assert loaded['COMPANY_AI_PARALLEL_CHATS'] == 2
+    assert loaded['RABBITMQ_INTAKE_QUEUE'] == 'json-intake'
+    assert loaded['RABBITMQ_GPU_QUEUE'] == 'json-gpu'
+    assert loaded['REPORT_MAX_DEPTH'] == 11
 
 
 def test_load_dotenv_from_file(tmp_path, monkeypatch):

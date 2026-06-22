@@ -3,13 +3,15 @@ import re
 from datetime import datetime, timezone
 
 from bson import json_util
-from flask import Response, current_app, jsonify, render_template, request
+from flask import Response, current_app, jsonify, render_template, request, session
 from pymongo.errors import PyMongoError
 
 from mongo import get_vulnerabilities_database
 from review_data import (
     MAX_EXPORT_SELECTIONS,
     canonical_selection_id,
+    is_cve_record_document,
+    normalize_cve_record_document,
     resolve_vulnerability_document,
     review_views,
 )
@@ -211,6 +213,34 @@ def _selection_key(collection, selection_id):
 
 
 def _source_projection(view):
+    source_name = view.get('options', {}).get('viewOn', '')
+    if source_name == 'cve':
+        projection = {
+            '_id': 1,
+            'cveMetadata': 1,
+            'containers': 1,
+            'title': 1,
+            'code': 1,
+            'cve': 1,
+            'details': 1,
+            'scraped_at': 1,
+            'disclosure_date': 1,
+            'classification': 1,
+            'cve_code': 1,
+            'cve_codes': 1,
+            'related_cves': 1,
+            'related_cve_ids': 1,
+            'affected': 1,
+            'affected_products': 1,
+            'description': 1,
+            'impacts': 1,
+            'recommendation': 1,
+            'related_link': 1,
+            'references': 1,
+        }
+        projection.update(severity_projection_fields())
+        return [{'$project': projection}]
+
     pipeline = list(view.get('options', {}).get('pipeline', []))
     if not pipeline or '$project' not in pipeline[0]:
         raise ValueError('Review view must begin with a projection.')
@@ -330,8 +360,16 @@ def _iter_merged_documents(database, views, view_names, mongo_filter):
         )
 
 
-def _review_response_row(collection_name, document):
+def _prepare_review_document(collection_name, document, view=None):
     document = dict(document)
+    source_name = (view or {}).get('options', {}).get('viewOn', '')
+    if source_name == 'cve' or collection_name == 'cve_review' or is_cve_record_document(document):
+        document = normalize_cve_record_document(document)
+    return document
+
+
+def _review_response_row(collection_name, document, view=None):
+    document = _prepare_review_document(collection_name, document, view)
     return {
         'collection': collection_name,
         'selection_id': str(document.pop('_id')),
@@ -339,8 +377,8 @@ def _review_response_row(collection_name, document):
     }
 
 
-def _merged_review_row(collection_name, document):
-    document = dict(document)
+def _merged_review_row(collection_name, document, view=None):
+    document = _prepare_review_document(collection_name, document, view)
     sort_key = _review_sort_key(document)
     selection_id = str(document.pop('_id'))
     return {
@@ -356,7 +394,7 @@ def _merged_review_rows(database, views, view_names, mongo_filter, search=''):
     for name, document in _iter_merged_documents(database, views, view_names, mongo_filter):
         if not _document_matches_search(document, search):
             continue
-        rows.append(_merged_review_row(name, document))
+        rows.append(_merged_review_row(name, document, views[name]))
     return rows
 
 
@@ -375,7 +413,7 @@ def _paginated_merged_rows(database, views, view_names, mongo_filter, search, sk
         if total <= skip:
             continue
         if len(page_rows) < limit:
-            page_rows.append(_review_response_row(name, document))
+            page_rows.append(_review_response_row(name, document, views[name]))
     return total, page_rows
 
 
@@ -424,16 +462,17 @@ def review_collection(collection_name):
 def get_review_collections():
     try:
         database = get_vulnerabilities_database()
+        view_names = _review_view_names(database)
         data = [
             {
                 'name': name,
                 'source': name[:-len(current_app.config['REVIEW_VIEW_SUFFIX'])],
                 'count': database[name].count_documents({}),
             }
-            for name in _review_view_names(database)
+            for name in view_names
         ]
         return jsonify({'data': data})
-    except PyMongoError:
+    except PyMongoError as exc:
         return jsonify({'error': 'Unable to connect to the vulnerabilities database.'}), 503
 
 
@@ -749,7 +788,7 @@ def search_review_documents():
         })
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
-    except PyMongoError:
+    except PyMongoError as exc:
         return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
     except Exception:
         current_app.logger.exception('Unexpected review search failure.')
@@ -775,6 +814,10 @@ def get_review_documents(collection_name):
             (page - 1) * page_size,
             page_size,
         )
+        documents = [
+            _prepare_review_document(collection_name, document, view)
+            for document in documents
+        ]
 
         return jsonify({
             'data': [
