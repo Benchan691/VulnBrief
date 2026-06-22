@@ -1,36 +1,15 @@
-import base64
-import hashlib
 import html
 import json
 import os
-import random
 import re
-import string
-import threading
-import time
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from string import Template
-from zoneinfo import ZoneInfo
 
-import requests
 from bson import ObjectId, json_util
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import padding
 from flask import current_app, render_template
-from jsonschema import ValidationError, validate
+from jsonschema import validate
 from pymongo import ReturnDocument
-from pymongo.errors import DuplicateKeyError
 
-from company_ai_parsers import (
-    CompanyAIParseError,
-    final_system_prompt,
-    item_system_prompt,
-    parse_final_text,
-    parse_item_text,
-    validate_parsed_final,
-    validate_parsed_item,
-)
 from newsletter_store import normalize_newsletter
 from mongo import get_vulnerabilities_database, get_web_database
 from report_job_progress import (
@@ -38,15 +17,6 @@ from report_job_progress import (
     init_job_progress,
     mark_job_started,
     update_job_progress,
-)
-from company_ai_auth_cache import (
-    get_tokens,
-    invalidate,
-    is_login_blocked,
-    record_login_failure,
-    reset_login_failures,
-    set_login_blocked,
-    set_tokens,
 )
 from review_data import (
     MAX_EXPORT_SELECTIONS,
@@ -56,7 +26,6 @@ from review_data import (
 )
 
 
-WORKER_LOCK = threading.Lock()
 
 
 DEFAULT_JSON_ERROR_MESSAGE = (
@@ -67,8 +36,8 @@ DEFAULT_JSON_ERROR_MESSAGE = (
 )
 REPORT_TEMPLATE = 'generated_report.html'
 ENRICHED_REPORT_TEMPLATE = 'enriched_report.html'
-GENERATION_MODES = {'company_ai', 'template', 'enriched_weekly'}
-LEGACY_GENERATION_MODES = {'ai': 'company_ai'}
+GENERATION_MODES = {'template', 'enriched_weekly'}
+LEGACY_GENERATION_MODES = {'ai': 'enriched_weekly', 'company_ai': 'enriched_weekly'}
 REPORT_LANGUAGES = {
     'en': 'English',
     'zh': 'Traditional Chinese',
@@ -145,11 +114,6 @@ HIGHLIGHT_PROPERTIES = {
     'source_link': {'type': 'string'},
     'newsletter': {'type': 'object'},
 }
-AI_HIGHLIGHT_SCHEMA = {
-    'type': 'object',
-    'required': ['summary'],
-    'properties': HIGHLIGHT_PROPERTIES,
-}
 REPORT_HIGHLIGHT_SCHEMA = {
     'type': 'object',
     'required': ['title', 'summary'],
@@ -169,26 +133,6 @@ REPORT_SCHEMA = {
         'recommendations': {'type': 'array', 'items': {'type': 'string'}},
     },
 }
-ITEM_SCHEMA = {
-    'type': 'object',
-    'required': ['highlight', 'recommendations'],
-    'properties': {
-        'highlight': AI_HIGHLIGHT_SCHEMA,
-        'recommendations': {'type': 'array', 'items': {'type': 'string'}},
-    },
-}
-FINAL_SCHEMA = {
-    'type': 'object',
-    'required': ['executive_summary', 'trends', 'recommendations'],
-    'properties': {
-        'title': {'type': 'string'},
-        'executive_summary': {'type': 'string'},
-        'trends': {'type': 'array', 'items': {'type': 'string'}},
-        'recommendations': {'type': 'array', 'items': {'type': 'string'}},
-    },
-}
-
-
 def _fixed_report_title(report_language):
     labels = REPORT_LABELS.get(report_language, REPORT_LABELS['en'])
     return labels['report_title']
@@ -337,602 +281,6 @@ def estimate_tokens(value):
 def json_error_prompt(provider, error):
     template = getattr(provider, 'json_error_message', DEFAULT_JSON_ERROR_MESSAGE)
     return Template(template).safe_substitute(error=str(error))
-
-
-def _item_schema_example(report_language):
-    language = REPORT_LANGUAGES[report_language]
-    return {
-        'highlight': {
-            'code': 'CVE identifier or source code',
-            'severity': 'Severity if known',
-            'summary': f'Evidence-based summary in {language}.',
-            'affected': [f'Affected product in {language}'],
-            'references': ['https://example.com'],
-            'table': {
-                'caption': f'Optional table caption in {language}',
-                'headers': ['Product', 'Version', 'Status'],
-                'rows': [['Example product', '1.0', 'Affected']],
-            },
-        },
-        'recommendations': [f'Prioritized defensive action in {language}.'],
-    }
-
-
-def _response_schema_example(report_language):
-    language = REPORT_LANGUAGES[report_language]
-    return {
-        'title': f'{language} Cybersecurity Report title',
-        'executive_summary': f'Concise executive summary in {language}.',
-        'highlights': [{
-            'title': f'Vulnerability title in {language}',
-            'code': 'CVE identifier or source code',
-            'severity': 'Severity if known',
-            'summary': f'Evidence-based summary in {language}.',
-            'affected': [f'Affected product in {language}'],
-            'references': ['https://example.com'],
-        }],
-        'trends': [f'Trends in {language}.'],
-        'recommendations': [f'Prioritized defensive action in {language}.'],
-    }
-
-
-class ProviderError(RuntimeError):
-    pass
-
-
-class CompanyAILoginLimitExceeded(ProviderError):
-    pass
-
-
-def _parse_json_text(content):
-    if not isinstance(content, str) or not content.strip():
-        raise ProviderError('AI provider returned an empty response.')
-    text = content.strip()
-    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, flags=re.IGNORECASE | re.DOTALL)
-    if fenced:
-        text = fenced.group(1)
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ProviderError(f'AI provider returned invalid JSON: {exc}') from exc
-    if not isinstance(result, dict):
-        raise ProviderError('AI provider JSON response must be an object.')
-    return result
-
-
-class CompanyAIProvider:
-    retains_conversation_context = True
-
-    def __init__(self, config):
-        self.base_url = config['COMPANY_AI_BASE_URL'].rstrip('/')
-        self.api_base = self.base_url + '/api'
-        self.smartbot_base = self.base_url + '/smartbot/openapi/im'
-        self.username = config['COMPANY_AI_USERNAME']
-        self.password = config['COMPANY_AI_PASSWORD']
-        self.start_prompt = config['COMPANY_AI_START_PROMPT']
-        self.summary_prompt = config.get('COMPANY_AI_SUMMARY_PROMPT', '')
-        self.public_key_b64 = config['COMPANY_AI_PUBLIC_KEY_B64']
-        self.sign_secret = config['COMPANY_AI_SIGN_SECRET']
-        self.api_timezone = config['COMPANY_AI_API_TIMEZONE']
-        self.sse_delay = config['COMPANY_AI_SSE_DELAY_SECONDS']
-        self.conversation_id = None
-        self.system_token = None
-        self.bot_token = None
-        self.model = config['COMPANY_AI_MODEL']
-        self.owner_account = config['COMPANY_AI_OWNER_ACCOUNT']
-        self.platform_id = config['COMPANY_AI_PLATFORM_ID']
-        self.qa_type = config['COMPANY_AI_QA_TYPE']
-        self.from_source = config['COMPANY_AI_FROM_SOURCE']
-        self.use_think = config['COMPANY_AI_USE_THINK']
-        self.user_prompt = config['COMPANY_AI_USER_PROMPT']
-        self.dataset_ids = config['COMPANY_AI_DATASET_IDS']
-        self.file_ids = config['COMPANY_AI_FILE_IDS']
-        self.max_output = config['COMPANY_AI_MAX_OUTPUT_TOKENS']
-        self.timeout = config['COMPANY_AI_TIMEOUT_SECONDS']
-        self.retries = config['COMPANY_AI_RETRIES']
-        self.auth_ttl_seconds = config.get('COMPANY_AI_AUTH_TTL_SECONDS', 3600)
-        self.login_max_failures = config.get('COMPANY_AI_LOGIN_MAX_FAILURES', 3)
-        self.json_error_message = config.get('REPORT_JSON_ERROR_MESSAGE', DEFAULT_JSON_ERROR_MESSAGE)
-
-    @staticmethod
-    def _normalize_bearer(token):
-        token = (token or '').strip()
-        if not token:
-            return ''
-        return token if token.lower().startswith('bearer ') else f'Bearer {token}'
-
-    @staticmethod
-    def _sort_asc(value):
-        if isinstance(value, dict):
-            return {
-                key: CompanyAIProvider._sort_asc(value[key])
-                for key in sorted(value)
-                if value[key] not in (None, '')
-            }
-        if isinstance(value, list):
-            return [CompanyAIProvider._sort_asc(item) for item in value]
-        return value
-
-    def _request_id(self, length=20):
-        alphabet = string.ascii_lowercase + string.digits
-        return ''.join(random.choice(alphabet) for _ in range(length))
-
-    def _timestamp(self):
-        return datetime.now(ZoneInfo(self.api_timezone)).strftime('%Y%m%d%H%M%S')
-
-    def _signature(self, request_id, timestamp, body, url_path):
-        payload = self._sort_asc({
-            **body,
-            '_url_': url_path,
-            'requestId': request_id,
-            'timestamp': timestamp,
-        })
-        text = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
-        return hashlib.md5((self.sign_secret + text).encode('utf-8')).hexdigest().upper()
-
-    def _api_headers(self, url_path, body=None, authorization=''):
-        body = body or {}
-        request_id = self._request_id()
-        timestamp = self._timestamp()
-        return {
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en_US',
-            'Accept-Time-Zone': self.api_timezone,
-            'Authorization': authorization,
-            'Content-Type': 'application/json',
-            'Origin': self.base_url,
-            'Referer': self.base_url + '/',
-            'User-Agent': 'Mozilla/5.0',
-            'platform': 'pc',
-            'requestId': request_id,
-            'timestamp': timestamp,
-            'signature': self._signature(request_id, timestamp, body, url_path),
-        }
-
-    def _smartbot_headers(self, accept='application/json, text/plain, */*'):
-        return {
-            'Accept': accept,
-            'Accept-Language': 'en_US',
-            'Authorization': self.bot_token,
-            'x-authorization': self.system_token,
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Content-Type': 'application/json',
-            'Origin': self.base_url,
-            'Referer': self.base_url + '/',
-            'User-Agent': 'Mozilla/5.0',
-        }
-
-    def _validate_config(self):
-        required = {
-            'COMPANY_AI_BASE_URL': self.base_url,
-            'COMPANY_AI_USERNAME': self.username,
-            'COMPANY_AI_PASSWORD': self.password,
-            'COMPANY_AI_START_PROMPT': self.start_prompt,
-            'COMPANY_AI_PUBLIC_KEY_B64': self.public_key_b64,
-            'COMPANY_AI_SIGN_SECRET': self.sign_secret,
-            'COMPANY_AI_MODEL': self.model,
-            'COMPANY_AI_OWNER_ACCOUNT': self.owner_account,
-        }
-        missing = [key for key, value in required.items() if not value]
-        if missing:
-            raise ProviderError(f'Company AI configuration is missing: {", ".join(missing)}.')
-
-    def _encrypt_password(self):
-        clean = ''.join(self.public_key_b64.split())
-        lines = [clean[index:index + 64] for index in range(0, len(clean), 64)]
-        pem = (
-            '-----BEGIN PUBLIC KEY-----\n'
-            + '\n'.join(lines)
-            + '\n-----END PUBLIC KEY-----\n'
-        ).encode('ascii')
-        public_key = serialization.load_pem_public_key(pem)
-        encrypted = public_key.encrypt(self.password.encode('utf-8'), padding.PKCS1v15())
-        return base64.b64encode(encrypted).decode('ascii')
-
-    @staticmethod
-    def _is_auth_error(response, *, read_body=True):
-        if response is None:
-            return False
-        status_code = getattr(response, 'status_code', None)
-        if status_code in (401, 403):
-            return True
-        if not read_body:
-            return False
-        try:
-            body = response.json()
-        except (ValueError, AttributeError):
-            return False
-        if body.get('success') is False:
-            message = str(body.get('msg') or '').lower()
-            return any(
-                term in message
-                for term in ('auth', 'token', 'login', 'unauthorized', 'expired', 'permission')
-            )
-        return False
-
-    def _raise_if_login_blocked(self):
-        if is_login_blocked(self.base_url, self.username):
-            raise CompanyAILoginLimitExceeded(
-                'Company AI login is blocked after too many consecutive failures.',
-            )
-
-    def _handle_login_failure(self, error):
-        count = record_login_failure(self.base_url, self.username)
-        if count >= self.login_max_failures:
-            set_login_blocked(self.base_url, self.username)
-            raise CompanyAILoginLimitExceeded(
-                f'Company AI login failed {count} times; login is blocked.',
-            ) from error
-        if isinstance(error, ProviderError):
-            raise error
-        raise ProviderError(str(error)) from error
-
-    def _fetch_tokens(self):
-        self._validate_config()
-        try:
-            login_path = '/sys/login'
-            login_body = {'username': self.username, 'password': self._encrypt_password()}
-            response = requests.post(
-                self.api_base + login_path,
-                headers=self._api_headers(login_path, login_body),
-                json=login_body,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-            if body.get('success') is not True or not body.get('data'):
-                raise ProviderError('Company AI login failed.')
-            system_token = self._normalize_bearer(body['data'])
-
-            token_path = '/sys/getBotToken'
-            response = requests.get(
-                self.api_base + token_path,
-                headers=self._api_headers(token_path, authorization=system_token),
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-            if body.get('success') is not True or not body.get('data'):
-                raise ProviderError(body.get('msg') or 'Company AI bot-token request failed.')
-            bot_token = self._normalize_bearer(body['data'])
-            reset_login_failures(self.base_url, self.username)
-            return system_token, bot_token
-        except (ProviderError, requests.RequestException) as exc:
-            self._handle_login_failure(exc)
-
-    def _assign_tokens(self, system_token, bot_token):
-        self.system_token = system_token
-        self.bot_token = bot_token
-
-    def _ensure_authenticated(self):
-        self.ensure_session()
-
-    def ensure_session(self):
-        self._raise_if_login_blocked()
-        entry = get_tokens(self.base_url, self.username)
-        if entry is not None:
-            self._assign_tokens(entry.system_token, entry.bot_token)
-            return 'cached'
-        with WORKER_LOCK:
-            self._raise_if_login_blocked()
-            entry = get_tokens(self.base_url, self.username)
-            if entry is not None:
-                self._assign_tokens(entry.system_token, entry.bot_token)
-                return 'cached'
-            system_token, bot_token = self._fetch_tokens()
-            set_tokens(
-                self.base_url,
-                self.username,
-                system_token,
-                bot_token,
-                self.auth_ttl_seconds,
-            )
-            self._assign_tokens(system_token, bot_token)
-            return 'fresh'
-
-    def authenticate(self):
-        self._raise_if_login_blocked()
-        invalidate(self.base_url, self.username)
-        with WORKER_LOCK:
-            system_token, bot_token = self._fetch_tokens()
-            set_tokens(
-                self.base_url,
-                self.username,
-                system_token,
-                bot_token,
-                self.auth_ttl_seconds,
-            )
-            self._assign_tokens(system_token, bot_token)
-
-    def _refresh_authentication(self):
-        invalidate(self.base_url, self.username)
-        self._ensure_authenticated()
-
-    def _chat_payload(self, content):
-        return {
-            'content': content,
-            'conversationId': self.conversation_id,
-            'datasets': {'datasetIds': self.dataset_ids, 'fileIds': self.file_ids},
-            'fromSource': self.from_source,
-            'isUseThink': self.use_think,
-            'modelName': self.model,
-            'ownerAccount': self.owner_account,
-            'platformId': self.platform_id,
-            'qaType': self.qa_type,
-            'userPrompt': self.user_prompt,
-        }
-
-    def create_room(self, prime_prompt=None):
-        self._ensure_authenticated()
-        self.conversation_id = str(uuid.uuid4())
-        prompt = self.start_prompt if prime_prompt is None else prime_prompt
-        if prompt:
-            self._chat_once(prompt)
-        return self.conversation_id
-
-    def _open_stream(self):
-        headers = self._smartbot_headers('text/event-stream')
-        headers.pop('Content-Type', None)
-        return requests.get(
-            self.smartbot_base + '/sse/createSse',
-            headers=headers,
-            params={
-                'uid': self.conversation_id,
-                'platformId': self.platform_id,
-                'type': 'normal_chat',
-            },
-            stream=True,
-            timeout=(10, self.timeout),
-        )
-
-    def _decode_sse_line(self, raw_line):
-        if isinstance(raw_line, bytes):
-            return raw_line.decode('utf-8')
-        return raw_line
-
-    def _listen_sse(self, *, _auth_retry=True):
-        chunks = []
-        with self._open_stream() as stream:
-            if _auth_retry and self._is_auth_error(stream, read_body=False):
-                self._refresh_authentication()
-                return self._listen_sse(_auth_retry=False)
-            stream.raise_for_status()
-            for raw_line in stream.iter_lines(chunk_size=1):
-                if not raw_line:
-                    continue
-                try:
-                    line = self._decode_sse_line(raw_line)
-                except UnicodeDecodeError as exc:
-                    raise ProviderError(f'Company AI SSE line is not valid UTF-8: {exc}') from exc
-                if not line.startswith('data:'):
-                    continue
-                try:
-                    event = json.loads(line[5:].strip())
-                except json.JSONDecodeError:
-                    continue
-                if event.get('type') == 'heartbeat':
-                    continue
-                if event.get('event') == 'message':
-                    chunk = event.get('answer_content', '')
-                    chunks.append(chunk)
-                if event.get('event') == 'message_end':
-                    return ''.join(chunks)
-        raise ProviderError('Company AI stream ended before message_end.')
-
-    def _send_message(self, content, *, _auth_retry=True):
-        response = requests.post(
-            self.smartbot_base + '/biz/createChat',
-            headers=self._smartbot_headers(),
-            json=self._chat_payload(content),
-            timeout=self.timeout,
-        )
-        if _auth_retry and self._is_auth_error(response):
-            self._refresh_authentication()
-            self._send_message(content, _auth_retry=False)
-            return
-        response.raise_for_status()
-
-    def _chat_once(self, content, *, wait_for_response=True):
-        if not wait_for_response:
-            time.sleep(self.sse_delay)
-            self._send_message(content)
-            return ''
-
-        result = {'answer': '', 'error': None}
-
-        def listen():
-            try:
-                result['answer'] = self._listen_sse()
-            except Exception as exc:
-                result['error'] = exc
-
-        thread = threading.Thread(target=listen, daemon=True)
-        thread.start()
-        time.sleep(self.sse_delay)
-        self._send_message(content)
-        thread.join()
-        if result['error']:
-            raise result['error']
-        return result['answer']
-
-    def delete_room(self, *, _auth_retry=True):
-        if not self.conversation_id or not self.system_token or not self.bot_token:
-            return
-        response = requests.delete(
-            self.smartbot_base + '/biz/deleteChat/' + self.conversation_id,
-            headers=self._smartbot_headers(),
-            timeout=self.timeout,
-        )
-        if _auth_retry and self._is_auth_error(response):
-            self._refresh_authentication()
-            self.delete_room(_auth_retry=False)
-            return
-        response.raise_for_status()
-        body = response.json()
-        if body.get('success') is not True or body.get('data') is not True:
-            raise ProviderError(body.get('msg') or 'Company AI room deletion failed.')
-
-    def delete_chat(self, conversation_id, *, _auth_retry=True):
-        previous = self.conversation_id
-        try:
-            self.conversation_id = conversation_id
-            self.delete_room(_auth_retry=_auth_retry)
-        finally:
-            self.conversation_id = previous
-
-    def list_chats_page(self, page=1, page_size=50, list_path=None, *, _auth_retry=True):
-        self._ensure_authenticated()
-        path = self._normalize_chat_list_path(
-            list_path or os.environ.get('COMPANY_AI_CHAT_LIST_PATH') or 'common/getSkillAllChatList',
-        )
-        params = {
-            'ownerAccount': self.owner_account,
-            'pageNum': page,
-            'pageSize': page_size,
-            'fromSource': self.from_source,
-        }
-        response = requests.get(
-            self.smartbot_base + '/' + path,
-            headers=self._smartbot_headers(),
-            params=params,
-            timeout=self.timeout,
-        )
-        if _auth_retry and self._is_auth_error(response):
-            self._refresh_authentication()
-            return self.list_chats_page(
-                page=page,
-                page_size=page_size,
-                list_path=list_path,
-                _auth_retry=False,
-            )
-        response.raise_for_status()
-        return response.json()
-
-    @staticmethod
-    def _normalize_chat_list_path(path):
-        normalized = str(path).strip().split('?', 1)[0].strip('/')
-        marker = '/smartbot/openapi/im/'
-        marker_index = normalized.find(marker)
-        if marker_index >= 0:
-            normalized = normalized[marker_index + len(marker):].strip('/')
-        if normalized.startswith('http://') or normalized.startswith('https://'):
-            raise ProviderError('COMPANY_AI_CHAT_LIST_PATH must be a relative path, not a full URL.')
-        return normalized
-
-    def complete_json(self, system_prompt, user_prompt):
-        self._validate_config()
-        if not self.conversation_id:
-            raise ProviderError('Company AI room has not been created.')
-        prompt = f'{system_prompt}\n\n{user_prompt}'
-        error = None
-        for _ in range(self.retries + 1):
-            try:
-                return _parse_json_text(self._chat_once(prompt)), {}
-            except requests.RequestException as exc:
-                error = exc
-            except (KeyError, ValueError, ProviderError) as exc:
-                error = exc
-                prompt = json_error_prompt(self, exc)
-        raise ProviderError(str(error))
-
-    def complete_text(self, system_prompt, user_prompt):
-        self._validate_config()
-        if not self.conversation_id:
-            raise ProviderError('Company AI room has not been created.')
-        prompt = f'{system_prompt}\n\n{user_prompt}'
-        text = self._chat_once(prompt)
-        if not text or not str(text).strip():
-            raise ProviderError('AI provider returned an empty response.')
-        return text, {}
-
-
-def _fit_batches(records, budget):
-    batches, batch, tokens = [], [], 0
-    for record in records:
-        record_tokens = estimate_tokens(record)
-        if batch and tokens + record_tokens > budget:
-            batches.append(batch)
-            batch, tokens = [], 0
-        batch.append(record)
-        tokens += record_tokens
-    if batch:
-        batches.append(batch)
-    return batches
-
-
-def _summarize_batches(provider, records, input_budget, report_language):
-    language = REPORT_LANGUAGES[report_language]
-    summaries = records
-    while estimate_tokens(summaries) > input_budget:
-        reduced = []
-        for batch in _fit_batches(summaries, max(input_budget // 2, 1000)):
-            result, _ = provider.complete_json(
-                f'Summarize vulnerability records for a {language} cybersecurity report. '
-                f'Write all descriptive text in {language}. '
-                'Return json with a "records" array. Preserve identifiers, evidence, affected '
-                'products, severity, recommendations, and references. Do not invent facts.',
-                'Input records:\n' + json.dumps(batch, ensure_ascii=False),
-            )
-            batch_records = result.get('records')
-            if not isinstance(batch_records, list):
-                raise ProviderError('AI batch summary did not contain a records array.')
-            reduced.extend(batch_records)
-        if estimate_tokens(reduced) >= estimate_tokens(summaries):
-            raise ProviderError('Unable to reduce input within the configured context limit.')
-        summaries = reduced
-    return summaries
-
-
-def generate_report_data(provider, records, context_limit, report_language='en'):
-    if report_language not in REPORT_LANGUAGES:
-        raise ValueError('Report language must be "en", "zh", or "ch".')
-    language = REPORT_LANGUAGES[report_language]
-    input_budget = context_limit - provider.max_output - 3000
-    if input_budget < 2000:
-        raise ProviderError('AI context budget is too small for report generation.')
-    records = _summarize_batches(provider, records, input_budget, report_language)
-    system = (
-        f'Write a {language} cybersecurity report from supplied evidence. '
-        f'Write all descriptive text in {language}, while preserving identifiers and URLs. '
-        'Return valid json only. Do not invent facts. Preserve CVE identifiers and URLs. '
-        'Follow this JSON shape exactly: '
-        + json.dumps(_response_schema_example(report_language), ensure_ascii=False)
-    )
-    result, usage = provider.complete_json(
-        system,
-        'Report evidence:\n' + json.dumps(records, ensure_ascii=False),
-    )
-    validate(instance=result, schema=REPORT_SCHEMA)
-    return result, usage
-
-
-def generate_item_data(provider, details, identifier, report_language, retries, position=1):
-    language = REPORT_LANGUAGES[report_language]
-    system = item_system_prompt(language)
-    prompt = 'Review details:' + compact_json(details)
-    try:
-        text, usage = provider.complete_text(system, prompt)
-        result = validate_parsed_item(parse_item_text(text), ITEM_SCHEMA)
-        return _finalize_item_result(result, details, identifier, position), usage
-    except (CompanyAIParseError, ValidationError) as exc:
-        raise ProviderError(str(exc)) from exc
-
-
-def generate_final_data(provider, item_results, report_language, retries, config):
-    language = REPORT_LANGUAGES[report_language]
-    summary_prompt = config.get('COMPANY_AI_SUMMARY_PROMPT', '')
-    if not summary_prompt:
-        raise ProviderError('Company AI summary prompt is not configured.')
-    system = final_system_prompt(Template(summary_prompt).substitute(language=language), language)
-    prompt = 'Processed review results:' + compact_json(item_results)
-    try:
-        text, usage = provider.complete_text(system, prompt)
-        result = validate_parsed_final(parse_final_text(text), FINAL_SCHEMA)
-        result['title'] = _fixed_report_title(report_language)
-        return result, usage
-    except (CompanyAIParseError, ValidationError) as exc:
-        raise ProviderError(str(exc)) from exc
 
 
 def _strip_html(value):
@@ -1250,29 +598,16 @@ def _input_collection():
     return get_web_database()['report_job_inputs']
 
 
-def _cleanup_ai_generation_tasks(references, config):
-    task_ids = [
-        reference.get('task_id')
-        for reference in references
-        if reference and reference.get('storage') == 'shared' and reference.get('task_id') is not None
-    ]
-    if not task_ids:
-        return
-    get_vulnerabilities_database()[config['AI_TASK_COLLECTION']].delete_many(
-        {'_id': {'$in': task_ids}},
-    )
-
-
 def _result_collection():
     return get_web_database()['report_job_results']
 
 
-def create_job(inputs, input_source, generation_mode='company_ai', report_language='en'):
+def create_job(inputs, input_source, generation_mode='enriched_weekly', report_language='en'):
     if not inputs:
         raise ValueError('At least one vulnerability record is required.')
     generation_mode = LEGACY_GENERATION_MODES.get(generation_mode, generation_mode)
     if generation_mode not in GENERATION_MODES:
-        raise ValueError('Generation mode must be "company_ai", "template", or "enriched_weekly".')
+        raise ValueError('Generation mode must be "template" or "enriched_weekly".')
     if report_language not in REPORT_LANGUAGES:
         raise ValueError('Report language must be "en", "zh", or "ch".')
     if generation_mode == 'template':
@@ -1309,10 +644,7 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
                 queued['source_record'] = source_record
         queued_inputs.append({'position': position, **queued})
     now = datetime.now(timezone.utc)
-    if generation_mode == 'company_ai':
-        provider = 'RabbitMQ + Atlas'
-        model = 'Shared AI Workers'
-    elif generation_mode == 'enriched_weekly':
+    if generation_mode == 'enriched_weekly':
         provider = 'Tavily + llama-server'
         model = 'Enriched Weekly'
     else:
@@ -1328,7 +660,7 @@ def create_job(inputs, input_source, generation_mode='company_ai', report_langua
         'processed_count': 0,
         'current_position': 0,
         'item_fallback_count': 0,
-        'status': 'queued' if generation_mode in {'company_ai', 'enriched_weekly'} else 'running',
+        'status': 'queued' if generation_mode == 'enriched_weekly' else 'running',
         'created_at': now,
         'updated_at': now,
         'provider': provider,
@@ -1405,8 +737,13 @@ def _assemble_report(final_data, item_results, report_language='en'):
 
 
 def _render_job_html(job, report, relative_path=None):
-    raw_mode = job.get('generation_mode', 'company_ai')
-    generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
+    raw_mode = job.get('effective_generation_mode', job.get('generation_mode'))
+    if raw_mode:
+        generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
+    elif report.get('template_mode'):
+        generation_mode = 'template'
+    else:
+        generation_mode = 'enriched_weekly'
     if generation_mode == 'enriched_weekly':
         return render_template(
             ENRICHED_REPORT_TEMPLATE,
@@ -1425,38 +762,6 @@ def _render_job_html(job, report, relative_path=None):
         html_language=HTML_LANGUAGE_CODES[job['effective_report_language']],
         labels=REPORT_LABELS[job['effective_report_language']],
     )
-
-
-def _acquire_worker_lease(owner):
-    locks = get_web_database()['report_worker_locks']
-    while True:
-        now = datetime.now(timezone.utc)
-        try:
-            lock = locks.find_one_and_update(
-                {
-                    '_id': 'report_generation',
-                    '$or': [
-                        {'expires_at': {'$lte': now}},
-                        {'owner': owner},
-                        {'expires_at': {'$exists': False}},
-                    ],
-                },
-                {'$set': {'owner': owner, 'expires_at': now + timedelta(hours=1)}},
-                upsert=True,
-                return_document=ReturnDocument.AFTER,
-            )
-            if lock and lock.get('owner') == owner:
-                return
-        except DuplicateKeyError:
-            pass
-        time.sleep(1)
-
-
-def _release_worker_lease(owner):
-    get_web_database()['report_worker_locks'].delete_one({
-        '_id': 'report_generation',
-        'owner': owner,
-    })
 
 
 def _job_is_cancelled(job_object_id):
@@ -1512,7 +817,7 @@ def run_template_job(app, job_id):
                 return
             if job.get('status') not in ('queued', 'running'):
                 return
-            raw_mode = job.get('generation_mode', 'company_ai')
+            raw_mode = job.get('generation_mode', 'enriched_weekly')
             if LEGACY_GENERATION_MODES.get(raw_mode, raw_mode) != 'template':
                 raise ValueError('Independent template runner received a non-template job.')
             mark_job_started(job_id)
@@ -1588,7 +893,7 @@ def run_template_job(app, job_id):
 def run_job(app, job_id):
     with app.app_context():
         job = _job_collection().find_one({'_id': ObjectId(job_id)}, {'generation_mode': 1})
-        raw_mode = (job or {}).get('generation_mode', 'company_ai')
+        raw_mode = (job or {}).get('generation_mode', 'enriched_weekly')
         generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
         if generation_mode == 'template':
             run_template_job(app, job_id)
@@ -1597,210 +902,14 @@ def run_job(app, job_id):
             from enriched_report.orchestrator import run_enriched_pipeline
             run_enriched_pipeline(app, job_id)
             return
-
-    with WORKER_LOCK:
-        with app.app_context():
-            owner = f'{job_id}:{uuid.uuid4()}'
-            _acquire_worker_lease(owner)
-            collection = _job_collection()
-            summary_references = []
-            final_reference = None
-            try:
-                job_object_id = ObjectId(job_id)
-                now = datetime.now(timezone.utc)
-                job = collection.find_one({'_id': job_object_id})
-                if job is None or job.get('status') == 'cancelled':
-                    return
-                started = collection.update_one(
-                    {'_id': job_object_id, 'status': 'queued'},
-                    {'$set': {
-                        'status': 'running',
-                        'updated_at': now,
-                    }, '$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
-                )
-                mark_job_started(job_id)
-                if started.modified_count == 0:
-                    if _job_is_cancelled(job_object_id):
-                        return
-                    job = collection.find_one({'_id': job_object_id})
-                    if job is None or job.get('status') != 'running':
-                        return
-                inputs = list(_input_collection().find({'job_id': job_object_id}).sort('position', 1))
-                raw_mode = job.get('generation_mode', 'company_ai')
-                generation_mode = LEGACY_GENERATION_MODES.get(raw_mode, raw_mode)
-                report_language = job.get('report_language', 'en')
-                item_results = []
-                item_errors = []
-                fallback_count = 0
-                prepared_details = [
-                    compact_details(_load_input_details(item), current_app.config)
-                    for item in inputs
-                ]
-                total_units = max(len(inputs) + 1, 1)
-                init_job_progress(
-                    job_id,
-                    total_units=total_units,
-                    label='Waiting for Company AI summaries',
-                    message='Waiting for Company AI summaries.',
-                )
-                update_job_progress(job_id, current=0, percent=5, label='Waiting for Company AI summaries')
-                company_cache_warning = None
-                try:
-                    from company_ai_preprocessor import enqueue_report_items, wait_for_summaries
-
-                    summary_references = enqueue_report_items([
-                        {
-                            'details': details,
-                            'source_collection': item.get('source_collection'),
-                            'source_id': item.get('selection_id'),
-                        }
-                        for item, details in zip(inputs, prepared_details)
-                    ], report_language, current_app.config)
-                    cached_company_results = wait_for_summaries(
-                        summary_references,
-                        current_app.config['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'],
-                        should_continue=lambda: not _job_is_cancelled(job_object_id),
-                    )
-                except Exception as exc:
-                    cached_company_results = [None] * len(inputs)
-                    company_cache_warning = str(exc)
-                    collection.update_one(
-                        {'_id': job_object_id},
-                        {'$set': {'company_ai_cache_warning': company_cache_warning}},
-                    )
-
-                for position, (item, details) in enumerate(
-                    zip(inputs, prepared_details),
-                    start=1,
-                ):
-                    if _job_is_cancelled(job_object_id):
-                        return
-                    identifier = item.get('identifier') or str(position)
-                    fallback_reason = None
-                    result = cached_company_results[position - 1]
-                    if result is None:
-                        result = _local_item(details)
-                        fallback_reason = (
-                            company_cache_warning
-                            or 'Timed out waiting for the prioritized Company AI summary.'
-                        )
-                    result = _finalize_item_result(
-                        result,
-                        details,
-                        identifier,
-                        position,
-                        _source_record_for_item(item),
-                    )
-                    if fallback_reason:
-                        fallback_count += 1
-                        item_errors.append({'position': position, 'identifier': identifier,
-                                            'error': fallback_reason})
-                    stored = {
-                        'job_id': job_object_id,
-                        'position': position - 1,
-                        'identifier': identifier,
-                        'highlight': result['highlight'],
-                        'recommendations': result['recommendations'],
-                        'fallback_reason': fallback_reason,
-                    }
-                    _result_collection().replace_one(
-                        {'job_id': job_object_id, 'position': position - 1},
-                        stored,
-                        upsert=True,
-                    )
-                    item_results.append(result)
-                    progress = {
-                        'processed_count': position,
-                        'current_position': position,
-                        'item_fallback_count': fallback_count,
-                        'item_errors': item_errors,
-                        'updated_at': datetime.now(timezone.utc),
-                    }
-                    collection.update_one({'_id': job_object_id}, {'$set': progress})
-                    update_job_progress(
-                        job_id,
-                        current=position,
-                        total=total_units,
-                        label=f'Processed item {position}/{len(inputs)}',
-                        message=f'Processed item {position}/{len(inputs)}: {identifier}',
-                    )
-                    append_job_log(job_id, f'Processed item {position}/{len(inputs)}: {identifier}')
-                if _job_is_cancelled(job_object_id):
-                    return
-                update_job_progress(
-                    job_id,
-                    percent=95,
-                    label='Generating executive summary',
-                    message='Generating executive summary.',
-                )
-                append_job_log(job_id, 'Generating executive summary.')
-                final_fallback_reason = None
-                try:
-                    from company_ai_preprocessor import enqueue_final_summary, wait_for_summaries
-
-                    final_reference = enqueue_final_summary(
-                        item_results, report_language, current_app.config,
-                    )
-                    final_data = wait_for_summaries(
-                        [final_reference],
-                        current_app.config['COMPANY_AI_REPORT_WAIT_TIMEOUT_SECONDS'],
-                        should_continue=lambda: not _job_is_cancelled(job_object_id),
-                    )[0]
-                    if final_data is None:
-                        raise TimeoutError('Timed out waiting for the queued final AI summary.')
-                    final_task = get_vulnerabilities_database()[
-                        current_app.config['AI_TASK_COLLECTION']
-                    ].find_one({'_id': final_reference['task_id']}, {'provider': 1})
-                    collection.update_one(
-                        {'_id': job_object_id},
-                        {'$set': {'final_summary_provider': (final_task or {}).get('provider')}},
-                    )
-                except Exception as exc:
-                    final_data = _deterministic_final(
-                        item_results, report_language,
-                    )
-                    final_fallback_reason = str(exc)
-                report = _assemble_report(final_data, item_results, report_language)
-                completed = {
-                    'status': 'completed',
-                    'updated_at': datetime.now(timezone.utc),
-                    'completed_at': datetime.now(timezone.utc),
-                    'report': report,
-                    'processed_count': len(item_results),
-                    'current_position': len(item_results),
-                    'item_fallback_count': fallback_count,
-                    'item_errors': item_errors,
-                    'progress_percent': 100,
-                    'progress_current': total_units,
-                    'progress_total': total_units,
-                    'progress_label': 'Completed',
-                    'estimated_seconds_remaining': 0,
-                }
-                if final_fallback_reason:
-                    completed['final_summary_fallback_reason'] = final_fallback_reason
-                collection.update_one(
-                    {'_id': job_object_id},
-                    {'$set': completed},
-                )
-                append_job_log(job_id, 'Company AI report completed.')
-            except Exception as exc:
-                if _job_is_cancelled(ObjectId(job_id)):
-                    return
-                collection.update_one(
-                    {'_id': ObjectId(job_id), 'status': {'$nin': ['cancelled']}},
-                    {'$set': {
-                        'status': 'failed',
-                        'updated_at': datetime.now(timezone.utc),
-                        'error': str(exc),
-                    }},
-                )
-            finally:
-                _cleanup_ai_generation_tasks(
-                    [*summary_references, final_reference],
-                    current_app.config,
-                )
-                _input_collection().delete_many({'job_id': ObjectId(job_id)})
-                _release_worker_lease(owner)
+        _job_collection().update_one(
+            {'_id': ObjectId(job_id), 'status': {'$nin': ['cancelled', 'completed', 'failed']}},
+            {'$set': {
+                'status': 'failed',
+                'updated_at': datetime.now(timezone.utc),
+                'error': f'Unsupported generation mode: {raw_mode}',
+            }},
+        )
 
 
 def start_job(app, job_id):

@@ -8,5 +8,3 @@ __pycache__/
 .venv/
 cert.pem
 key.pem
-GPU_server/models/*
-!GPU_server/models/.gitkeep

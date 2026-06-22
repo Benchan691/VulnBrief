@@ -64,6 +64,11 @@ def lookup_cached_payload(web_database, result, cache_version='1'):
     return dict(entry.get('payload') or {})
 
 
+def purge_evidence_cache(web_database):
+    result = evidence_cache_collection(web_database).delete_many({})
+    return int(result.deleted_count)
+
+
 def store_cached_payload(web_database, result, card, cache_version='1'):
     cache_key = evidence_cache_key(
         result.get('cve_id'),

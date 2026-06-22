@@ -103,7 +103,7 @@ ENRICHED_REPORT_SCHEMA = {
     'required': [
         'title', 'executive_summary', 'research_scope', 'weekly_risk_trend',
         'vulnerability_detail_table', 'remediation_playbook',
-        'management_brief', 'appendix', 'verification',
+        'management_brief', 'appendix',
     ],
     'properties': {
         'title': {'type': 'string'},
@@ -174,32 +174,14 @@ ENRICHED_REPORT_SCHEMA = {
                     'type': 'array',
                     'items': {
                         'type': 'object',
-                        'required': ['cve_id', 'url'],
+                        'required': ['cve_id', 'urls'],
                         'properties': {
                             'cve_id': {'type': 'string'},
-                            'url': {'type': 'string'},
-                            'source_type': NULLABLE_STRING,
+                            'urls': STRING_ARRAY,
                         },
                     },
                 },
                 'metrics': {'type': 'object'},
-            },
-        },
-        'verification': {
-            'type': 'object',
-            'required': ['python_checks', 'ai_checks', 'issues', 'verified_at'],
-            'properties': {
-                'python_checks': {'type': 'string'},
-                'ai_checks': {'type': 'string'},
-                'issues': {
-                    'type': 'array',
-                    'items': {'type': 'string'},
-                },
-                'unsupported_claims': {
-                    'type': 'array',
-                    'items': {'type': 'string'},
-                },
-                'verified_at': {'type': 'string'},
             },
         },
     },

@@ -220,31 +220,33 @@ def build_vulnerability_detail_table(cards):
 
 
 def build_appendix(cards, evidence_cards, metrics):
-    refs = []
+    refs_by_cve = {}
+    cve_order = []
     seen = set()
+
+    def add_url(cve_id, url):
+        if not url:
+            return
+        key = (cve_id, url)
+        if key in seen:
+            return
+        seen.add(key)
+        if cve_id not in refs_by_cve:
+            refs_by_cve[cve_id] = []
+            cve_order.append(cve_id)
+        refs_by_cve[cve_id].append(url)
+
     for card in cards:
         cve_id = card['cve_id']
         for url in card.get('source_references') or []:
-            key = (cve_id, url)
-            if key not in seen:
-                seen.add(key)
-                refs.append({
-                    'cve_id': cve_id,
-                    'url': url,
-                    'source_type': None,
-                })
+            add_url(cve_id, url)
     for card in evidence_cards:
-        url = card.get('source_url')
-        if not url:
-            continue
-        key = (card['cve_id'], url)
-        if key not in seen:
-            seen.add(key)
-            refs.append({
-                'cve_id': card['cve_id'],
-                'url': url,
-                'source_type': None,
-            })
+        add_url(card['cve_id'], card.get('source_url'))
+
+    refs = [
+        {'cve_id': cve_id, 'urls': refs_by_cve[cve_id]}
+        for cve_id in cve_order
+    ]
     appendix_metrics = {
         key: value
         for key, value in metrics.items()

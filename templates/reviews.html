@@ -3,9 +3,6 @@
 
 {% block content %}
 <style>
-    .review-mode .btn {
-        min-width: 7rem;
-    }
     .related-modal-table {
         min-width: 900px;
     }
@@ -34,9 +31,6 @@
             <button id="export-btn" class="btn btn-success btn-sm" disabled>
                 <i class="bi bi-download me-1"></i>Export JSON
             </button>
-            <button id="auto-select-best-btn" class="btn btn-outline-primary btn-sm">
-                <i class="bi bi-magic me-1"></i>Auto Select Best
-            </button>
             <a id="generate-report-btn" class="btn btn-primary btn-sm disabled" aria-disabled="true" href="{{ url_for('report.reports') }}">
                 <i class="bi bi-stars me-1"></i>Generate HTML
             </a>
@@ -49,15 +43,6 @@
     <form id="global-filter-form" class="card shadow-sm border-0 mb-4">
         <div class="card-body">
             <div class="row g-3 align-items-end">
-                <div class="col-12 col-lg-auto">
-                    <label class="form-label d-block">Review type</label>
-                    <div class="btn-group review-mode" role="group" aria-label="Review type">
-                        <input id="mode-cve" class="btn-check" type="radio" name="mode" value="cve" checked>
-                        <label class="btn btn-outline-primary" for="mode-cve">CVE</label>
-                        <input id="mode-non-cve" class="btn-check" type="radio" name="mode" value="non_cve">
-                        <label class="btn btn-outline-primary" for="mode-non-cve">Non-CVE</label>
-                    </div>
-                </div>
                 <div class="col-12 col-lg-5">
                     <label for="filter-search" class="form-label">Search keyword</label>
                     <input id="filter-search" name="search" class="form-control" placeholder="Search keyword">
@@ -219,7 +204,6 @@
     const pageLabel = document.getElementById('page-label');
     const pageSize = document.getElementById('page-size');
     const exportButton = document.getElementById('export-btn');
-    const autoSelectBest = document.getElementById('auto-select-best-btn');
     const clearSelection = document.getElementById('clear-selection-btn');
     const selectedCount = document.getElementById('selected-count');
     const generateReportButton = document.getElementById('generate-report-btn');
@@ -239,7 +223,6 @@
     const selectionStorageKey = 'vulnerabilityReviewSelections';
     const exportUrl = {{ url_for('review.export_review_documents')|tojson }};
     const searchUrl = {{ url_for('review.search_review_documents')|tojson }};
-    const autoSelectUrl = {{ url_for('review.auto_select_best_review_documents')|tojson }};
     let activeFilters = null;
     let currentPage = 1;
     let totalPages = 1;
@@ -279,12 +262,6 @@
         generateReportButton.setAttribute('aria-disabled', count === 0 ? 'true' : 'false');
     }
 
-    function updateModeActions() {
-        const isCveMode = activeMode() === 'cve';
-        autoSelectBest.classList.toggle('d-none', !isCveMode);
-        autoSelectBest.disabled = !isCveMode;
-    }
-
     function syncVisibleSelections() {
         const keys = selectedKeys();
         document.querySelectorAll('[data-selection-collection][data-selection-id]').forEach(function (input) {
@@ -319,18 +296,9 @@
         return '';
     }
 
-    function severityValue(document) {
-        return firstValue(document, ['severity', 'status', 'impacts']);
-    }
-
-    function activeMode() {
-        const checked = filterForm.querySelector('input[name="mode"]:checked');
-        return checked ? checked.value : 'cve';
-    }
-
     function buildFilterParams() {
         const params = new URLSearchParams();
-        params.set('mode', activeMode());
+        params.set('mode', 'cve');
         const search = document.getElementById('filter-search').value.trim();
         const status = document.getElementById('filter-status').value.trim();
         const windowValue = timeWindow.value;
@@ -438,19 +406,15 @@
         return { vendor: '-', product: '-' };
     }
 
-    function renderHeaders(mode) {
+    function renderHeaders() {
         resultsHead.replaceChildren();
         addHeader('Select');
-        if (mode === 'cve') addHeader('Relate');
-        if (mode !== 'cve') addHeader('Collection');
-        if (mode !== 'cve') addHeader('Code / CVE');
-        addHeader(mode === 'cve' ? 'CVE' : 'Title');
+        addHeader('Relate');
+        addHeader('CVE');
         addHeader('Severity');
         addHeader('Description');
-        if (mode === 'cve') {
-            addHeader('Vendor');
-            addHeader('Product');
-        }
+        addHeader('Vendor');
+        addHeader('Product');
         addHeader('Action');
     }
 
@@ -578,39 +542,25 @@
 
     function renderResults(body) {
         currentBody = body;
-        const mode = activeMode();
         const keys = selectedKeys();
         resultsBody.replaceChildren();
-        renderHeaders(mode);
-        updateModeActions();
-        resultsTitle.textContent = mode === 'cve' ? 'CVE Results' : 'Non-CVE Results';
+        renderHeaders();
+        resultsTitle.textContent = 'CVE Results';
 
         body.data.forEach(function (item) {
             const projectedDocument = item.document;
             const row = document.createElement('tr');
             renderSelectCell(row, item, keys);
-            if (mode === 'cve') {
-                renderRelatedButtonCell(row, item);
-            }
-            if (mode !== 'cve') {
-                addCell(row, item.collection, '', true);
-            }
-            if (mode !== 'cve') {
-                addCell(row, firstValue(projectedDocument, ['code', 'cve']), 'fw-medium', true);
-            }
+            renderRelatedButtonCell(row, item);
             addCell(
                 row,
-                mode === 'cve'
-                    ? firstValue(projectedDocument, ['code', 'cve', 'title'])
-                    : firstValue(projectedDocument, ['title']),
-                mode === 'cve' ? 'fw-medium' : '',
+                firstValue(projectedDocument, ['code', 'cve', 'title']),
+                'fw-medium',
                 true
             );
             addCell(
                 row,
-                mode === 'cve'
-                    ? firstValue(projectedDocument, ['severity', 'impacts', 'status'])
-                    : severityValue(projectedDocument),
+                firstValue(projectedDocument, ['severity', 'impacts', 'status']),
                 '',
                 true
             );
@@ -620,11 +570,9 @@
                 'small',
                 true
             );
-            if (mode === 'cve') {
-                const classified = classificationDisplay(projectedDocument);
-                addCell(row, classified.vendor, '', true);
-                addCell(row, classified.product, '', true);
-            }
+            const classified = classificationDisplay(projectedDocument);
+            addCell(row, classified.vendor, '', true);
+            addCell(row, classified.product, '', true);
 
             const actionCell = document.createElement('td');
             const viewButton = document.createElement('button');
@@ -659,7 +607,6 @@
         error.classList.add('d-none');
         statusAlert.classList.add('d-none');
         refresh.disabled = true;
-        autoSelectBest.disabled = true;
 
         const params = new URLSearchParams(activeFilters);
         params.set('page', page);
@@ -673,62 +620,6 @@
             .finally(function () {
                 resultsLoading.classList.add('d-none');
                 refresh.disabled = false;
-                updateModeActions();
-            });
-    }
-
-    function applyAutoSelectResult(body) {
-        const removeKeys = new Set(Array.isArray(body.selection_keys_to_remove) ? body.selection_keys_to_remove : []);
-        const selectionsToAdd = Array.isArray(body.selections) ? body.selections : [];
-        const selected = new Set();
-        let selections = getSelections().filter(function (selection) {
-            const key = selectionKey(selection.collection, selection.selection_id);
-            if (removeKeys.has(key)) return false;
-            selected.add(key);
-            return true;
-        });
-
-        selectionsToAdd.forEach(function (selection) {
-            const key = selectionKey(selection.collection, selection.selection_id);
-            if (selected.has(key)) return;
-            selected.add(key);
-            selections.push({
-                collection: selection.collection,
-                selection_id: selection.selection_id,
-            });
-        });
-
-        setSelections(selections);
-        updateSelectedCount();
-        syncVisibleSelections();
-        if (currentRelated.length) renderRelatedModalRows(currentRelated);
-        showStatus(
-            'Auto selected ' + body.selected + ' best detail record'
-            + (body.selected === 1 ? '' : 's')
-            + ' from ' + body.processed + ' matching CVE'
-            + (body.processed === 1 ? '' : 's')
-            + (body.skipped ? '; skipped ' + body.skipped + '.' : '.')
-        );
-    }
-
-    function runAutoSelectBest() {
-        if (activeMode() !== 'cve') return;
-        const params = buildFilterParams();
-        params.set('mode', 'cve');
-        error.classList.add('d-none');
-        statusAlert.classList.add('d-none');
-        autoSelectBest.disabled = true;
-        autoSelectBest.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Auto selecting...';
-
-        fetch(autoSelectUrl + '?' + params.toString())
-            .then(function (response) { return parseJsonResponse(response, 'Unable to auto-select best records.'); })
-            .then(applyAutoSelectResult)
-            .catch(function (reason) {
-                showError(reason.message);
-            })
-            .finally(function () {
-                autoSelectBest.innerHTML = '<i class="bi bi-magic me-1"></i>Auto Select Best';
-                updateModeActions();
             });
     }
 
@@ -736,19 +627,12 @@
         event.preventDefault();
         runSearch(1);
     });
-    filterForm.querySelectorAll('input[name="mode"]').forEach(function (input) {
-        input.addEventListener('change', function () {
-            updateModeActions();
-            runSearch(1);
-        });
-    });
     timeWindow.addEventListener('change', function () {
         updateCustomWindow();
         if (timeWindow.value !== 'custom') runSearch(1);
     });
     clearFilter.addEventListener('click', function () {
         filterForm.reset();
-        document.getElementById('mode-cve').checked = true;
         updateCustomWindow();
         runSearch(1);
     });
@@ -756,7 +640,6 @@
     nextPage.addEventListener('click', function () { runSearch(currentPage + 1); });
     pageSize.addEventListener('change', function () { runSearch(1); });
     refresh.addEventListener('click', function () { runSearch(currentPage); });
-    autoSelectBest.addEventListener('click', runAutoSelectBest);
     relatedSelectAll.addEventListener('click', function () {
         updateRelatedSelections(currentRelated, true);
     });
@@ -825,7 +708,6 @@
     });
 
     updateSelectedCount();
-    updateModeActions();
     updateCustomWindow();
     runSearch(1);
 })();

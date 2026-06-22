@@ -75,7 +75,7 @@ def test_build_profiles_disables_report_and_maps_newsletter_enabled(monkeypatch)
     assert report_profile['enabled'] is False
     assert report_profile['schedule_enabled'] is False
     assert report_profile['filters']['collections'] == ['hkcert_review']
-    assert report_profile['generation_mode'] == 'company_ai'
+    assert report_profile['generation_mode'] == 'template'
     assert report_profile['report_language'] == 'en'
     assert report_profile['cron'] == '0 9 * * 1'
 

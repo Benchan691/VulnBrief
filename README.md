@@ -1,20 +1,13 @@
 # web-AIprocess
 
-Flask web application for managing cybersecurity newsletters, vulnerability review selections, subscriptions, and AI-assisted HTML report generation.
+Flask web application for managing cybersecurity newsletters, vulnerability review selections, subscriptions, and HTML report generation.
 
 ## Features
 
 - **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from Atlas records
 - **Subscriptions** — manage independent newsletter and report profiles with shared collection, severity/status, text, source, affected-system, and time filters
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
-- **Reports** — generate structured reports with **Company AI** or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB.
-
-Report jobs enqueue per-item and final AI JSON via routed RabbitMQ queues and
-store intermediate results in shared Atlas `ai_generation_tasks` until the job
-finishes. Source-document `html_json.en`, `html_json.zh`, and `html_json.ch`
-fields are legacy read-only cache data; normal report generation no longer
-writes them. The optional standalone [`GPU_server`](GPU_server/README.md) can
-consume shared queued tasks.
+- **Reports** — generate structured reports with **Enriched Weekly** (Tavily + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
 
 ## Architecture
 
@@ -23,38 +16,27 @@ flowchart LR
   Browser --> Web["Flask web :6767"]
   Web --> Atlas["Atlas vulnerability MongoDB"]
   Web --> LocalMongo["Local application MongoDB"]
-  Web --> CloudAMQP
+  Web --> Tavily["Tavily API"]
+  Web --> Llama["llama-server enriched.llm_base_url"]
   Scheduler["scheduler.py"] --> Atlas
   Scheduler --> LocalMongo
-  Router["preprocessor router"] --> CloudAMQP
-  CompanyWorker["Company AI worker"] --> CloudAMQP
-  GPU["GPU_server worker"] --> CloudAMQP
-  GPU --> Atlas
-  CompanyWorker --> Atlas
-  CompanyWorker --> LocalMongo
-  CompanyWorker --> CompanyAI["Company AI API"]
-  Web --> CompanyAI
+  Scheduler --> Web
 ```
 
 | Process | Role |
 |---------|------|
-| `web` | Flask UI, report job orchestration |
-| `preprocessor-scanner` | Optional/deprecated scanner; disabled by default with `BACKGROUND_PREPROCESSING_ENABLED=false` |
-| `preprocessor-router` | Distributes on-demand report tasks to GPU or Company AI provider queues |
-| `company-ai-worker` | Consumes the Company AI queue and generates item/final summaries |
-| `GPU_server` | Optional isolated local-model worker for source/shared AI tasks |
+| `web` | Flask UI, report job orchestration, enriched pipeline |
 | `scheduler` | Claims cron schedules and generates scheduled reports |
-| Atlas MongoDB | Vulnerability source data, review views, legacy source AI cache, and ephemeral shared AI tasks |
-| Local MongoDB | Auth, subscriptions, structured report jobs/results, schedules, and locks |
-| CloudAMQP | Priority-backed intake, GPU, and Company AI queues |
+| Atlas MongoDB | Vulnerability source data and review views |
+| Local MongoDB | Auth, subscriptions, report jobs, enriched pipeline artifacts |
 
 ## Prerequisites
 
 - Python 3.11+
-- Atlas/web MongoDB containing vulnerability source collections and review views
+- Atlas MongoDB containing vulnerability source collections and review views
 - Local MongoDB for application-owned data
-- [CloudAMQP](https://www.cloudamqp.com/) instance (or compatible AMQP broker)
-- Company AI credentials (for AI report mode and preprocessor)
+- Tavily API key (for Enriched Weekly reports)
+- llama-server OpenAI-compatible endpoint (for Enriched Weekly reports; configured in `config/config.json` under `enriched.*`)
 
 ## Configuration
 
@@ -63,7 +45,7 @@ Secrets and connection strings live in **`.env`** (gitignored).
 
 ```sh
 cp .env.example .env
-# edit .env with secrets; tune config/config.json for queues, prompts, and limits
+# edit .env with secrets; tune config/config.json for enriched/report limits
 ```
 
 The app loads `.env` first, then merges `config/config.json`. Environment
@@ -77,7 +59,7 @@ Minimum `.env` for local web:
 | `ATLAS_MONGO_URI` | Atlas vulnerability data |
 | `LOCAL_MONGO_URI` | Local application MongoDB |
 | `FLASK_SECRET_KEY` | Session signing |
-| `RABBITMQ_URL` | CloudAMQP (for AI reports / preprocessor) |
+| `TAVILY_API_KEY` | Tavily search (Enriched Weekly) |
 
 See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full setup and troubleshooting.
 
@@ -97,7 +79,7 @@ docker compose up -d --build
 
 - Web UI: http://localhost:6767
 - Local app data (auth, subscriptions, report jobs) uses **host** MongoDB at port 27017; Docker `web` and `scheduler` connect via `host.docker.internal`.
-- Services: `webserver-web`, `webserver-preprocessor-scanner`, `webserver-preprocessor-router`, `webserver-company-ai-worker`, `webserver-scheduler`
+- Services: `webserver-web`, `webserver-scheduler`
 
 ## Quick start (local Python)
 
@@ -107,24 +89,12 @@ See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full virtual-environment setup (M
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 
-# Terminal 1 — route report tasks to provider queues
-.venv/bin/python company_ai_preprocessor.py --role router
-
-# Terminal 2 — consume Company AI provider queue
-.venv/bin/python company_ai_preprocessor.py --role company-worker
-
-# Terminal 3 — web server
+# Terminal 1 — web server
 .venv/bin/python app.py
 
-# Terminal 4 — report scheduler
+# Terminal 2 — report scheduler
 .venv/bin/python scheduler.py
 ```
-
-The scanner role is optional/deprecated for normal operation. With the default
-`BACKGROUND_PREPROCESSING_ENABLED=false`, it starts but does not scan source
-collections or republish stale shared tasks. For local development,
-`.venv/bin/python company_ai_preprocessor.py` still starts the all-in-one
-process, with the scanner remaining inert unless explicitly enabled.
 
 Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`).
 
@@ -138,21 +108,18 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 
 | Path | Description |
 |------|-------------|
-| `config/config.json` | Non-sensitive application settings (queues, prompts, limits) |
-| `company_ai_preprocessor.py` | RabbitMQ scanner, router, and Company AI worker entrypoint |
-| `company_ai_auth_cache.py` | Process-wide Company AI token cache |
+| `config/config.json` | Non-sensitive application settings (enriched, report, tavily limits) |
 | `scheduler.py` | Scheduled report generation worker |
 | `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and live feed queries |
 | `report_harness.py` | Report generation pipeline |
+| `enriched_report/` | Enriched Weekly Tavily + llama-server pipeline |
 | `routes/` | HTTP blueprints (auth, newsletter, subscription, review, report) |
 | `templates/` | Jinja HTML templates |
 | `tests/` | Pytest suite |
-| `AI_HARNESS.md` | Detailed report/preprocessor behavior and prompts |
+| `AI_HARNESS.md` | Detailed report behavior and configuration |
 | `LOCAL_DEPLOY.md` | Step-by-step local virtual-environment deployment |
-| `GPU_server/` | Independent Ubuntu GPU preprocessing deployment |
 
 ## Security notes
 
 - Do not commit `.env`, `cert.pem`, or `key.pem`
-- Rotate CloudAMQP and Company AI credentials if they were ever exposed
-- Use a strong `flask_secret_key` in production
+- Use a strong `FLASK_SECRET_KEY` in production

@@ -89,7 +89,7 @@ def build_profiles(database, legacy_record, mapped_collections):
     report_profile = validate_profile(database, {
         'enabled': False,
         'filters': {'collections': mapped_collections},
-        'generation_mode': 'company_ai',
+        'generation_mode': 'template',
         'report_language': 'en',
         'schedule_enabled': False,
         'cron': '0 9 * * 1',

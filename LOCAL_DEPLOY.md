@@ -8,14 +8,11 @@ Python virtual environment. For Docker-based deployment, see [README.md](README.
 | Process | Command | Purpose |
 |---------|---------|---------|
 | Web UI | `app.py` or Gunicorn | Flask app on port **6767** |
-| Preprocessor scanner | `company_ai_preprocessor.py --role scanner` | Optional/deprecated; disabled by default for normal report generation |
-| Preprocessor router | `company_ai_preprocessor.py --role router` | Distributes on-demand report tasks to GPU or Company AI queues |
-| Company AI worker | `company_ai_preprocessor.py --role company-worker` | Consumes Company AI queue tasks |
 | Scheduler | `scheduler.py` | Scheduled report generation |
 
 All processes read the same **`.env`** file (loaded automatically on startup).
 The web UI is usable for browsing newsletters and reviews with only MongoDB
-configured; AI reports need RabbitMQ and at least one enabled provider worker.
+configured. Enriched Weekly reports additionally need Tavily and llama-server.
 
 ## Prerequisites
 
@@ -24,13 +21,12 @@ Install on your machine:
 - **Python 3.11+** (`python3 --version`)
 - **Atlas MongoDB** URI with vulnerability source collections and review views
 - **Local MongoDB** for application data (auth, subscriptions, report jobs)
-- **CloudAMQP** (or compatible RabbitMQ broker) for Company AI report mode
-- **Company AI** credentials (only if you use the Company AI provider)
+- **Tavily API key** (for Enriched Weekly reports)
+- **llama-server** OpenAI-compatible endpoint (for Enriched Weekly; see `enriched.llm_base_url` in `config/config.json`)
 
 Optional:
 
 - Self-signed TLS certs (`cert.pem`, `key.pem`) if you start the dev server with `python app.py`
-- [GPU_server](GPU_server/README.md) on a separate host for local-model preprocessing
 
 ## 1. Clone and enter the project
 
@@ -109,11 +105,10 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Edit `.env` with MongoDB URIs, RabbitMQ URL, Company AI secrets, and other
-credentials. Tune queues, prompts, model names, and report limits in
-`config/config.json`. The app loads `.env` automatically when any process starts
-(`app.py`, `company_ai_preprocessor.py`, `scheduler.py`) — you do not need to
-run `source .env` manually.
+Edit `.env` with MongoDB URIs and other credentials. Tune enriched, report, and
+Tavily limits in `config/config.json`. The app loads `.env` automatically when
+any process starts (`app.py`, `scheduler.py`) — you do not need to run
+`source .env` manually.
 
 Environment variables override `config/config.json` when both are set. Point at
 a different JSON file with `APP_CONFIG=/path/to/config.json`.
@@ -125,38 +120,17 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `ATLAS_MONGO_URI` | Atlas connection for vulnerability data |
 | `LOCAL_MONGO_URI` | Local MongoDB (default `mongodb://localhost:27017/`) |
 | `FLASK_SECRET_KEY` | Flask session signing (use a long random string) |
-| `RABBITMQ_URL` | CloudAMQP URL (required for AI reports and preprocessor) |
-| `COMPANY_AI_PASSWORD`, `COMPANY_AI_PUBLIC_KEY_B64`, `COMPANY_AI_SIGN_SECRET` | Company AI auth (when `company_ai.enabled` is true in JSON) |
-
-Background preprocessing is disabled by default in `config/config.json`
-(`flags.background_preprocessing_enabled`). Normal report generation enqueues
-selected items into shared `ai_generation_tasks` at the configured report
-priority; it does not write source `html_json`. Existing `html_json` fields are
-legacy read-only cache data and do not require migration.
-
-Long prompts and report messages can be edited directly in `config/config.json`
-as normal JSON strings (including `\n` escapes).
+| `TAVILY_API_KEY` | Tavily search (Enriched Weekly reports) |
 
 ### Common `config/config.json` sections
 
 | JSON path | Purpose |
 |-----------|---------|
-| `mongodb.*` | Database and collection names |
-| `rabbitmq.*` | Queue names and priorities |
-| `company_ai.*` | Company AI URL, username, prompts, timeouts (no password) |
-| `flags.*` | Feature toggles |
-| `report.*` | Report compaction and JSON retry settings |
-| `enriched.*` | Enriched Weekly Tavily/llama tuning |
-
-When running the GPU worker stack (`GPU_server/`), align webserver
-`config/config.json` with `GPU_server/config/gpu_server.json`:
-
-| Webserver JSON | GPU JSON / default |
-|----------------|-------------------|
-| `rabbitmq.gpu_queue` | `rabbitmq.gpu_queue` |
-| `gpu.worker_concurrency` | `inference.worker_concurrency` |
-| `preprocessing.cache_version` | `processing.cache_version` |
-| `report.max_depth` | `report_compaction.max_depth` |
+| `mongodb.*` | Database names |
+| `report.*` | Report compaction settings |
+| `enriched.*` | Enriched Weekly llama-server tuning |
+| `tavily.*` | Tavily search defaults |
+| `scheduler.*` | Scheduler scan interval |
 
 See [`.env.example`](.env.example), [`config/config.json`](config/config.json),
 and [configuration.py](configuration.py) for every supported setting.
@@ -182,30 +156,7 @@ require these files.
 Open separate terminals from the project root. Activate the venv in each (or use
 the `.venv/bin/python` paths shown).
 
-### Terminal 1 — preprocessor router
-
-```sh
-.venv/bin/python company_ai_preprocessor.py --role router
-```
-
-Leave this running. It consumes `RABBITMQ_INTAKE_QUEUE` and distributes work to
-`RABBITMQ_GPU_QUEUE` or `RABBITMQ_COMPANY_QUEUE`.
-
-### Terminal 2 — Company AI worker
-
-```sh
-.venv/bin/python company_ai_preprocessor.py --role company-worker
-```
-
-Leave this running when `COMPANY_AI_ENABLED=true`. It consumes
-`RABBITMQ_COMPANY_QUEUE` with `COMPANY_AI_PARALLEL_CHATS` workers. The scanner
-role is optional/deprecated for normal operation; with the default
-`BACKGROUND_PREPROCESSING_ENABLED=false`, it starts but does not scan source
-collections or republish stale shared tasks. The legacy
-`.venv/bin/python company_ai_preprocessor.py` command still starts scanner,
-router, and Company AI worker together for local development.
-
-### Terminal 3 — web server
+### Terminal 1 — web server
 
 **Development (Flask built-in server, HTTPS on 6767)**
 
@@ -223,7 +174,7 @@ Open: **https://localhost:6767**
 
 Open: **http://localhost:6767**
 
-### Terminal 4 — scheduler
+### Terminal 2 — scheduler
 
 ```sh
 .venv/bin/python scheduler.py
@@ -247,8 +198,7 @@ Change the password after first login, or create another user:
 |-------|-----|
 | Web UI loads | Open http(s)://localhost:6767 and sign in |
 | Local MongoDB | User appears under the `web` database `auth` collection |
-| Preprocessor | Terminal 1 shows scan/worker activity without connection errors |
-| Scheduler | Terminal 3 logs periodic scan cycles |
+| Scheduler | Terminal 2 logs periodic scan cycles |
 | Tests | `.venv/bin/python -m pytest` |
 
 ## 10. Run tests
@@ -257,8 +207,8 @@ Change the password after first login, or create another user:
 .venv/bin/python -m pytest
 ```
 
-Tests set environment variables directly and do not require a live `.env`,
-MongoDB, or RabbitMQ.
+Tests set environment variables directly and do not require a live `.env` or
+MongoDB.
 
 ## Minimal vs full setup
 
@@ -266,12 +216,9 @@ MongoDB, or RabbitMQ.
 |------|-------------------|
 | Browse newsletters / reviews | Web + Atlas + local MongoDB |
 | Subscriptions and auth | Web + local MongoDB |
-| Company AI reports | Web + preprocessor + RabbitMQ + Company AI |
+| Fixed Template reports | Web + Atlas + local MongoDB |
+| Enriched Weekly reports | Web + Atlas + local MongoDB + Tavily + llama-server |
 | Scheduled reports | Web + scheduler + (report dependencies above) |
-| GPU-backed AI tasks | Optional [GPU_server](GPU_server/README.md) + `GPU_ENABLED=true` |
-
-To try the UI without AI, set `COMPANY_AI_ENABLED=false` in `.env` and use
-**Fixed Template** report mode (see [AI_HARNESS.md](AI_HARNESS.md)).
 
 ## Troubleshooting
 
@@ -297,10 +244,11 @@ shows subscribers but `mongosh` does not, you are likely connected to a differen
 Mongo instance than the app. With Docker Compose, use host Mongo on port 27017,
 not a separate unpublished compose Mongo container.
 
-**RabbitMQ / preprocessor errors**
+**Enriched Weekly report fails**
 
-Check `RABBITMQ_URL` and queue names match your CloudAMQP instance. Queues are
-created on first use.
+Check `TAVILY_API_KEY` in `.env` and `enriched.llm_base_url` in
+`config/config.json`. The llama-server endpoint must accept OpenAI-compatible
+`/v1/chat/completions` requests.
 
 **Port 6767 already in use**
 
@@ -319,4 +267,3 @@ docker stop webserver-local-mongo
 
 - Do not commit `.env`, `cert.pem`, or `key.pem`
 - Use strong values for `FLASK_SECRET_KEY` and bootstrap passwords
-- Rotate broker and Company AI credentials if they are ever exposed

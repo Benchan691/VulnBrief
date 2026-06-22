@@ -55,7 +55,7 @@
                             <div id="report-fields"></div>
                             <hr>
                             <div class="row g-2">
-                                <div class="col-md-6"><label class="form-label small">Generation mode</label><select id="report-generation-mode" class="form-select"><option value="company_ai">Company AI</option><option value="enriched_weekly">Enriched Weekly</option><option value="template">Fixed Template</option></select></div>
+                                <div class="col-md-6"><label class="form-label small">Generation mode</label><select id="report-generation-mode" class="form-select"><option value="enriched_weekly">Enriched Weekly</option><option value="template">Fixed Template</option></select></div>
                                 <div class="col-md-6"><label class="form-label small">Language</label><select id="report-language" class="form-select"><option value="en">English</option><option value="zh">Traditional Chinese</option><option value="ch">Simplified Chinese</option></select></div>
                             </div>
                             <div class="form-check form-switch mt-3"><input id="schedule-enabled" class="form-check-input" type="checkbox"><label class="form-check-label" for="schedule-enabled">Generate reports periodically</label></div>
@@ -258,7 +258,7 @@
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
         const newsletter = subscription ? subscription.newsletter_profile : {enabled:false,filters:{}};
-        const report = subscription ? subscription.report_profile : {enabled:true,filters:{},generation_mode:'company_ai',report_language:'en',schedule_enabled:false,cron:'0 9 * * 1'};
+        const report = subscription ? subscription.report_profile : {enabled:true,filters:{},generation_mode:'template',report_language:'en',schedule_enabled:false,cron:'0 9 * * 1'};
         document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters);
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
         document.getElementById('report-generation-mode').value = report.generation_mode;
@@ -280,7 +280,7 @@
             if (item.newsletter_profile.enabled) actions.innerHTML += '<a class="btn btn-outline-primary btn-sm" href="/subscriptions/' + encodeURIComponent(item.email) + '/newsletter-feed">View Feed</a>';
             if (item.report_profile.enabled) {
                 actions.innerHTML += '<button class="btn btn-success btn-sm run">Run Report</button>';
-                actions.querySelector('.run').onclick = function () { requestJson(apiUrl(item.email, '/run'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(body){ if (!body.count) return showMessage('No records matched the report profile.', 'warning'); localStorage.setItem(selectionKey, JSON.stringify(body.selections)); localStorage.setItem(reportModeKey, item.report_profile.generation_mode || 'company_ai'); localStorage.setItem(reportLanguageKey, item.report_profile.report_language || 'en'); window.location.href = reviewsPageUrl; }).catch(function(e){showMessage(e.message,'danger');}); };
+                actions.querySelector('.run').onclick = function () { requestJson(apiUrl(item.email, '/run'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(body){ if (!body.count) return showMessage('No records matched the report profile.', 'warning'); localStorage.setItem(selectionKey, JSON.stringify(body.selections)); localStorage.setItem(reportModeKey, item.report_profile.generation_mode || 'enriched_weekly'); localStorage.setItem(reportLanguageKey, item.report_profile.report_language || 'en'); window.location.href = reviewsPageUrl; }).catch(function(e){showMessage(e.message,'danger');}); };
             }
             actions.innerHTML += '<button class="btn btn-outline-primary btn-sm edit">Edit</button><button class="btn btn-outline-danger btn-sm remove">Delete</button>';
             actions.querySelector('.edit').onclick = function () { openEditor(item); };

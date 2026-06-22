@@ -3,72 +3,11 @@
     "local_database": "web",
     "web_database": "web",
     "vulnerabilities_database": "vulnerabilities",
-    "ai_task_collection": "ai_generation_tasks",
-    "ai_provider_metrics_collection": "ai_provider_metrics",
     "review_view_suffix": "_review"
   },
   "newsletter_root": "newsletters",
   "web_auth": {
     "bootstrap_username": "admin"
-  },
-  "rabbitmq": {
-    "intake_queue": "company_ai_preprocessing",
-    "gpu_queue": "gpu_processing",
-    "company_queue": "company_ai_processing",
-    "max_priority": 10,
-    "max_queue_size": 19999,
-    "background_priority": 1,
-    "report_priority": 10
-  },
-  "flags": {
-    "background_preprocessing_enabled": false,
-    "company_ai_enabled": true,
-    "gpu_enabled": false
-  },
-  "company_ai": {
-    "base_url": "https://smartoa.china-entercom.com",
-    "username": "s2487",
-    "owner_account": "s2487",
-    "model": "qwen3.5-35b-a3b-gptq",
-    "start_prompt": "You are a professional Cyber Threat Intelligence and Vulnerability Report Writer. Use only the JSON data provided.\n",
-    "summary_prompt": "Write the overall cybersecurity report executive summary in ${language}. Return valid JSON only with executive_summary, trends, and recommendations.",
-    "api_timezone": "Asia/Shanghai",
-    "sse_delay_seconds": 2,
-    "platform_id": 5,
-    "qa_type": 0,
-    "from_source": "normal_chat",
-    "use_think": true,
-    "user_prompt": "",
-    "dataset_ids": [],
-    "file_ids": [],
-    "context_limit": 32768,
-    "max_output_tokens": 4096,
-    "timeout_seconds": 180,
-    "retries": 1,
-    "auth_ttl_seconds": 3600,
-    "login_max_failures": 3,
-    "parallel_chats": 10,
-    "default_ewma_seconds": 60,
-    "scan_interval_seconds": 60,
-    "stale_processing_seconds": 900,
-    "report_wait_timeout_seconds": 300,
-    "max_task_attempts": 10
-  },
-  "gpu": {
-    "queue_backlog_limit": 20,
-    "worker_concurrency": 1,
-    "default_ewma_seconds": 30,
-    "max_task_attempts": 2,
-    "model_path": "/models/Qwen3_Qwen3_30B-A3B-Instruct-2507_Q4_K_M.gguf",
-    "model_name": "qwen-local",
-    "context_size": 4096,
-    "tensor_split": "1,1,1",
-    "inference_base_url": "http://127.0.0.1:8080/v1",
-    "start_prompt": "You are a professional Cyber Threat Intelligence and Vulnerability Report Writer. Use only the JSON data provided.\n",
-    "final_summary_prompt": "Write the overall cybersecurity report executive summary in ${language}. Return valid JSON only with executive_summary, trends, and recommendations."
-  },
-  "preprocessing": {
-    "cache_version": "1"
   },
   "tavily": {
     "search_depth": "basic",

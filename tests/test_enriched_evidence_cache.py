@@ -1,8 +1,12 @@
 import json
 
+import pytest
+
+from app import app
 from enriched_report.evidence_cache import (
     evidence_cache_key,
     lookup_cached_payload,
+    purge_evidence_cache,
     store_cached_payload,
 )
 from enriched_report.evidence_extractor import (
@@ -13,6 +17,12 @@ from enriched_report.evidence_extractor import (
     extract_evidence_cards,
 )
 from enriched_report.llama_client import EnrichedLLMError
+
+
+@pytest.fixture()
+def client():
+    app.config.update(TESTING=True)
+    return app.test_client()
 
 
 class FakeCacheCollection:
@@ -33,6 +43,13 @@ class FakeCacheCollection:
                 existing[field] = existing.get(field, 0) + amount
         self.docs[key] = existing
         return None
+
+    def delete_many(self, query):
+        if query:
+            return type('Result', (), {'deleted_count': 0})()
+        count = len(self.docs)
+        self.docs = {}
+        return type('Result', (), {'deleted_count': count})()
 
 
 class FakeCollection:
@@ -114,6 +131,34 @@ def test_store_and_lookup_cached_payload():
     assert database['source_evidence_cache'].docs[
         evidence_cache_key('CVE-2026-1000', 'what_happened', result['url'], 'hash-1', '1')
     ]['hit_count'] == 1
+
+
+def test_purge_evidence_cache_deletes_all_entries():
+    database = FakeDatabase({'source_evidence_cache': FakeCacheCollection()})
+    result = {
+        'cve_id': 'CVE-2026-1000',
+        'task_type': 'what_happened',
+        'url': 'https://example.com/advisory',
+        'content_hash': 'hash-1',
+    }
+    card = _normalize_card({
+        'confidence': 'high',
+        'what_happened': 'Cached fact.',
+        'why_matters': 'Risk.',
+        'how_to_respond': 'Upgrade.',
+        'references': ['https://example.com/advisory'],
+    }, {
+        **result,
+        'run_id': 'run-a',
+        'candidate_id': 'candidate-a',
+    })
+    store_cached_payload(database, result, card, '1')
+    assert len(database['source_evidence_cache'].docs) == 1
+
+    deleted_count = purge_evidence_cache(database)
+
+    assert deleted_count == 1
+    assert database['source_evidence_cache'].docs == {}
 
 
 def test_extract_evidence_cards_reuses_cache_on_second_run():
@@ -301,3 +346,36 @@ def test_extract_evidence_cards_continues_after_llm_failure():
     assert cards[0]['what_happened'] is None
     assert cards[1]['why_matters'] == 'Recovered.'
     assert FailingLlamaClient.calls == 2
+
+
+def test_purge_evidence_cache_route(client, monkeypatch):
+    with client.session_transaction() as session:
+        session['username'] = 'test-user'
+
+    cache = FakeCacheCollection()
+    database = FakeDatabase({'source_evidence_cache': cache})
+    result = {
+        'cve_id': 'CVE-2026-1000',
+        'task_type': 'what_happened',
+        'url': 'https://example.com/advisory',
+        'content_hash': 'hash-1',
+    }
+    card = _normalize_card({
+        'confidence': 'high',
+        'what_happened': 'Cached fact.',
+        'why_matters': 'Risk.',
+        'how_to_respond': 'Upgrade.',
+        'references': ['https://example.com/advisory'],
+    }, {
+        **result,
+        'run_id': 'run-a',
+        'candidate_id': 'candidate-a',
+    })
+    store_cached_payload(database, result, card, '1')
+    monkeypatch.setattr('routes.report.get_web_database', lambda: database)
+
+    response = client.post('/api/reports/evidence-cache/purge')
+
+    assert response.status_code == 200
+    assert response.get_json()['deleted_count'] == 1
+    assert cache.docs == {}

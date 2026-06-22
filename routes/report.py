@@ -3,6 +3,7 @@ from bson import ObjectId, json_util
 from flask import Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
+from enriched_report.evidence_cache import purge_evidence_cache
 from mongo import get_web_database
 from report_harness import (
     _assemble_report,
@@ -32,7 +33,7 @@ def _serialize_job(job):
             {'$unset': {field: '' for field in legacy_fields}},
         )
     job['id'] = str(job.pop('_id'))
-    job.setdefault('generation_mode', 'company_ai')
+    job.setdefault('generation_mode', 'enriched_weekly')
     job.setdefault('effective_generation_mode', job['generation_mode'])
     job.setdefault('report_language', 'en')
     job.setdefault('effective_report_language', job['report_language'])
@@ -73,7 +74,10 @@ def get_report_jobs():
 @login_required
 def create_report_job():
     data = request.get_json(silent=True) or {}
-    generation_mode = request.form.get('generation_mode') or data.get('generation_mode') or 'company_ai'
+    if request.files.get('json_file'):
+        generation_mode = request.form.get('generation_mode') or data.get('generation_mode') or 'template'
+    else:
+        generation_mode = request.form.get('generation_mode') or data.get('generation_mode') or 'enriched_weekly'
     report_language = request.form.get('report_language') or data.get('report_language') or 'en'
     input_source = None
     inputs = None
@@ -101,6 +105,16 @@ def create_report_job():
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': 'Unable to create report job.'}), 503
+
+
+@report_blueprint.route('/api/reports/evidence-cache/purge', methods=['POST'])
+@login_required
+def purge_report_evidence_cache():
+    try:
+        deleted_count = purge_evidence_cache(get_web_database())
+        return jsonify({'deleted_count': deleted_count})
+    except PyMongoError:
+        return jsonify({'error': 'Unable to purge evidence cache.'}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>/cancel', methods=['POST'])

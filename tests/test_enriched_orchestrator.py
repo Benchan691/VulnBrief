@@ -106,7 +106,7 @@ def test_run_enriched_pipeline_completes_with_mocked_tavily_and_llm(monkeypatch)
             assert job['pipeline_stage'] == 'completed'
             assert job['progress_percent'] == 100
             assert job.get('status_message')
-            assert job['report']['title'] == 'Enriched Weekly Cybersecurity Report'
+            assert job['report']['title'] == 'Weekly Cybersecurity Intelligence Report'
             row = job['report']['vulnerability_detail_table']['rows'][0]
             assert row['cve_id'] == 'CVE-2026-7000'
             assert row['what_happened'] == 'Acme Widget has a remote code execution vulnerability.'

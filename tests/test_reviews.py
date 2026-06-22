@@ -43,7 +43,7 @@ def test_review_pages_require_authentication(client):
     assert response.status_code == 401
     assert response.get_json()['error'] == 'Authentication required'
     assert client.get('/api/reviews/search?search=CVE').status_code == 401
-    assert client.get('/api/reviews/auto-select-best?search=CVE').status_code == 401
+    assert client.post('/api/reports/evidence-cache/purge').status_code == 401
     assert client.put('/api/subscriptions/test@example.com', json={}).status_code == 401
     assert client.post('/api/reviews/export-json', json={}).status_code == 401
 
@@ -91,10 +91,10 @@ def test_review_collection_page_renders(client):
 
     main_page = client.get('/reviews')
     assert main_page.status_code == 200
-    assert b'Review type' in main_page.data
     assert b'CVE Results' in main_page.data
     assert b'Vendor' in main_page.data
-    assert b'Auto Select Best' in main_page.data
+    assert b'Review type' not in main_page.data
+    assert b'Auto Select Best' not in main_page.data
 
     response = client.get('/reviews/avd_review')
     assert response.status_code == 200
@@ -129,28 +129,28 @@ def test_original_document_export_preserves_order(client):
 def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
     authenticate(client)
     views = {
-        'b_review': {'options': {'viewOn': 'b', 'pipeline': [{'$project': {'title': 1}}]}},
-        'a_review': {'options': {'viewOn': 'a', 'pipeline': [{'$project': {'title': 1}}]}},
-        'high_review': {'options': {'viewOn': 'high', 'pipeline': [{'$project': {'title': 1}}]}},
-        'low_review': {'options': {'viewOn': 'low', 'pipeline': [{'$project': {'title': 1}}]}},
+        'cve_b_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+        'cve_a_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+        'cve_high_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+        'cve_low_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
     }
     documents = {
-        'a_review': [
+        'cve_a_review': [
             {'_id': 'a:1', 'title': 'Older A', 'scraped_at': '2026-06-01T00:00:00+00:00'},
             {'_id': 'a:2', 'title': 'Newer A', 'scraped_at': '2026-06-10T00:00:00+00:00'},
         ],
-        'b_review': [
+        'cve_b_review': [
             {'_id': 'b:1', 'title': 'Newest B', 'scraped_at': '2026-06-15T00:00:00+00:00'},
             {'_id': 'b:2', 'title': 'Middle B', 'scraped_at': '2026-06-05T00:00:00+00:00'},
         ],
-        'high_review': [
+        'cve_high_review': [
             {
                 '_id': 'high:1',
                 'title': 'Older high priority',
                 'scraped_at': '2026-06-02T00:00:00+00:00',
             },
         ],
-        'low_review': [
+        'cve_low_review': [
             {
                 '_id': 'low:1',
                 'title': 'Newer low priority',
@@ -179,22 +179,6 @@ def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
     body = response.get_json()
     assert [item['selection_id'] for item in body['data']] == ['b:2', 'high:1', 'a:1']
 
-    response = client.get('/api/reviews/search?collection=a_review&page_size=1')
-    assert response.status_code == 200
-    assert response.get_json()['total'] == 2
-
-    response = client.get('/api/reviews/search?collection=a_review&collection=b_review&title=test')
-    assert response.status_code == 200
-    assert response.get_json()['total'] == 4
-
-    response = client.get('/api/reviews/search?collection=a_review&collection=missing_review&title=test')
-    assert response.status_code == 400
-    assert 'not found' in response.get_json()['error']
-
-    response = client.get('/api/reviews/search?collection=a_review&collection=b_review')
-    assert response.status_code == 200
-    assert response.get_json()['total'] == 4
-
 
 def test_review_search_mode_cve_uses_cve_review_only(client, monkeypatch):
     authenticate(client)
@@ -221,30 +205,23 @@ def test_review_search_mode_cve_uses_cve_review_only(client, monkeypatch):
     assert captured == ['cve']
 
 
-def test_review_search_mode_non_cve_excludes_cve_review(client, monkeypatch):
+def test_review_search_rejects_non_cve_mode(client, monkeypatch):
     authenticate(client)
     views = {
         'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
         'avd_review': {'options': {'viewOn': 'avd', 'pipeline': [{'$project': {'title': 1}}]}},
-        'hkcert_review': {'options': {'viewOn': 'hkcert', 'pipeline': [{'$project': {'title': 1}}]}},
     }
-    captured = []
 
     class FakeDatabase:
         def __getitem__(self, name):
             return None
 
-    def on_query(view, mongo_filter):
-        captured.append(view['options']['viewOn'])
-
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, on_query=on_query)
 
     response = client.get('/api/reviews/search?mode=non_cve')
-    assert response.status_code == 200
-    assert set(captured) == {'avd', 'hkcert'}
-    assert 'cve' not in captured
+    assert response.status_code == 400
+    assert 'Only CVE review documents are supported' in response.get_json()['error']
 
 
 def test_review_search_mode_cve_includes_classification(client, monkeypatch):
@@ -374,175 +351,25 @@ def test_review_extracts_multiple_cves_from_hkcert_identifiers_and_cve_codes():
     assert 'details.hkcert.vulnerability_identifiers.cve_id' in related_filter
 
 
-def test_auto_select_best_picks_richest_related_records_for_all_matching_cves(client, monkeypatch):
-    authenticate(client)
-    views = {
-        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
-        'avd_review': {'options': {'viewOn': 'avd', 'pipeline': [{'$project': {'title': 1}}]}},
-        'hkcert_review': {'options': {'viewOn': 'hkcert', 'pipeline': [{'$project': {'title': 1}}]}},
-    }
-    cve_documents = [
-        {
-            '_id': 'cve:CVE-2026-1000',
-            'code': 'CVE-2026-1000',
-            'title': 'Target first CVE',
-            'severity': 'High',
-            'details': {},
-            'scraped_at': '2026-06-18T00:00:00+00:00',
-        },
-        {
-            '_id': 'cve:CVE-2026-2000',
-            'code': 'CVE-2026-2000',
-            'title': 'Target second CVE',
-            'severity': 'High',
-            'details': {},
-            'scraped_at': '2026-06-17T00:00:00+00:00',
-        },
-        {
-            '_id': 'cve:CVE-2026-3000',
-            'code': 'CVE-2026-3000',
-            'title': 'Unmatched CVE',
-            'severity': 'High',
-            'details': {},
-            'scraped_at': '2026-06-16T00:00:00+00:00',
-        },
-    ]
-    related_by_source = {
-        'cve': cve_documents,
-        'avd': [
-            {
-                '_id': 'avd:CVE-2026-1000',
-                'code': '2026-1000',
-                'title': 'Rich AVD detail',
-                'severity': 'High',
-                'affected': ['Product A'],
-                'details': {
-                    'avd': {
-                        'description': 'Detailed exploitation and root-cause notes.',
-                        'affected_products': ['Product A 1.0'],
-                        'recommendations': ['Upgrade to 2.0'],
-                        'references': ['https://example.test/avd-1000'],
-                    },
-                },
-                'source': {'detail_url': 'https://example.test/avd-1000'},
-                'scraped_at': '2026-06-17T00:00:00+00:00',
-            },
-            {
-                '_id': 'avd:CVE-2026-2000',
-                'code': '2026-2000',
-                'title': 'Thin AVD detail',
-                'details': {'avd': {'summary': 'Short note.'}},
-                'scraped_at': '2026-06-18T00:00:00+00:00',
-            },
-        ],
-        'hkcert': [
-            {
-                '_id': 'hkcert:CVE-2026-1000',
-                'code': 'CVE-2026-1000',
-                'title': 'Thin HKCERT detail',
-                'details': {'hkcert': {'summary': 'Brief.'}},
-                'scraped_at': '2026-06-18T00:00:00+00:00',
-            },
-            {
-                '_id': 'hkcert:CVE-2026-2000',
-                'code': 'CVE-2026-2000',
-                'title': 'Rich HKCERT detail',
-                'severity': 'High',
-                'details': {
-                    'hkcert': {
-                        'description': 'Complete bulletin with impact and remediation.',
-                        'systems_affected': ['Product B'],
-                        'solutions': ['Apply the vendor patch'],
-                        'solution_links': ['https://example.test/hkcert-2000'],
-                    },
-                },
-                'source': {'detail_url': 'https://example.test/hkcert-2000'},
-                'scraped_at': '2026-06-16T00:00:00+00:00',
-            },
-        ],
-    }
-
-    documents = {'cve_review': cve_documents}
-
-    class FakeDatabase:
-        def __getitem__(self, name):
-            return None
-
-    def query_slice(database, view, mongo_filter, skip, limit):
-        source = view['options']['viewOn']
-        filter_text = str(mongo_filter)
-        selected = [
-            dict(document)
-            for document in related_by_source[source]
-            if any(code in filter_text for code in ('1000', '2000'))
-            and any((document.get('code') or '').endswith(code) for code in ('1000', '2000'))
-        ]
-        return len(selected), selected
-
-    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
-    monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, documents)
-    monkeypatch.setattr('routes.review._query_review_slice', query_slice)
-
-    response = client.get('/api/reviews/auto-select-best?mode=cve&search=target&page=1&page_size=1')
-
-    assert response.status_code == 200
-    body = response.get_json()
-    assert body['processed'] == 2
-    assert body['selected'] == 2
-    assert body['skipped'] == 0
-    assert body['selections'] == [
-        {'collection': 'avd_review', 'selection_id': 'avd:CVE-2026-1000'},
-        {'collection': 'hkcert_review', 'selection_id': 'hkcert:CVE-2026-2000'},
-    ]
-    assert 'cve_review\x00cve:CVE-2026-1000' in body['selection_keys_to_remove']
-    assert 'avd_review\x00avd:CVE-2026-1000' in body['selection_keys_to_remove']
-    assert 'hkcert_review\x00hkcert:CVE-2026-2000' in body['selection_keys_to_remove']
-    assert all('3000' not in key for key in body['selection_keys_to_remove'])
-
-
-def test_auto_select_best_rejects_over_limit_matches(client, monkeypatch):
-    authenticate(client)
-    views = {
-        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
-    }
-    cve_documents = [
-        {'_id': 'cve:CVE-2026-1000', 'code': 'CVE-2026-1000', 'title': 'Target one'},
-        {'_id': 'cve:CVE-2026-1001', 'code': 'CVE-2026-1001', 'title': 'Target two'},
-    ]
-
-    class FakeDatabase:
-        def __getitem__(self, name):
-            return None
-
-    monkeypatch.setattr('routes.review.MAX_EXPORT_SELECTIONS', 1)
-    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
-    monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, {'cve_review': cve_documents})
-
-    response = client.get('/api/reviews/auto-select-best?mode=cve&search=target')
-
-    assert response.status_code == 400
-    assert 'limited to 1 matching CVEs' in response.get_json()['error']
-
-
 def test_review_search_keyword_matches_nested_projected_details(client, monkeypatch):
     authenticate(client)
     views = {
-        'avd_review': {'options': {'viewOn': 'avd', 'pipeline': [{'$project': {'title': 1}}]}},
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
     }
     captured = []
 
     documents = {
-        'avd_review': [
+        'cve_review': [
             {
-                '_id': 'avd:1',
+                '_id': 'cve:1',
+                'code': 'CVE-2026-1000',
                 'title': 'Summary misses keyword',
                 'severity': 'High',
                 'details': {'source': {'description': 'contains nested-only-token'}},
             },
             {
-                '_id': 'avd:2',
+                '_id': 'cve:2',
+                'code': 'CVE-2026-2000',
                 'title': 'Another record',
                 'severity': 'High',
                 'details': {'source': {'description': 'different text'}},
@@ -560,13 +387,14 @@ def test_review_search_keyword_matches_nested_projected_details(client, monkeypa
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
     patch_iter_collection_documents(monkeypatch, views, documents, on_query=on_query)
+    monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
 
-    response = client.get('/api/reviews/search?mode=non_cve&search=nested-only-token')
+    response = client.get('/api/reviews/search?mode=cve&search=nested-only-token')
 
     assert response.status_code == 200
     body = response.get_json()
     assert body['total'] == 1
-    assert body['data'][0]['selection_id'] == 'avd:1'
+    assert body['data'][0]['selection_id'] == 'cve:1'
     assert 'nested-only-token' not in str(captured[0])
 
 
@@ -706,10 +534,14 @@ def test_global_review_search_allows_empty_filters_and_rejects_invalid_filters(c
     assert response.status_code == 200
     assert response.get_json()['total'] == 1
 
-    monkeypatch.setattr('routes.review._review_views', lambda database: {})
-    response = client.get('/api/reviews/search?collection=not_a_review')
+    response = client.get('/api/reviews/search?mode=non_cve')
     assert response.status_code == 400
-    assert 'not found' in response.get_json()['error']
+    assert 'Only CVE review documents are supported' in response.get_json()['error']
+
+    monkeypatch.setattr('routes.review._review_views', lambda database: {})
+    response = client.get('/api/reviews/search')
+    assert response.status_code == 200
+    assert response.get_json()['total'] == 0
 
     response = client.get('/api/reviews/search?status=Invalid')
     assert response.status_code == 400

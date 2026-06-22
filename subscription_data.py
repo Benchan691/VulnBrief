@@ -15,7 +15,7 @@ FILTER_TEXT_FIELDS = (
 )
 VALID_SEVERITIES = {'', 'Critical', 'High', 'Medium', 'Low'}
 VALID_WINDOWS = {'all', 'daily', 'week', 'custom'}
-VALID_GENERATION_MODES = {'company_ai', 'template', 'enriched_weekly'}
+VALID_GENERATION_MODES = {'template', 'enriched_weekly'}
 VALID_LANGUAGES = {'en', 'zh', 'ch'}
 
 DEFAULT_FILTERS = {
@@ -45,7 +45,7 @@ DEFAULT_NEWSLETTER_PROFILE = {
 DEFAULT_REPORT_PROFILE = {
     'enabled': True,
     'filters': DEFAULT_FILTERS,
-    'generation_mode': 'company_ai',
+    'generation_mode': 'template',
     'report_language': 'en',
     'schedule_enabled': False,
     'cron': '0 9 * * 1',
@@ -185,7 +185,9 @@ def validate_profile(database, value, profile_type):
     profile['enabled'] = bool(value.get('enabled', default['enabled']))
     profile['filters'] = validate_filters(database, value.get('filters'))
     if profile_type == 'report':
-        profile['generation_mode'] = value.get('generation_mode', 'company_ai')
+        profile['generation_mode'] = value.get('generation_mode', default['generation_mode'])
+        if profile['generation_mode'] in {'company_ai', 'ai'}:
+            profile['generation_mode'] = 'enriched_weekly'
         profile['report_language'] = value.get('report_language', 'en')
         profile['schedule_enabled'] = bool(value.get('schedule_enabled', False))
         profile['cron'] = validate_cron(value.get('cron', '0 9 * * 1'))

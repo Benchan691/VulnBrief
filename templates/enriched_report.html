@@ -50,15 +50,14 @@
     <table>
         <thead>
             <tr>
-                <th>CVE</th><th>Title</th><th>Vendor</th><th>Product</th><th>Severity</th>
-                <th>Priority</th><th>What Happened</th><th>Why It Matters</th><th>How To Respond</th>
+                <th>CVE</th><th>Vendor</th><th>Product</th><th>Severity</th>
+                <th>Priority</th><th>Vulnerability Overview</th><th>Risk and Impact</th><th>Remediation Guidance</th>
             </tr>
         </thead>
         <tbody>
             {% for row in report.vulnerability_detail_table.rows or [] %}
             <tr>
                 <td>{{ row.cve_id }}</td>
-                <td>{{ row.title }}</td>
                 <td>{{ row.vendor or '' }}</td>
                 <td>{{ row.product or '' }}</td>
                 <td>{{ row.severity or '' }}</td>
@@ -91,20 +90,16 @@
     <h2>Appendix</h2>
     <div class="section">
         <h3>Source References</h3>
-        <ul class="small">
-            {% for reference in report.appendix.source_references or [] %}
-            <li>{{ reference.cve_id }}: <a href="{{ reference.url }}" rel="noopener">{{ reference.url }}</a>{% if reference.source_type %} ({{ reference.source_type }}){% endif %}</li>
+        <div class="small">
+            {% for group in report.appendix.source_references or [] %}
+            <p><strong>{{ group.cve_id }}:</strong></p>
+            <ul>
+                {% for url in group.urls or [] %}
+                <li><a href="{{ url }}" rel="noopener">{{ url }}</a></li>
+                {% endfor %}
+            </ul>
             {% endfor %}
-        </ul>
-    </div>
-
-    <h2>Verification</h2>
-    <div class="section">
-        <p><strong>Python checks:</strong> {{ report.verification.python_checks }}</p>
-        <p><strong>AI checks:</strong> {{ report.verification.ai_checks }}</p>
-        {% if report.verification.issues %}
-        <ul>{% for issue in report.verification.issues %}<li>{{ issue }}</li>{% endfor %}</ul>
-        {% endif %}
+        </div>
     </div>
 </body>
 </html>

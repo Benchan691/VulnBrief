@@ -14,36 +14,6 @@ services:
     volumes:
       - ./newsletters:/app/newsletters
 
-  preprocessor-scanner:
-    build: .
-    container_name: webserver-preprocessor-scanner
-    restart: unless-stopped
-    command: ["python", "company_ai_preprocessor.py", "--role", "scanner"]
-    env_file:
-      - .env
-    environment:
-      PYTHONUNBUFFERED: "1"
-
-  preprocessor-router:
-    build: .
-    container_name: webserver-preprocessor-router
-    restart: unless-stopped
-    command: ["python", "company_ai_preprocessor.py", "--role", "router"]
-    env_file:
-      - .env
-    environment:
-      PYTHONUNBUFFERED: "1"
-
-  company-ai-worker:
-    build: .
-    container_name: webserver-company-ai-worker
-    restart: unless-stopped
-    command: ["python", "company_ai_preprocessor.py", "--role", "company-worker"]
-    env_file:
-      - .env
-    environment:
-      PYTHONUNBUFFERED: "1"
-
   scheduler:
     build: .
     container_name: webserver-scheduler

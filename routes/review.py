@@ -38,27 +38,6 @@ FILTER_FIELDS = {
 CVE_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)
 RELATED_CVE_LIMIT_PER_COLLECTION = 100
 RELATED_CVE_QUERY_BATCH_SIZE = 50
-DETAIL_TEXT_FIELDS = (
-    'description', 'summary', 'overview', 'intro', 'vulDesc', 'productDesc',
-)
-DETAIL_AFFECTED_FIELDS = (
-    'affected', 'affected_products', 'systems_affected', 'affected_systems',
-    'product_names', 'products', 'affectedProduct', 'affectedSystem',
-    'affected_software',
-)
-DETAIL_RECOMMENDATION_FIELDS = (
-    'recommendation', 'recommendations', 'solution', 'solutions', 'patch',
-    'workarounds', 'mitigation', 'mitigations', 'remediation',
-)
-DETAIL_REFERENCE_FIELDS = (
-    'references', 'reference_links', 'related_links', 'referUrl',
-    'publication_url', 'cvrf_url', 'csaf_url', 'solution_links',
-    'more_information_links',
-)
-DETAIL_URL_FIELDS = (
-    'detail_url', 'url', 'source_url', 'link', 'publication_url', 'cvrf_url',
-    'csaf_url',
-)
 
 
 def _review_views(database):
@@ -123,40 +102,6 @@ def _summary_text(value):
     if isinstance(value, dict):
         return ' '.join(_summary_text(item) for item in value.values())
     return str(value)
-
-
-def _has_summary_value(value):
-    return bool(_summary_text(value).strip())
-
-
-def _nested_field_values(value, field_names):
-    values = []
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key in field_names:
-                values.append(child)
-            values.extend(_nested_field_values(child, field_names))
-    elif isinstance(value, list):
-        for item in value:
-            values.extend(_nested_field_values(item, field_names))
-    return values
-
-
-def _has_any_field_value(document, fields):
-    sources = [document]
-    details = document.get('details')
-    if isinstance(details, dict):
-        sources.append(details)
-    source = document.get('source')
-    if isinstance(source, dict):
-        sources.append(source)
-
-    for source in sources:
-        if any(_has_summary_value(source.get(field)) for field in fields):
-            return True
-        if any(_has_summary_value(value) for value in _nested_field_values(source, set(fields))):
-            return True
-    return False
 
 
 def _first_summary_value(document, fields):
@@ -482,31 +427,13 @@ def _view_source_name(view):
 
 def _selected_review_collections(args, views):
     mode = args.get('mode', '').strip().lower()
-    if mode not in {'', 'cve', 'non_cve'}:
-        raise ValueError('Review mode must be cve or non_cve.')
-    if mode == 'cve':
-        return sorted(
-            name for name, view in views.items() if _view_source_name(view) == 'cve'
-        )
     if mode == 'non_cve':
-        return sorted(
-            name for name, view in views.items() if _view_source_name(view) != 'cve'
-        )
-
-    collection_names = []
-    seen = set()
-    for name in args.getlist('collection'):
-        name = name.strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        collection_names.append(name)
-    if not collection_names:
-        return sorted(views)
-    invalid = [name for name in collection_names if name not in views]
-    if invalid:
-        raise ValueError('Review collection not found.')
-    return sorted(collection_names)
+        raise ValueError('Only CVE review documents are supported.')
+    if mode not in {'', 'cve'}:
+        raise ValueError('Review mode must be cve.')
+    return sorted(
+        name for name, view in views.items() if _view_source_name(view) == 'cve'
+    )
 
 
 def _related_summary(collection_name, selection_id, document, current_collection, current_selection_id):
@@ -621,131 +548,6 @@ def _filtered_cve_rows(database, views, mongo_filter, search):
         name for name, view in views.items() if _view_source_name(view) == 'cve'
     )
     return _merged_review_rows(database, views, cve_names, mongo_filter, search)
-
-
-def _detail_completeness_score(item):
-    document = item.get('document') or {}
-    details = document.get('details') if isinstance(document.get('details'), dict) else {}
-    score = 0
-
-    if _has_summary_value(details):
-        score += 1000
-    if _has_any_field_value(document, DETAIL_TEXT_FIELDS):
-        score += 220
-    if _has_any_field_value(document, DETAIL_AFFECTED_FIELDS):
-        score += 140
-    if _has_any_field_value(document, DETAIL_RECOMMENDATION_FIELDS):
-        score += 120
-    if _has_any_field_value(document, DETAIL_REFERENCE_FIELDS):
-        score += 90
-    if _has_any_field_value(document, ('severity', 'status', 'risk', 'priority', 'hazardLevel')):
-        score += 50
-    if _has_any_field_value(document, ('title', 'advisory_title', 'vulName')):
-        score += 40
-    if _has_any_field_value(document, DETAIL_URL_FIELDS):
-        score += 30
-
-    score += min(len(_summary_text(details)) // 80, 120)
-    return (
-        score,
-        item.get('_sort') or _review_sort_key(document),
-        item.get('collection') or '',
-        item.get('selection_id') or '',
-    )
-
-
-def _best_related_item(related):
-    if not related:
-        return None
-    return max(related, key=_detail_completeness_score)
-
-
-@review_blueprint.route('/api/reviews/auto-select-best')
-@login_required
-def auto_select_best_review_documents():
-    try:
-        mongo_filter = _build_filter(request.args)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    try:
-        database = get_vulnerabilities_database()
-        views = _review_views(database)
-        search = request.args.get('search', '').strip()
-        rows = _filtered_cve_rows(
-            database,
-            views,
-            mongo_filter,
-            search,
-        )
-        if len(rows) > MAX_EXPORT_SELECTIONS:
-            return jsonify({
-                'error': (
-                    f'Auto-select is limited to {MAX_EXPORT_SELECTIONS} matching CVEs. '
-                    'Narrow the filter and try again.'
-                ),
-            }), 400
-
-        row_codes, all_codes = _collect_row_cve_codes(rows)
-
-        candidates = _related_candidates(database, views, all_codes)
-        selections = []
-        selection_keys_to_remove = []
-        processed = 0
-        skipped = 0
-        seen_selection_keys = set()
-        seen_remove_keys = set()
-
-        for row, codes in zip(rows, row_codes):
-            if not codes:
-                skipped += 1
-                continue
-            processed += 1
-            related = _related_for_codes(
-                candidates,
-                codes,
-                row['collection'],
-                row['selection_id'],
-            )
-            for item in related:
-                key = _selection_key(item['collection'], item['selection_id'])
-                if key not in seen_remove_keys:
-                    seen_remove_keys.add(key)
-                    selection_keys_to_remove.append(key)
-
-            best = _best_related_item(related)
-            if best is None:
-                skipped += 1
-                continue
-
-            key = _selection_key(best['collection'], best['selection_id'])
-            if key in seen_selection_keys:
-                continue
-            seen_selection_keys.add(key)
-            selections.append({
-                'collection': best['collection'],
-                'selection_id': best['selection_id'],
-            })
-
-        if len(selections) > MAX_EXPORT_SELECTIONS:
-            return jsonify({
-                'error': f'Auto-select is limited to {MAX_EXPORT_SELECTIONS} selections.',
-            }), 400
-
-        return jsonify({
-            'selections': selections,
-            'selection_keys_to_remove': selection_keys_to_remove,
-            'processed': processed,
-            'selected': len(selections),
-            'skipped': skipped,
-        })
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    except PyMongoError:
-        return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
-    except Exception:
-        current_app.logger.exception('Unexpected review auto-select failure.')
-        return jsonify({'error': 'Unable to auto-select review documents.'}), 500
 
 
 @review_blueprint.route('/api/reviews/search')

@@ -1,6 +1,5 @@
 import json
 import logging
-from datetime import datetime, timezone
 
 from jsonschema import ValidationError
 
@@ -14,7 +13,6 @@ from .section_parsers import (
     parse_section_text,
     validate_section,
 )
-from .verifier import verify_and_finalize_report
 
 logger = logging.getLogger(__name__)
 
@@ -166,15 +164,7 @@ def generate_enriched_report(
             )
 
     report = {
-        'title': 'Enriched Weekly Cybersecurity Report',
+        'title': 'Weekly Cybersecurity Intelligence Report',
         **sections,
-        'verification': {
-            'python_checks': 'pending',
-            'ai_checks': 'pending',
-            'issues': [],
-            'unsupported_claims': [],
-            'verified_at': datetime.now(timezone.utc).isoformat(),
-        },
     }
-    validate_enriched_report(report)
-    return verify_and_finalize_report(report, cards, report_metrics, evidence_cards)
+    return validate_enriched_report(report)

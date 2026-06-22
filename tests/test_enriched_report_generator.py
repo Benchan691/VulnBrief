@@ -69,7 +69,7 @@ def test_build_appendix_dedupes_urls_across_cards_and_evidence():
         'total_vulnerabilities': 1,
         'severity_counts': {'Critical': 1},
     }
-    urls = [item['url'] for item in appendix['source_references']]
+    urls = appendix['source_references'][0]['urls']
     assert urls == [
         'https://acme.example/advisory',
         'https://extra.example/details',

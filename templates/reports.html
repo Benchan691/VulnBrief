@@ -5,7 +5,7 @@
 <div class="container">
     <div class="mb-4">
         <h2 class="mb-1"><i class="bi bi-file-earmark-text me-2"></i>Reports</h2>
-        <p class="text-muted mb-0">Generate reports with Company AI, enriched weekly CVE research, or an English deterministic fixed template.</p>
+        <p class="text-muted mb-0">Generate enriched weekly CVE research reports or an English deterministic fixed template.</p>
     </div>
 
     <div id="message" class="alert d-none" role="alert"></div>
@@ -17,8 +17,7 @@
                     <div class="col-md-3">
                         <label for="generation-mode" class="form-label">Generation Mode</label>
                         <select id="generation-mode" class="form-select">
-                            <option value="company_ai" selected>Company AI</option>
-                            <option value="enriched_weekly">Enriched Weekly</option>
+                            <option value="enriched_weekly" selected>Enriched Weekly</option>
                             <option value="template">Fixed Template</option>
                         </select>
                     </div>
@@ -29,7 +28,7 @@
                             <option value="zh">Traditional Chinese (zh)</option>
                             <option value="ch">Simplified Chinese (ch)</option>
                         </select>
-                        <div class="form-text">Available for Company AI reports.</div>
+                        <div class="form-text">Language is stored for subscription profiles; enriched weekly reports are English.</div>
                     </div>
                     <div class="col-md-3">
                         <label for="json-file" class="form-label">Optional exported JSON array</label>
@@ -39,10 +38,16 @@
                 </div>
                 <div class="d-flex justify-content-between align-items-center mt-3">
                     <span id="selection-count" class="text-muted small">0 review selections available</span>
-                    <button id="generate-btn" class="btn btn-primary" type="submit">
-                        <i class="bi bi-stars me-1"></i>Generate HTML
-                    </button>
+                    <div class="d-flex gap-2">
+                        <button id="purge-evidence-cache-btn" type="button" class="btn btn-outline-danger btn-sm d-none">
+                            <i class="bi bi-trash me-1"></i>Purge Evidence Cache
+                        </button>
+                        <button id="generate-btn" class="btn btn-primary" type="submit">
+                            <i class="bi bi-stars me-1"></i>Generate HTML
+                        </button>
+                    </div>
                 </div>
+                <div id="evidence-cache-help" class="form-text d-none">Clears cached enriched evidence extractions (`source_evidence_cache`). The next enriched run will call the LLM again for evidence.</div>
             </form>
         </div>
     </div>
@@ -89,6 +94,7 @@
 <script>
 (function () {
     const jobsUrl = {{ url_for('report.get_report_jobs')|tojson }};
+    const purgeEvidenceCacheUrl = {{ url_for('report.purge_report_evidence_cache')|tojson }};
     const cancelUrlTemplate = {{ url_for('report.cancel_report_job', job_id='__JOB_ID__')|tojson }};
     const deleteUrlTemplate = {{ url_for('report.delete_report_job', job_id='__JOB_ID__')|tojson }};
     const logsUrlTemplate = {{ url_for('report.get_report_job_logs', job_id='__JOB_ID__')|tojson }};
@@ -103,6 +109,8 @@
     const generationMode = document.getElementById('generation-mode');
     const reportLanguage = document.getElementById('report-language');
     const languageField = document.getElementById('language-field');
+    const purgeEvidenceCacheButton = document.getElementById('purge-evidence-cache-btn');
+    const evidenceCacheHelp = document.getElementById('evidence-cache-help');
     let pollTimer = null;
 
     function selections() {
@@ -119,9 +127,28 @@
     }
     function updateLanguageField() {
         const isTemplate = generationMode.value === 'template';
+        const isEnriched = generationMode.value === 'enriched_weekly';
         languageField.classList.toggle('d-none', isTemplate);
         reportLanguage.disabled = isTemplate;
+        purgeEvidenceCacheButton.classList.toggle('d-none', !isEnriched);
+        evidenceCacheHelp.classList.toggle('d-none', !isEnriched);
         if (isTemplate) reportLanguage.value = 'en';
+    }
+    function purgeEvidenceCache() {
+        if (!confirm('Purge all cached enriched evidence extractions? The next enriched weekly run will re-call the LLM for evidence.')) {
+            return;
+        }
+        purgeEvidenceCacheButton.disabled = true;
+        requestJson(purgeEvidenceCacheUrl, { method: 'POST' })
+            .then(function (body) {
+                showMessage('Purged ' + (body.deleted_count || 0) + ' cached evidence record(s).', 'success');
+            })
+            .catch(function (reason) {
+                showMessage(reason.message, 'danger');
+            })
+            .finally(function () {
+                purgeEvidenceCacheButton.disabled = false;
+            });
     }
     function languageName(code) {
         return { en: 'English', zh: 'Traditional Chinese', ch: 'Simplified Chinese' }[code] || code;
@@ -270,10 +297,11 @@
             active = active || job.status === 'queued' || job.status === 'running';
             const row = document.createElement('tr');
             const created = job.created_at && job.created_at.$date ? job.created_at.$date : job.created_at;
-            const requested = job.generation_mode === 'ai' ? 'company_ai' : (job.generation_mode || 'company_ai');
-            const effective = job.effective_generation_mode === 'ai' ? 'company_ai' : (job.effective_generation_mode || requested);
-            let generator = requested === 'template' ? 'Fixed Template' : (requested === 'enriched_weekly' ? 'Enriched Weekly' : 'Company AI');
-            if (requested === 'company_ai' && effective === 'template') generator = 'Company AI \u2192 Fixed Template';
+            const legacyModes = { ai: 'enriched_weekly', company_ai: 'enriched_weekly' };
+            const requested = legacyModes[job.generation_mode] || job.generation_mode || 'enriched_weekly';
+            const effective = legacyModes[job.effective_generation_mode] || job.effective_generation_mode || requested;
+            let generator = requested === 'template' ? 'Fixed Template' : 'Enriched Weekly';
+            if (requested === 'enriched_weekly' && effective === 'template') generator = 'Enriched Weekly \u2192 Fixed Template';
             const requestedLanguage = job.report_language || 'en';
             const effectiveLanguage = job.effective_report_language || requestedLanguage;
             let language = languageName(requestedLanguage);
@@ -413,6 +441,7 @@
     });
     applyStoredReportPreferences();
     generationMode.addEventListener('change', updateLanguageField);
+    purgeEvidenceCacheButton.addEventListener('click', purgeEvidenceCache);
     updateLanguageField();
     updateSelectionCount();
     loadJobs();
