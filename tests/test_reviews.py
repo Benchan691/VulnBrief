@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from bson import json_util
 from pymongo.errors import ServerSelectionTimeoutError
@@ -14,6 +16,51 @@ def client():
 def authenticate(client):
     with client.session_transaction() as session:
         session['username'] = 'test-user'
+
+
+def _nested_value(document, field):
+    value = document
+    for part in field.split('.'):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def _document_matches_mongo_filter(document, mongo_filter):
+    if not mongo_filter:
+        return True
+    if '$and' in mongo_filter:
+        return all(
+            _document_matches_mongo_filter(document, clause)
+            for clause in mongo_filter['$and']
+        )
+    if '$or' in mongo_filter:
+        return any(
+            _document_matches_mongo_filter(document, clause)
+            for clause in mongo_filter['$or']
+        )
+
+    for field, condition in mongo_filter.items():
+        if field.startswith('$'):
+            continue
+        value = _nested_value(document, field)
+        if isinstance(condition, dict):
+            if '$regex' in condition:
+                pattern = condition['$regex']
+                flags = re.IGNORECASE if condition.get('$options') == 'i' else 0
+                haystack = value if isinstance(value, str) else str(value or '')
+                if isinstance(value, list):
+                    haystack = ' '.join(str(item) for item in value)
+                if not re.search(pattern, haystack, flags):
+                    return False
+            if '$gte' in condition and (document.get(field) or '') < condition['$gte']:
+                return False
+            if '$lt' in condition and (document.get(field) or '') >= condition['$lt']:
+                return False
+        elif value != condition:
+            return False
+    return True
 
 
 def patch_iter_collection_documents(monkeypatch, views, documents=None, on_query=None):
@@ -35,6 +82,45 @@ def patch_iter_collection_documents(monkeypatch, views, documents=None, on_query
             yield dict(document)
 
     monkeypatch.setattr('routes.review._iter_collection_documents', iter_collection_documents)
+
+
+def patch_query_review_slice(monkeypatch, views, documents=None, on_query=None):
+    documents = documents or {}
+
+    def query_review_slice(database, view, mongo_filter, skip, limit):
+        if on_query is not None:
+            on_query(view, mongo_filter)
+        name = next(view_name for view_name, candidate in views.items() if candidate is view)
+        sorted_documents = sorted(
+            documents.get(name, []),
+            key=lambda document: (
+                document.get('scraped_at') or '',
+                str(document.get('_id', '')),
+            ),
+            reverse=True,
+        )
+        filtered = [
+            dict(document)
+            for document in sorted_documents
+            if _document_matches_mongo_filter(document, mongo_filter)
+        ]
+        return len(filtered), filtered[skip:skip + limit]
+
+    monkeypatch.setattr('routes.review._query_review_slice', query_review_slice)
+
+
+def patch_cve_search_data(monkeypatch, views, documents=None, on_query=None):
+    documents = documents or {}
+    cve_view_names = sorted(
+        name for name, view in views.items()
+        if view['options']['viewOn'] == 'cve'
+    )
+    if len(documents) <= 1 and len(cve_view_names) == 1:
+        if not documents:
+            documents = {cve_view_names[0]: []}
+        patch_query_review_slice(monkeypatch, views, documents, on_query=on_query)
+        return
+    patch_iter_collection_documents(monkeypatch, views, documents, on_query=on_query)
 
 
 def test_review_pages_require_authentication(client):
@@ -197,7 +283,7 @@ def test_review_search_mode_cve_uses_cve_review_only(client, monkeypatch):
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, on_query=on_query)
+    patch_cve_search_data(monkeypatch, views, on_query=on_query)
     monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
 
     response = client.get('/api/reviews/search?mode=cve')
@@ -256,7 +342,7 @@ def test_review_search_mode_cve_includes_classification(client, monkeypatch):
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, documents)
+    patch_cve_search_data(monkeypatch, views, documents)
     monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
 
     response = client.get('/api/reviews/search?mode=cve&page_size=10')
@@ -304,15 +390,22 @@ def test_review_search_mode_cve_includes_related_records(client, monkeypatch):
         is_related_query = '^' in filter_text and '2026' in filter_text
         if is_related_query:
             related_filters.append(filter_text)
-        if source == 'cve' and is_related_query:
-            return 1, [dict(cve_document)]
-        if source == 'avd' and is_related_query:
-            return 1, [dict(related_avd)]
+            if source == 'cve':
+                return 1, [dict(cve_document)]
+            if source == 'avd':
+                return 1, [dict(related_avd)]
+            return 0, []
+        if source == 'cve':
+            filtered = [
+                dict(document)
+                for document in documents['cve_review']
+                if _document_matches_mongo_filter(document, mongo_filter)
+            ]
+            return len(filtered), filtered[skip:skip + limit]
         return 0, []
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, documents)
     monkeypatch.setattr('routes.review._query_review_slice', query_slice)
 
     response = client.get('/api/reviews/search?mode=cve&search=CVE-2026-1000')
@@ -386,7 +479,7 @@ def test_review_search_keyword_matches_nested_projected_details(client, monkeypa
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, documents, on_query=on_query)
+    patch_cve_search_data(monkeypatch, views, documents, on_query=on_query)
     monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
 
     response = client.get('/api/reviews/search?mode=cve&search=nested-only-token')
@@ -395,7 +488,7 @@ def test_review_search_keyword_matches_nested_projected_details(client, monkeypa
     body = response.get_json()
     assert body['total'] == 1
     assert body['data'][0]['selection_id'] == 'cve:1'
-    assert 'nested-only-token' not in str(captured[0])
+    assert 'details.source.description' in str(captured[0])
 
 
 def test_review_search_keyword_matches_any_term(client, monkeypatch):
@@ -408,12 +501,14 @@ def test_review_search_keyword_matches_any_term(client, monkeypatch):
             {
                 '_id': 'cve:cisco',
                 'title': 'Cisco issue',
+                'severity': 'High',
                 'scraped_at': '2026-06-10T00:00:00+00:00',
                 'classification': {'status': 'classified', 'best_vendor': 'Cisco'},
             },
             {
                 '_id': 'cve:microsoft',
                 'title': 'Microsoft issue',
+                'severity': 'High',
                 'scraped_at': '2026-06-09T00:00:00+00:00',
                 'classification': {
                     'status': 'classified',
@@ -424,6 +519,7 @@ def test_review_search_keyword_matches_any_term(client, monkeypatch):
             {
                 '_id': 'cve:other',
                 'title': 'Unrelated issue',
+                'severity': 'High',
                 'scraped_at': '2026-06-08T00:00:00+00:00',
                 'classification': {'status': 'classified', 'best_vendor': 'Apache'},
             },
@@ -436,7 +532,7 @@ def test_review_search_keyword_matches_any_term(client, monkeypatch):
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, documents)
+    patch_cve_search_data(monkeypatch, views, documents)
     monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
 
     response = client.get('/api/reviews/search?mode=cve&search=cisco%20microsoft')
@@ -457,6 +553,7 @@ def test_review_search_keyword_matches_classification_fields(client, monkeypatch
             {
                 '_id': 'cve:1',
                 'title': 'Generic CVE',
+                'severity': 'High',
                 'scraped_at': '2026-06-10T00:00:00+00:00',
                 'classification': {
                     'status': 'classified',
@@ -473,7 +570,7 @@ def test_review_search_keyword_matches_classification_fields(client, monkeypatch
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, documents)
+    patch_cve_search_data(monkeypatch, views, documents)
     monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
 
     response = client.get('/api/reviews/search?mode=cve&search=exchange')
@@ -524,7 +621,7 @@ def test_global_review_search_allows_empty_filters_and_rejects_invalid_filters(c
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(
+    patch_cve_search_data(
         monkeypatch,
         views,
         {'cve_review': [{'_id': 'cve:1', 'title': 'Example'}]},
@@ -564,7 +661,7 @@ def test_review_severity_filter_applies_known_only_by_default(client, monkeypatc
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, on_query=on_query)
+    patch_cve_search_data(monkeypatch, views, on_query=on_query)
 
     response = client.get('/api/reviews/search?collection=cve_review&title=test')
     assert response.status_code == 200
@@ -602,7 +699,7 @@ def test_review_search_scrape_time_filter_applies_to_query(client, monkeypatch):
 
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, on_query=on_query)
+    patch_cve_search_data(monkeypatch, views, on_query=on_query)
 
     response = client.get(
         '/api/reviews/search?mode=cve&time_window=custom'
@@ -630,7 +727,7 @@ def test_review_search_rejects_invalid_scrape_time_filter(client):
     assert 'scrape time' in response.get_json()['error']
 
 
-def test_global_review_search_rejects_over_limit_matches(client, monkeypatch):
+def test_global_review_search_allows_over_export_limit(client, monkeypatch):
     authenticate(client)
     views = {
         'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
@@ -653,12 +750,12 @@ def test_global_review_search_rejects_over_limit_matches(client, monkeypatch):
     monkeypatch.setattr('routes.review.MAX_EXPORT_SELECTIONS', 2)
     monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
-    patch_iter_collection_documents(monkeypatch, views, documents)
+    patch_cve_search_data(monkeypatch, views, documents)
 
     response = client.get('/api/reviews/search?mode=cve')
 
-    assert response.status_code == 400
-    assert 'limited to 2 matching documents' in response.get_json()['error']
+    assert response.status_code == 200
+    assert response.get_json()['total'] == 3
 
 
 @pytest.mark.parametrize('payload, status', [

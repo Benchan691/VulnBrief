@@ -35,6 +35,14 @@ FILTER_FIELDS = {
     'title': ('title',),
     'affected': ('affected', 'affected_products'),
 }
+TEXT_SEARCH_FIELDS = (
+    'code', 'cve', 'cve_code', 'cve_codes', 'title', 'severity', 'status',
+    'affected', 'affected_products', 'description', 'impacts', 'recommendation',
+    'classification.vendor', 'classification.best_vendor',
+    'classification.product', 'classification.best_product',
+    'details.source.description',
+    'details.hkcert.vulnerability_identifiers.cve_id',
+)
 CVE_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)
 RELATED_CVE_LIMIT_PER_COLLECTION = 100
 RELATED_CVE_QUERY_BATCH_SIZE = 50
@@ -145,6 +153,32 @@ def _document_matches_search(document, search):
     if not terms:
         return True
     return any(term.casefold() in haystack for term in terms)
+
+
+def _build_text_search_filter(search):
+    terms = _search_terms(search)
+    if not terms:
+        return None
+    return {
+        '$or': [
+            {field: _regex(term)}
+            for term in terms
+            for field in TEXT_SEARCH_FIELDS
+        ],
+    }
+
+
+def _merge_mongo_filters(*filters):
+    clauses = [clause for clause in filters if clause]
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {'$and': clauses}
+
+
+def _combined_mongo_filter(mongo_filter, search):
+    return _merge_mongo_filters(mongo_filter, _build_text_search_filter(search))
 
 
 def _cve_code_forms(code):
@@ -350,16 +384,38 @@ def _paginated_merged_rows(database, views, view_names, mongo_filter, search, sk
         if not _document_matches_search(document, search):
             continue
         total += 1
-        if total > MAX_EXPORT_SELECTIONS:
-            raise ValueError(
-                f'Search is limited to {MAX_EXPORT_SELECTIONS} matching documents. '
-                'Narrow the filter and try again.'
-            )
         if total <= skip:
             continue
         if len(page_rows) < limit:
             page_rows.append(_review_response_row(name, document, views[name]))
     return total, page_rows
+
+
+def _paginated_cve_search_rows(database, views, view_names, mongo_filter, search, skip, limit):
+    combined_filter = _combined_mongo_filter(mongo_filter, search)
+    if len(view_names) == 1:
+        collection_name = view_names[0]
+        view = views[collection_name]
+        total, documents = _query_review_slice(
+            database,
+            view,
+            combined_filter,
+            skip,
+            limit,
+        )
+        return total, [
+            _review_response_row(collection_name, document, view)
+            for document in documents
+        ]
+    return _paginated_merged_rows(
+        database,
+        views,
+        view_names,
+        combined_filter,
+        '',
+        skip,
+        limit,
+    )
 
 
 def _collect_row_cve_codes(rows):
@@ -569,7 +625,7 @@ def search_review_documents():
         page_size = min(max(request.args.get('page_size', 25, type=int), 1), 100)
         global_skip = (page - 1) * page_size
 
-        total, data = _paginated_merged_rows(
+        total, data = _paginated_cve_search_rows(
             database,
             views,
             view_names,

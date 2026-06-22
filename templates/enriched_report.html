@@ -26,32 +26,32 @@
 </head>
 <body>
     <h1>{{ report.title }}</h1>
-    <p class="meta">Generated {{ generated_at.strftime('%Y-%m-%d %H:%M UTC') }} from {{ source_count }} CVE candidate(s).</p>
+    <p class="meta">{{ labels.generated.format(date=generated_at.strftime('%Y-%m-%d %H:%M UTC'), count=source_count) }}</p>
 
-    <h2>Executive Summary</h2>
+    <h2>{{ labels.executive_summary }}</h2>
     <div class="section brief">
         <p>{{ report.executive_summary.summary }}</p>
         <ul>{% for finding in report.executive_summary.key_findings or [] %}<li>{{ finding }}</li>{% endfor %}</ul>
     </div>
 
-    <h2>Research Scope</h2>
+    <h2>{{ labels.research_scope }}</h2>
     <div class="section">
         <p>{{ report.research_scope.summary }}</p>
         <ul>{% for criterion in report.research_scope.criteria or [] %}<li>{{ criterion }}</li>{% endfor %}</ul>
     </div>
 
-    <h2>Weekly Risk Trend</h2>
+    <h2>{{ labels.weekly_risk_trend }}</h2>
     <div class="section">
         <p>{{ report.weekly_risk_trend.summary }}</p>
         <ul>{% for point in report.weekly_risk_trend.trend_points or [] %}<li>{{ point }}</li>{% endfor %}</ul>
     </div>
 
-    <h2>Vulnerability Detail Table</h2>
+    <h2>{{ labels.vulnerability_detail_table }}</h2>
     <table>
         <thead>
             <tr>
-                <th>CVE</th><th>Vendor</th><th>Product</th><th>Severity</th>
-                <th>Priority</th><th>Vulnerability Overview</th><th>Risk and Impact</th><th>Remediation Guidance</th>
+                <th>{{ labels.cve }}</th><th>{{ labels.vendor }}</th><th>{{ labels.product }}</th><th>{{ labels.severity }}</th>
+                <th>{{ labels.priority }}</th><th>{{ labels.vulnerability_overview }}</th><th>{{ labels.risk_and_impact }}</th><th>{{ labels.remediation_guidance }}</th>
             </tr>
         </thead>
         <tbody>
@@ -70,7 +70,7 @@
         </tbody>
     </table>
 
-    <h2>Remediation Playbook</h2>
+    <h2>{{ labels.remediation_playbook }}</h2>
     <div class="section">
         <p>{{ report.remediation_playbook.summary }}</p>
         <ol>
@@ -80,16 +80,16 @@
         </ol>
     </div>
 
-    <h2>Management Brief</h2>
+    <h2>{{ labels.management_brief }}</h2>
     <div class="section brief">
         <p>{{ report.management_brief.summary }}</p>
-        <p><strong>Business impact:</strong> {{ report.management_brief.business_impact }}</p>
+        <p><strong>{{ labels.business_impact }}:</strong> {{ report.management_brief.business_impact }}</p>
         <ul>{% for decision in report.management_brief.decisions_needed or [] %}<li>{{ decision }}</li>{% endfor %}</ul>
     </div>
 
-    <h2>Appendix</h2>
+    <h2>{{ labels.appendix }}</h2>
     <div class="section">
-        <h3>Source References</h3>
+        <h3>{{ labels.source_references }}</h3>
         <div class="small">
             {% for group in report.appendix.source_references or [] %}
             <p><strong>{{ group.cve_id }}:</strong></p>
@@ -103,4 +103,3 @@
     </div>
 </body>
 </html>
-

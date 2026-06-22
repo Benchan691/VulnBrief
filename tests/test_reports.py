@@ -18,6 +18,7 @@ from report_harness import (
     cancel_job,
     create_job,
     generate_template_report_data,
+    run_report_translation,
     run_job,
     run_template_job,
 )
@@ -62,6 +63,14 @@ def sample_document(index=1):
         },
         'source': {'provider': 'test', 'detail_url': 'https://example.com/source'},
     }
+
+
+class EchoTranslationClient:
+    report_max_output_tokens = 2048
+
+    def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+        payload = user_prompt[user_prompt.rfind('\n\n') + 2:]
+        return payload.replace('Cybersecurity', '網絡安全').replace('Live report', '即時報告'), {}
 
 
 def test_compaction_removes_raw_payload():
@@ -292,13 +301,15 @@ def test_create_enriched_weekly_job_requires_cve_review_selections():
             'collection': 'cve_review',
             'source_collection': 'cve',
             'selection_id': 'cve:test',
-        }], 'review_selections', 'enriched_weekly')
+        }], 'review_selections', 'enriched_weekly', 'ch')
         job_object_id = ObjectId(job_id)
         try:
             job = get_web_database()['report_jobs'].find_one({'_id': job_object_id})
             assert job['generation_mode'] == 'enriched_weekly'
             assert job['status'] == 'queued'
             assert job['provider'] == 'Tavily + llama-server'
+            assert job['report_language'] == 'en'
+            assert job['effective_report_language'] == 'en'
         finally:
             get_web_database()['report_jobs'].delete_one({'_id': job_object_id})
             get_web_database()['report_job_inputs'].delete_many({'job_id': job_object_id})
@@ -417,6 +428,208 @@ def test_report_preview_and_download_render_structured_report_and_remove_legacy_
     finally:
         with app.app_context():
             get_web_database()['report_jobs'].delete_one({'_id': job_id})
+
+
+def test_report_translation_api_validates_requests_and_reuses_running_translation(client):
+    authenticate(client)
+    report = {
+        'title': 'Cybersecurity Report',
+        'executive_summary': 'Live report',
+        'trends': [],
+        'recommendations': [],
+        'highlights': [],
+    }
+    with app.app_context():
+        job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'completed',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'effective_report_language': 'en',
+            'report': report,
+        }).inserted_id
+        active_translation_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'running',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'input_source': 'translation',
+            'translated_from_job_id': job_id,
+            'report_language': 'zh',
+        }).inserted_id
+        incomplete_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'running',
+            'source_count': 0,
+            'generation_mode': 'template',
+        }).inserted_id
+    try:
+        invalid = client.post(f'/api/reports/{job_id}/translations', json={'language': 'en'})
+        assert invalid.status_code == 400
+
+        active = client.post(f'/api/reports/{job_id}/translations', json={'language': 'zh'})
+        assert active.status_code == 202
+        assert active.get_json()['status'] == 'running'
+        assert active.get_json()['id'] == str(active_translation_id)
+
+        rejected = client.post(f'/api/reports/{incomplete_id}/translations', json={'language': 'ch'})
+        assert rejected.status_code == 400
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_many({
+                '_id': {'$in': [job_id, active_translation_id, incomplete_id]},
+            })
+
+
+def test_report_translation_worker_stores_translated_variant_and_render_uses_language(client):
+    authenticate(client)
+    report = {
+        'title': 'Cybersecurity Report',
+        'executive_summary': 'Live report',
+        'trends': [],
+        'recommendations': [],
+        'highlights': [],
+        'template_mode': True,
+    }
+    with app.app_context():
+        source_job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'completed',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'effective_generation_mode': 'template',
+            'report_language': 'en',
+            'effective_report_language': 'en',
+            'report': report,
+        }).inserted_id
+        translation_job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'queued',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'effective_generation_mode': 'template',
+            'input_source': 'translation',
+            'translated_from_job_id': source_job_id,
+            'report_language': 'zh',
+            'effective_report_language': 'zh',
+        }).inserted_id
+        run_report_translation(app, str(translation_job_id), client=EchoTranslationClient())
+        stored = get_web_database()['report_jobs'].find_one({'_id': translation_job_id})
+        assert stored['status'] == 'completed'
+        assert stored['report']['title'] == '網絡安全 Report'
+        assert stored['html']
+        assert stored['html_updated_at']
+        assert b'lang="zh-Hant"' in stored['html'].encode()
+        assert '即時報告'.encode() in stored['html'].encode()
+    try:
+        preview = client.get(f'/reports/{translation_job_id}/preview')
+        download = client.get(f'/reports/{translation_job_id}/download')
+
+        assert preview.status_code == 200
+        assert preview.data == stored['html'].encode()
+        assert b'lang="zh-Hant"' in preview.data
+        assert '即時報告'.encode() in preview.data
+        assert download.status_code == 200
+        assert f'report-{translation_job_id}-zh.html' in download.headers['Content-Disposition']
+
+        listed = client.get('/api/reports')
+        assert listed.status_code == 200
+        with app.app_context():
+            still_stored = get_web_database()['report_jobs'].find_one({'_id': translation_job_id})
+            assert still_stored['html']
+            assert still_stored['html_updated_at']
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_many({
+                '_id': {'$in': [source_job_id, translation_job_id]},
+            })
+
+
+def test_report_translation_worker_stores_simplified_chinese_html(client):
+    authenticate(client)
+    report = {
+        'title': 'Cybersecurity Report',
+        'executive_summary': 'Live report',
+        'trends': [],
+        'recommendations': [],
+        'highlights': [],
+        'template_mode': True,
+    }
+    with app.app_context():
+        source_job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'completed',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'effective_generation_mode': 'template',
+            'report_language': 'en',
+            'effective_report_language': 'en',
+            'report': report,
+        }).inserted_id
+        translation_job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'queued',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'effective_generation_mode': 'template',
+            'input_source': 'translation',
+            'translated_from_job_id': source_job_id,
+            'report_language': 'ch',
+            'effective_report_language': 'ch',
+        }).inserted_id
+        run_report_translation(app, str(translation_job_id), client=EchoTranslationClient())
+        stored = get_web_database()['report_jobs'].find_one({'_id': translation_job_id})
+        assert stored['status'] == 'completed'
+        assert stored['html']
+        assert b'lang="zh-Hans"' in stored['html'].encode()
+        assert '执行摘要' in stored['html']
+        assert '即時報告' in stored['html']
+    try:
+        preview = client.get(f'/reports/{translation_job_id}/preview')
+        assert preview.status_code == 200
+        assert preview.data == stored['html'].encode()
+        assert b'lang="zh-Hans"' in preview.data
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_many({
+                '_id': {'$in': [source_job_id, translation_job_id]},
+            })
+
+
+def test_source_report_preview_uses_completed_translation_html(client):
+    authenticate(client)
+    report = {
+        'title': 'Cybersecurity Report',
+        'executive_summary': 'Live report',
+        'trends': [],
+        'recommendations': [],
+        'highlights': [],
+        'template_mode': True,
+    }
+    with app.app_context():
+        source_job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'completed',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'effective_generation_mode': 'template',
+            'report_language': 'en',
+            'effective_report_language': 'en',
+            'report': report,
+        }).inserted_id
+        translation_job_id = get_web_database()['report_jobs'].insert_one({
+            'status': 'queued',
+            'source_count': 0,
+            'generation_mode': 'template',
+            'effective_generation_mode': 'template',
+            'input_source': 'translation',
+            'translated_from_job_id': source_job_id,
+            'report_language': 'zh',
+            'effective_report_language': 'zh',
+        }).inserted_id
+        run_report_translation(app, str(translation_job_id), client=EchoTranslationClient())
+        stored = get_web_database()['report_jobs'].find_one({'_id': translation_job_id})
+    try:
+        preview = client.get(f'/reports/{source_job_id}/preview?language=zh')
+        assert preview.status_code == 200
+        assert preview.data == stored['html'].encode()
+    finally:
+        with app.app_context():
+            get_web_database()['report_jobs'].delete_many({
+                '_id': {'$in': [source_job_id, translation_job_id]},
+            })
 
 
 def test_running_report_preview_renders_stored_item_results(client):
@@ -673,5 +886,3 @@ def test_rendered_template_report_includes_blank_sections_table_and_newsletter(t
             assert 'Strategic Recommendations' not in html
         finally:
             app.config['NEWSLETTER_ROOT'] = original_root
-
-

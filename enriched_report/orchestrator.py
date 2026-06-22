@@ -37,7 +37,10 @@ def _input_collection():
 
 
 FIXED_STAGE_UNITS = 6
+TAVILY_TASK_WEIGHT = 1
+EVIDENCE_CARD_WEIGHT = 4
 REPORT_SECTION_UNITS = 7
+REPORT_SECTION_WEIGHT = 3
 
 
 class _EnrichedProgress:
@@ -56,7 +59,30 @@ class _EnrichedProgress:
         self._refresh_total(self.evidence_total)
 
     def _refresh_total(self, evidence_total):
-        self.total = FIXED_STAGE_UNITS + self.tavily_total + evidence_total + REPORT_SECTION_UNITS
+        self.total = (
+            FIXED_STAGE_UNITS
+            + (self.tavily_total * TAVILY_TASK_WEIGHT)
+            + (evidence_total * EVIDENCE_CARD_WEIGHT)
+            + (REPORT_SECTION_UNITS * REPORT_SECTION_WEIGHT)
+        )
+
+    def _tavily_offset(self):
+        return 3
+
+    def _ranking_offset(self):
+        return self._tavily_offset() + (self.tavily_total * TAVILY_TASK_WEIGHT)
+
+    def _evidence_offset(self):
+        return self._ranking_offset() + 1
+
+    def _merge_offset(self):
+        return self._evidence_offset() + (self.evidence_total * EVIDENCE_CARD_WEIGHT)
+
+    def _score_offset(self):
+        return self._merge_offset() + 1
+
+    def _report_offset(self):
+        return self._score_offset() + 1
 
     def step(self, current, label, message=None):
         update_job_progress(
@@ -69,21 +95,21 @@ class _EnrichedProgress:
 
     def tavily_progress(self, completed, message):
         self.step(
-            3 + completed,
+            self._tavily_offset() + (max(int(completed), 0) * TAVILY_TASK_WEIGHT),
             f'Searching Tavily {completed}/{self.tavily_total}',
             message,
         )
 
     def evidence_progress(self, index, message):
         self.step(
-            4 + self.tavily_total + index,
+            self._evidence_offset() + (max(int(index), 0) * EVIDENCE_CARD_WEIGHT),
             f'Extracting evidence {index}/{self.evidence_total}',
             message,
         )
 
     def report_progress(self, index, message):
         self.step(
-            6 + self.tavily_total + self.evidence_total + index,
+            self._report_offset() + (max(int(index), 0) * REPORT_SECTION_WEIGHT),
             f'Generating report section {index}/{REPORT_SECTION_UNITS}',
             message,
         )
@@ -212,7 +238,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
             evidence_total = len(filtered)
             progress.set_evidence_total(evidence_total)
             progress.step(
-                4 + tavily_total,
+                progress._ranking_offset(),
                 'Ranking results',
                 f'Ranked {evidence_total} enrichment results.',
             )
@@ -237,7 +263,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 return
             _stage(job_object_id, 'merging_cards')
             progress.step(
-                5 + tavily_total + evidence_total,
+                progress._merge_offset(),
                 'Merging vulnerability cards',
                 'Merging evidence into vulnerability cards.',
             )
@@ -247,7 +273,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 return
             _stage(job_object_id, 'scoring')
             progress.step(
-                6 + tavily_total + evidence_total,
+                progress._score_offset(),
                 'Scoring vulnerabilities',
                 'Scoring vulnerability cards.',
             )

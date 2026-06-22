@@ -9,9 +9,12 @@ from report_harness import (
     _assemble_report,
     _deterministic_final,
     _render_job_html,
+    _translation_html_for_job,
+    _translation_report_for_job,
     cancel_job,
     create_job,
     delete_job,
+    request_report_translation,
     resolve_review_selections,
     start_job,
 )
@@ -27,7 +30,11 @@ def _jobs():
 def _serialize_job(job):
     job = dict(job)
     legacy_fields = ('html', 'html_updated_at', 'html_path')
-    if job.get('_id') is not None and any(field in job for field in legacy_fields):
+    if (
+        job.get('_id') is not None
+        and job.get('input_source') != 'translation'
+        and any(field in job for field in legacy_fields)
+    ):
         _jobs().update_one(
             {'_id': job['_id']},
             {'$unset': {field: '' for field in legacy_fields}},
@@ -37,12 +44,26 @@ def _serialize_job(job):
     job.setdefault('effective_generation_mode', job['generation_mode'])
     job.setdefault('report_language', 'en')
     job.setdefault('effective_report_language', job['report_language'])
+    if job.get('translated_from_job_id') is not None:
+        job['translated_from_job_id'] = str(job['translated_from_job_id'])
     job.pop('records', None)
     job.pop('company_ai_conversation_id', None)
     job.pop('html', None)
     job.pop('html_updated_at', None)
     job.pop('html_path', None)
     job.pop('report', None)
+    if isinstance(job.get('translations'), dict):
+        translations = {}
+        for language, translation in job['translations'].items():
+            if isinstance(translation, dict):
+                translations[language] = {
+                    key: value
+                    for key, value in translation.items()
+                    if key != 'report'
+                }
+            else:
+                translations[language] = translation
+        job['translations'] = translations
     job.pop('pipeline_logs', None)
     return json_util.loads(json_util.dumps(job))
 
@@ -155,6 +176,24 @@ def get_report_job_logs(job_id):
         return jsonify({'error': 'Unable to load report job logs.'}), 503
 
 
+@report_blueprint.route('/api/reports/<job_id>/translations', methods=['POST'])
+@login_required
+def translate_report_job(job_id):
+    data = request.get_json(silent=True) or {}
+    language = data.get('language')
+    try:
+        result = request_report_translation(current_app._get_current_object(), job_id, language)
+        status = 202 if result.get('status') in ('queued', 'running') else 200
+        return jsonify(result), status
+    except ValueError as exc:
+        message = str(exc)
+        if message == 'Report job not found.':
+            return jsonify({'error': message}), 404
+        return jsonify({'error': message}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to start report translation.'}), 503
+
+
 @report_blueprint.route('/api/reports/<job_id>')
 @login_required
 def get_report_job(job_id):
@@ -171,11 +210,27 @@ def _send_job_html(job_id, as_attachment):
     job = _get_job(job_id)
     if job is None or (as_attachment and job.get('status') != 'completed'):
         return jsonify({'error': 'Completed report not found.'}), 404
-    _jobs().update_one(
-        {'_id': job['_id']},
-        {'$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
-    )
-    report = job.get('report')
+    language = request.args.get('language') or job.get('effective_report_language', job.get('report_language', 'en'))
+    if language not in ('en', 'zh', 'ch'):
+        return jsonify({'error': 'Invalid report language.'}), 400
+
+    stored_html = _translation_html_for_job(job, language)
+    if stored_html is not None:
+        headers = {}
+        if as_attachment:
+            suffix = '' if language == 'en' else f'-{language}'
+            headers['Content-Disposition'] = f'attachment; filename="report-{job_id}{suffix}.html"'
+        return Response(stored_html, content_type='text/html; charset=utf-8', headers=headers)
+
+    if job.get('input_source') != 'translation':
+        _jobs().update_one(
+            {'_id': job['_id']},
+            {'$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
+        )
+    if job.get('input_source') == 'translation':
+        report = job.get('report') if job.get('status') == 'completed' else None
+    else:
+        report = _translation_report_for_job(job, language)
     if report is None and job.get('status') in ('running', 'cancelled'):
         stored_results = list(
             get_web_database()['report_job_results']
@@ -190,7 +245,6 @@ def _send_job_html(job_id, as_attachment):
             for item in stored_results
         ]
         if item_results:
-            language = job.get('effective_report_language', job.get('report_language', 'en'))
             report = _assemble_report(
                 _deterministic_final(item_results, language),
                 item_results,
@@ -201,10 +255,11 @@ def _send_job_html(job_id, as_attachment):
 
     job.setdefault('source_count', len(report.get('highlights') or []))
     job.setdefault('effective_report_language', job.get('report_language', 'en'))
-    rendered = _render_job_html(job, report)
+    rendered = _render_job_html(job, report, report_language=language)
     headers = {}
     if as_attachment:
-        headers['Content-Disposition'] = f'attachment; filename="report-{job_id}.html"'
+        suffix = '' if language == 'en' else f'-{language}'
+        headers['Content-Disposition'] = f'attachment; filename="report-{job_id}{suffix}.html"'
     return Response(rendered, content_type='text/html; charset=utf-8', headers=headers)
 
 

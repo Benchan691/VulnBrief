@@ -1,0 +1,287 @@
+import json
+import re
+from copy import deepcopy
+
+from jsonschema import ValidationError
+
+from .llama_client import EnrichedLLMError, EnrichedLlamaClient
+from .schemas import validate_enriched_report
+
+
+TRANSLATION_LANGUAGES = {
+    'zh': 'Traditional Chinese',
+    'ch': 'Simplified Chinese',
+}
+
+_PROTECTED_KEYS = {
+    'cve_id',
+    'cve_ids',
+    'code',
+    'references',
+    'related_links',
+    'source_link',
+    'source_urls',
+    'urls',
+}
+
+
+def _extract_json(text):
+    cleaned = str(text or '').strip()
+    if not cleaned:
+        raise EnrichedLLMError('Translation returned an empty response.')
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r'```(?:json)?\s*(.*?)```', cleaned, flags=re.DOTALL | re.IGNORECASE)
+        if match:
+            return json.loads(match.group(1).strip())
+        start = cleaned.find('{')
+        end = cleaned.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            return json.loads(cleaned[start:end + 1])
+        start = cleaned.find('[')
+        end = cleaned.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            return json.loads(cleaned[start:end + 1])
+        raise
+
+
+def _system_prompt(language_name):
+    return (
+        f'Translate user-facing report text to {language_name}. '
+        'Return only valid JSON with exactly the same structure, keys, arrays, and scalar types. '
+        'Do not translate URLs, CVE identifiers, product version strings, field names, or source identifiers. '
+        'Do not add Markdown or explanations.'
+    )
+
+
+def _repair_prompt(raw_text, error):
+    return (
+        'The translation response below is not valid JSON or does not match the requested shape.\n\n'
+        f'Error: {error}\n\n'
+        'Fix it and return only valid JSON. Keep the translated meaning and the original JSON structure.\n\n'
+        f'{raw_text}'
+    )
+
+
+def _fragment_for_translation(fragment):
+    if isinstance(fragment, dict):
+        return {
+            key: _fragment_for_translation(value)
+            for key, value in fragment.items()
+            if key not in _PROTECTED_KEYS
+        }
+    if isinstance(fragment, list):
+        return [_fragment_for_translation(item) for item in fragment]
+    return fragment
+
+
+def _merge_translation(source, translated):
+    if isinstance(source, dict):
+        translated_dict = translated if isinstance(translated, dict) else {}
+        merged = {}
+        for key, value in source.items():
+            if key in _PROTECTED_KEYS:
+                merged[key] = deepcopy(value)
+            elif key in translated_dict:
+                merged[key] = _merge_translation(value, translated_dict[key])
+            else:
+                merged[key] = deepcopy(value)
+        for key, value in translated_dict.items():
+            if key not in merged:
+                merged[key] = deepcopy(value)
+        return merged
+    if isinstance(source, list):
+        translated_list = translated if isinstance(translated, list) else []
+        return [
+            _merge_translation(source[index], translated_list[index])
+            if index < len(translated_list)
+            else deepcopy(source[index])
+            for index in range(len(source))
+        ]
+    return translated
+
+
+def _translate_fragment(fragment, language, client):
+    language_name = TRANSLATION_LANGUAGES[language]
+    translatable = _fragment_for_translation(fragment)
+    source_json = json.dumps(translatable, ensure_ascii=False, default=str)
+    prompt = (
+        'Translate the JSON value below. Preserve the JSON shape exactly and translate only user-facing text.\n\n'
+        f'{source_json}'
+    )
+    raw_text = ''
+    try:
+        raw_text, _ = client.complete_text(
+            _system_prompt(language_name),
+            prompt,
+            max_output_tokens=client.report_max_output_tokens,
+        )
+        translated = _extract_json(raw_text)
+        translated = _normalize_scalar_translation(translatable, translated)
+        translated = _restore_non_string_scalars(translatable, translated)
+        _assert_same_shape(translatable, translated)
+        merged = _merge_translation(fragment, translated)
+        return _restore_protected_values(fragment, merged)
+    except (json.JSONDecodeError, EnrichedLLMError, ValidationError, TypeError, ValueError) as exc:
+        repaired_text, _ = client.complete_text(
+            _system_prompt(language_name),
+            _repair_prompt(raw_text, exc),
+            max_output_tokens=client.report_max_output_tokens,
+        )
+        try:
+            translated = _extract_json(repaired_text)
+            translated = _normalize_scalar_translation(translatable, translated)
+            translated = _restore_non_string_scalars(translatable, translated)
+            _assert_same_shape(translatable, translated)
+            merged = _merge_translation(fragment, translated)
+            return _restore_protected_values(fragment, merged)
+        except (json.JSONDecodeError, TypeError, ValueError) as repair_exc:
+            raise EnrichedLLMError(str(repair_exc)) from repair_exc
+
+
+def _normalize_scalar_translation(source, translated):
+    if isinstance(source, str):
+        if isinstance(translated, str):
+            return translated
+        if isinstance(translated, dict) and len(translated) == 1:
+            only_value = next(iter(translated.values()))
+            if isinstance(only_value, str):
+                return only_value
+    return translated
+
+
+def _restore_non_string_scalars(source, translated):
+    if isinstance(source, dict) and isinstance(translated, dict):
+        return {
+            key: _restore_non_string_scalars(source[key], translated[key])
+            for key in source
+        }
+    if isinstance(source, list) and isinstance(translated, list):
+        return [
+            _restore_non_string_scalars(source[index], translated[index])
+            for index in range(len(source))
+        ]
+    if isinstance(source, (bool, int, float)) and not isinstance(source, str):
+        return deepcopy(source)
+    return translated
+
+
+def _assert_same_shape(source, translated):
+    if isinstance(source, dict):
+        if not isinstance(translated, dict) or set(source.keys()) != set(translated.keys()):
+            raise ValueError('Translated JSON object keys do not match the source.')
+        for key, value in source.items():
+            _assert_same_shape(value, translated[key])
+        return
+    if isinstance(source, list):
+        if not isinstance(translated, list) or len(source) != len(translated):
+            raise ValueError('Translated JSON array shape does not match the source.')
+        for index, value in enumerate(source):
+            _assert_same_shape(value, translated[index])
+        return
+    if source is None:
+        if translated is not None:
+            raise ValueError('Translated JSON changed a null value.')
+        return
+    if not isinstance(translated, type(source)):
+        raise ValueError('Translated JSON changed scalar types.')
+
+
+def _restore_protected_values(source, translated, key=None):
+    if key in _PROTECTED_KEYS:
+        return deepcopy(source)
+    if isinstance(source, dict) and isinstance(translated, dict):
+        return {
+            item_key: _restore_protected_values(source[item_key], translated[item_key], item_key)
+            for item_key in source
+        }
+    if isinstance(source, list) and isinstance(translated, list):
+        return [
+            _restore_protected_values(source[index], translated[index], key)
+            for index in range(len(source))
+        ]
+    return translated
+
+
+def _progress(progress_callback, current, total, section_name):
+    if progress_callback is not None:
+        progress_callback(current, total, f'Translating {section_name}')
+
+
+def _translate_enriched_report(report, language, client, progress_callback=None):
+    translated = deepcopy(report)
+    row_count = len((report.get('vulnerability_detail_table') or {}).get('rows') or [])
+    section_total = 6 + row_count
+    current = 0
+
+    translated['title'] = _translate_fragment(report['title'], language, client)
+    current += 1
+    _progress(progress_callback, current, section_total, 'title')
+
+    for section_name in (
+        'executive_summary',
+        'research_scope',
+        'weekly_risk_trend',
+        'remediation_playbook',
+        'management_brief',
+    ):
+        translated[section_name] = _translate_fragment(report[section_name], language, client)
+        current += 1
+        _progress(progress_callback, current, section_total, section_name)
+
+    rows = []
+    for index, row in enumerate((report.get('vulnerability_detail_table') or {}).get('rows') or [], start=1):
+        rows.append(_translate_fragment(row, language, client))
+        current += 1
+        _progress(progress_callback, current, section_total, f'vulnerability row {index}/{row_count}')
+    translated['vulnerability_detail_table'] = {'rows': rows}
+    translated['appendix'] = deepcopy(report.get('appendix') or {'source_references': [], 'metrics': {}})
+    return validate_enriched_report(translated)
+
+
+def _translate_template_highlight(highlight, language, client):
+    translated = deepcopy(highlight)
+    fragment = {
+        'title': highlight.get('title', ''),
+        'severity': highlight.get('severity', ''),
+        'summary': highlight.get('summary', ''),
+        'affected': highlight.get('affected') or [],
+        'table': highlight.get('table') or {},
+    }
+    translated_fragment = _translate_fragment(fragment, language, client)
+    translated.update(translated_fragment)
+    newsletter = highlight.get('newsletter')
+    if isinstance(newsletter, dict):
+        translated['newsletter'] = _translate_fragment(newsletter, language, client)
+    return translated
+
+
+def _translate_template_report(report, language, client, progress_callback=None):
+    translated = deepcopy(report)
+    highlights = report.get('highlights') or []
+    section_total = 1 + len(highlights)
+    top_fragment = {
+        'title': report.get('title', ''),
+        'executive_summary': report.get('executive_summary', ''),
+        'trends': report.get('trends') or [],
+        'recommendations': report.get('recommendations') or [],
+    }
+    translated.update(_translate_fragment(top_fragment, language, client))
+    _progress(progress_callback, 1, section_total, 'summary')
+
+    translated_highlights = []
+    for index, highlight in enumerate(highlights, start=1):
+        translated_highlights.append(_translate_template_highlight(highlight, language, client))
+        _progress(progress_callback, index + 1, section_total, f'item {index}/{len(highlights)}')
+    translated['highlights'] = translated_highlights
+    return translated
+
+
+def translate_report(report, generation_mode, language, config, client=None, progress_callback=None):
+    if language not in TRANSLATION_LANGUAGES:
+        raise ValueError('Translation language must be "zh" or "ch".')
+    client = client or EnrichedLlamaClient(config)
+    if generation_mode == 'enriched_weekly':
+        return _translate_enriched_report(report, language, client, progress_callback)
+    return _translate_template_report(report, language, client, progress_callback)
