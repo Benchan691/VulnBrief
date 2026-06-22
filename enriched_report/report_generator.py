@@ -177,4 +177,4 @@ def generate_enriched_report(
         },
     }
     validate_enriched_report(report)
-    return verify_and_finalize_report(report, cards, report_metrics, evidence_cards, client)
+    return verify_and_finalize_report(report, cards, report_metrics, evidence_cards)

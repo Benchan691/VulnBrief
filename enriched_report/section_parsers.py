@@ -7,7 +7,7 @@ class SectionParseError(ValueError):
     pass
 
 
-_LABEL_PATTERN = re.compile(r'^([A-Z][A-Z0-9_]*):\s*$', re.MULTILINE)
+_LABEL_LINE_PATTERN = re.compile(r'^([A-Za-z][A-Za-z0-9_ ]*):\s*([^\n]*)$', re.MULTILINE)
 _BULLET_PATTERN = re.compile(r'^[-*]\s+', re.MULTILINE)
 
 
@@ -15,19 +15,30 @@ def _strip_bullet(line):
     return _BULLET_PATTERN.sub('', line).strip()
 
 
+def _normalize_label(label):
+    cleaned = str(label or '').strip().strip('*_`')
+    return re.sub(r'\s+', '_', cleaned.upper())
+
+
 def _split_labels(text):
     cleaned = (text or '').strip()
     if not cleaned:
         return {}
-    matches = list(_LABEL_PATTERN.finditer(cleaned))
+    matches = list(_LABEL_LINE_PATTERN.finditer(cleaned))
     if not matches:
         raise SectionParseError('Response is missing labeled sections.')
     blocks = {}
     for index, match in enumerate(matches):
-        label = match.group(1)
-        start = match.end()
+        label = _normalize_label(match.group(1))
+        inline = match.group(2).strip()
+        block_start = match.end()
+        if block_start < len(cleaned) and cleaned[block_start] == '\n':
+            block_start += 1
         end = matches[index + 1].start() if index + 1 < len(matches) else len(cleaned)
-        blocks[label] = cleaned[start:end].strip()
+        body = cleaned[block_start:end].strip()
+        if inline:
+            body = f'{inline}\n{body}'.strip() if body else inline
+        blocks[label] = body
     return blocks
 
 
@@ -48,12 +59,16 @@ def _parse_string_block(block, field_name):
     return block.strip()
 
 
-def parse_labeled_section(text, spec):
+def parse_labeled_section(text, spec, optional_labels=None):
+    optional_labels = optional_labels or set()
     blocks = _split_labels(text)
     result = {}
     for label, field_name, is_list in spec:
         block = blocks.get(label)
         if block is None:
+            if label in optional_labels and is_list:
+                result[field_name] = []
+                continue
             raise SectionParseError(f'Missing required label: {label}')
         if is_list:
             result[field_name] = _parse_list_block(block)
@@ -66,7 +81,7 @@ def parse_executive_summary(text):
     return parse_labeled_section(text, [
         ('SUMMARY', 'summary', False),
         ('KEY_FINDINGS', 'key_findings', True),
-    ])
+    ], optional_labels={'KEY_FINDINGS'})
 
 
 def parse_research_scope(text):

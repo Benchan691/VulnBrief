@@ -94,9 +94,39 @@ def test_parse_executive_summary_happy_path():
     ]
 
 
-def test_parse_executive_summary_missing_label_raises():
-    with pytest.raises(SectionParseError, match='KEY_FINDINGS'):
-        parse_executive_summary('SUMMARY:\nOnly a summary.')
+def test_parse_executive_summary_missing_key_findings_defaults_to_empty_list():
+    section = parse_executive_summary('SUMMARY:\nOnly a summary.')
+
+    assert section['summary'] == 'Only a summary.'
+    assert section['key_findings'] == []
+
+
+def test_parse_executive_summary_accepts_label_variants():
+    text = (
+        'Summary:\n'
+        'One Acme Widget CVE requires patching.\n\n'
+        'Key Findings:\n'
+        '- Upgrade to 2.0.'
+    )
+
+    section = parse_executive_summary(text)
+
+    assert section['summary'] == 'One Acme Widget CVE requires patching.'
+    assert section['key_findings'] == ['Upgrade to 2.0.']
+
+
+def test_parse_executive_summary_accepts_spaced_label_and_inline_first_item():
+    text = (
+        'SUMMARY:\n'
+        'Summary text.\n\n'
+        'KEY FINDINGS:\n'
+        '- Second item.\n'
+    )
+
+    section = parse_executive_summary(text)
+
+    assert section['summary'] == 'Summary text.'
+    assert section['key_findings'] == ['Second item.']
 
 
 def test_parse_research_scope_happy_path():

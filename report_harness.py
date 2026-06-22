@@ -22,6 +22,15 @@ from jsonschema import ValidationError, validate
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from company_ai_parsers import (
+    CompanyAIParseError,
+    final_system_prompt,
+    item_system_prompt,
+    parse_final_text,
+    parse_item_text,
+    validate_parsed_final,
+    validate_parsed_item,
+)
 from newsletter_store import normalize_newsletter
 from mongo import get_vulnerabilities_database, get_web_database
 from report_job_progress import (
@@ -827,6 +836,16 @@ class CompanyAIProvider:
                 prompt = json_error_prompt(self, exc)
         raise ProviderError(str(error))
 
+    def complete_text(self, system_prompt, user_prompt):
+        self._validate_config()
+        if not self.conversation_id:
+            raise ProviderError('Company AI room has not been created.')
+        prompt = f'{system_prompt}\n\n{user_prompt}'
+        text = self._chat_once(prompt)
+        if not text or not str(text).strip():
+            raise ProviderError('AI provider returned an empty response.')
+        return text, {}
+
 
 def _fit_batches(records, budget):
     batches, batch, tokens = [], [], 0
@@ -890,30 +909,14 @@ def generate_report_data(provider, records, context_limit, report_language='en')
 
 def generate_item_data(provider, details, identifier, report_language, retries, position=1):
     language = REPORT_LANGUAGES[report_language]
-    schema_example = _item_schema_example(report_language)
-    system = (
-        f'Write one cybersecurity vulnerability report item in {language}. '
-        'Use only the provided JSON details. Do not invent facts. Preserve identifiers and URLs. '
-        'Do not return highlight.title; the system assigns titles from source metadata. '
-        'Include highlight.table only when structured comparison (products, versions, patches, '
-        'or CVE mapping) is clearer as a table than prose. Use caption, headers, and rows. '
-        'Omit table when unnecessary. '
-        'Return valid JSON only using this exact shape: '
-        + compact_json(schema_example)
-    )
+    system = item_system_prompt(language)
     prompt = 'Review details:' + compact_json(details)
-    error = None
-    for attempt in range(retries + 1):
-        try:
-            result, usage = provider.complete_json(system, prompt)
-            validate(instance=result, schema=ITEM_SCHEMA)
-            return _finalize_item_result(result, details, identifier, position), usage
-        except (ProviderError, ValidationError) as exc:
-            error = exc
-            if isinstance(exc, ValidationError) and hasattr(provider, 'prepare_json_correction'):
-                provider.prepare_json_correction(result)
-            prompt = json_error_prompt(provider, exc)
-    raise ProviderError(str(error))
+    try:
+        text, usage = provider.complete_text(system, prompt)
+        result = validate_parsed_item(parse_item_text(text), ITEM_SCHEMA)
+        return _finalize_item_result(result, details, identifier, position), usage
+    except (CompanyAIParseError, ValidationError) as exc:
+        raise ProviderError(str(exc)) from exc
 
 
 def generate_final_data(provider, item_results, report_language, retries, config):
@@ -921,21 +924,15 @@ def generate_final_data(provider, item_results, report_language, retries, config
     summary_prompt = config.get('COMPANY_AI_SUMMARY_PROMPT', '')
     if not summary_prompt:
         raise ProviderError('Company AI summary prompt is not configured.')
-    system = Template(summary_prompt).substitute(language=language)
+    system = final_system_prompt(Template(summary_prompt).substitute(language=language), language)
     prompt = 'Processed review results:' + compact_json(item_results)
-    error = None
-    for _ in range(retries + 1):
-        try:
-            result, usage = provider.complete_json(system, prompt)
-            validate(instance=result, schema=FINAL_SCHEMA)
-            result['title'] = _fixed_report_title(report_language)
-            return result, usage
-        except (ProviderError, ValidationError) as exc:
-            error = exc
-            if isinstance(exc, ValidationError) and hasattr(provider, 'prepare_json_correction'):
-                provider.prepare_json_correction(result)
-            prompt = json_error_prompt(provider, exc)
-    raise ProviderError(str(error))
+    try:
+        text, usage = provider.complete_text(system, prompt)
+        result = validate_parsed_final(parse_final_text(text), FINAL_SCHEMA)
+        result['title'] = _fixed_report_title(report_language)
+        return result, usage
+    except (CompanyAIParseError, ValidationError) as exc:
+        raise ProviderError(str(exc)) from exc
 
 
 def _strip_html(value):

@@ -105,6 +105,34 @@ class FakeProvider:
             'recommendations': ['Apply updates.'],
         }, {'total_tokens': 100}
 
+    def complete_text(self, system_prompt, user_prompt):
+        self.calls += 1
+        if 'Processed review results:' in user_prompt:
+            return (
+                'EXECUTIVE_SUMMARY:\n'
+                'Summary.\n\n'
+                'TRENDS:\n'
+                'NONE\n\n'
+                'RECOMMENDATIONS:\n'
+                '- Apply updates.'
+            ), {}
+        return (
+            'SUMMARY:\n'
+            'Evidence summary.\n\n'
+            'CODE:\n'
+            'CVE-TEST\n\n'
+            'SEVERITY:\n'
+            'HIGH\n\n'
+            'AFFECTED:\n'
+            '- Product A\n\n'
+            'REFERENCES:\n'
+            '- https://example.com\n\n'
+            'RECOMMENDATIONS:\n'
+            '- Apply updates.\n\n'
+            'TABLE:\n'
+            'NONE'
+        ), {}
+
 
 def test_compaction_removes_raw_payload():
     compacted = compact_document(sample_document())
@@ -179,76 +207,13 @@ def test_ai_generation_prompts_for_selected_language():
     assert 'Traditional Chinese' in provider.system_prompt
 
 
-def test_item_generation_retries_with_corrective_prompt():
-    class CorrectingProvider:
-        def __init__(self):
-            self.prompts = []
-
-        def complete_json(self, system_prompt, user_prompt):
-            self.prompts.append(user_prompt)
-            if len(self.prompts) == 1:
-                return {'wrong': True}, {}
-            return {
-                'highlight': {'summary': 'Summary'},
-                'recommendations': [],
-            }, {}
-
-    provider = CorrectingProvider()
+def test_generate_item_data_parses_plain_text_response():
+    provider = FakeProvider()
     result, _ = generate_item_data(provider, {'description': 'evidence'}, 'review-1', 'en', 2)
 
     assert result['highlight']['title'] == 'review-1'
-    assert provider.prompts[1].startswith('The JSON above is invalid.\n\nError:\n')
-    assert "'highlight' is a required property" in provider.prompts[1]
-    assert 'Review details:' not in provider.prompts[1]
-
-
-def test_company_ai_item_retry_sends_only_validation_error():
-    class ConversationalCorrectingProvider:
-        retains_conversation_context = True
-
-        def __init__(self):
-            self.prompts = []
-
-        def complete_json(self, system_prompt, user_prompt):
-            self.prompts.append(user_prompt)
-            if len(self.prompts) == 1:
-                return {'wrong': True}, {}
-            return {
-                'highlight': {'summary': 'Summary'},
-                'recommendations': [],
-            }, {}
-
-    provider = ConversationalCorrectingProvider()
-    generate_item_data(provider, {'description': 'secret evidence'}, 'review-1', 'en', 2)
-
-    assert provider.prompts[1].startswith('The JSON above is invalid.\n\nError:\n')
-    assert "'highlight' is a required property" in provider.prompts[1]
-    assert 'secret evidence' not in provider.prompts[1]
-    assert 'Review details:' not in provider.prompts[1]
-
-
-def test_item_retry_uses_provider_configured_error_message():
-    class ConfiguredProvider:
-        retains_conversation_context = True
-        json_error_message = 'Configured correction: ${error}'
-
-        def __init__(self):
-            self.prompts = []
-
-        def complete_json(self, system_prompt, user_prompt):
-            self.prompts.append(user_prompt)
-            if len(self.prompts) == 1:
-                return {'wrong': True}, {}
-            return {
-                'highlight': {'title': 'Corrected', 'summary': 'Summary'},
-                'recommendations': [],
-            }, {}
-
-    provider = ConfiguredProvider()
-    generate_item_data(provider, {'description': 'evidence'}, 'review-1', 'en', 1)
-
-    assert provider.prompts[1].startswith('Configured correction: ')
-    assert '${error}' not in provider.prompts[1]
+    assert result['highlight']['summary'] == 'Evidence summary.'
+    assert result['recommendations'] == ['Apply updates.']
 
 
 def test_template_generation_maps_source_fields_and_counts():
@@ -1551,14 +1516,9 @@ def test_generate_final_data_uses_configured_summary_prompt():
             super().__init__()
             self.system_prompt = None
 
-        def complete_json(self, system_prompt, user_prompt):
+        def complete_text(self, system_prompt, user_prompt):
             self.system_prompt = system_prompt
-            return {
-                'title': 'Cybersecurity Report',
-                'executive_summary': 'Summary.',
-                'trends': [],
-                'recommendations': ['Apply updates.'],
-            }, {}
+            return super().complete_text(system_prompt, user_prompt)
 
     provider = CapturingProvider()
     config = {
@@ -1574,7 +1534,8 @@ def test_generate_final_data_uses_configured_summary_prompt():
         config,
     )
 
-    assert provider.system_prompt == 'Configured summary in Traditional Chinese.'
+    assert 'Configured summary in Traditional Chinese.' in provider.system_prompt
+    assert 'EXECUTIVE_SUMMARY:' in provider.system_prompt
 
 
 def test_generate_final_data_uses_fixed_report_title():

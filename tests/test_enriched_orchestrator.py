@@ -35,8 +35,6 @@ class FakeLlamaClient:
             return 'Remote code execution can affect internet-facing systems.', {}
         if task_type == 'how_to_respond':
             return 'Upgrade to version 2.0.', {}
-        if 'report' in payload:
-            return 'UNSUPPORTED_CLAIMS:\nNONE', {}
         section_name = payload.get('section_name')
         if section_name == 'remediation_playbook':
             return (
