@@ -62,6 +62,8 @@
     "max_depth": 10,
     "max_list_items": 100,
     "max_string_chars": 12000,
-    "preview_after_each_item": true
+    "preview_after_each_item": true,
+    "section_chunk_prompt_chars": 18000,
+    "section_chunk_card_count": 2
   }
 }

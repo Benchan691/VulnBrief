@@ -1,9 +1,11 @@
 import json
 import logging
+from string import Template
 
 from jsonschema import ValidationError
 from jsonschema import validate
 
+from .debug_runtime import debug_log
 from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
 from .prompts import resolve_prompt
@@ -11,6 +13,13 @@ from .schemas import ENRICHED_REPORT_SCHEMA, validate_enriched_report
 from .section_parsers import (
     build_appendix,
     build_vulnerability_detail_table,
+)
+from .section_chunking import (
+    chunk_card_count,
+    chunk_cards,
+    evidence_for_cve_ids,
+    merge_remediation_playbook_partials,
+    should_chunk_section,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,21 +141,178 @@ def _parse_and_validate_json_section(section_name, text, schema):
     return section
 
 
+def _json_repair_prompt(config, text, error):
+    template = str(config.get('REPORT_JSON_ERROR_MESSAGE') or '')
+    if not template:
+        template = (
+            'The JSON above is invalid.\n\nError:\n${error}\n\n'
+            'Fix it and return only valid JSON. No Markdown, no explanation, no extra text. '
+            'Keep the original fields and meaning. Make only the minimum changes needed so '
+            'it can parse with `json.loads()`.'
+        )
+    return text + '\n\n' + Template(template).safe_substitute(error=str(error))
+
+
+def _complete_json_section_with_retries(section_name, system, text, schema, client, config):
+    retries = max(0, int(config.get('REPORT_ITEM_JSON_RETRIES', 0)))
+    for attempt in range(retries + 1):
+        try:
+            return _parse_and_validate_json_section(section_name, text, schema)
+        except (EnrichedLLMError, ValidationError, TypeError, ValueError) as exc:
+            if attempt >= retries:
+                if isinstance(exc, EnrichedLLMError):
+                    raise
+                raise EnrichedLLMError(str(exc)) from exc
+            # #region agent log
+            debug_log(
+                'enriched_report/report_generator.py:_complete_json_section_with_retries',
+                'Retrying invalid report section JSON',
+                {
+                    'section_name': section_name,
+                    'attempt': attempt + 1,
+                    'max_attempts': retries + 1,
+                    'error': str(exc),
+                    'bad_response_preview': text[:200],
+                },
+                f'section-{section_name}',
+                'H6',
+            )
+            # #endregion
+            text, _ = client.complete_text(
+                system,
+                _json_repair_prompt(config, text, exc),
+                max_output_tokens=client.report_max_output_tokens,
+            )
+            # #region agent log
+            debug_log(
+                'enriched_report/report_generator.py:_complete_json_section_with_retries',
+                'Received retry report section text',
+                {
+                    'section_name': section_name,
+                    'attempt': attempt + 2,
+                    'response_chars': len(text),
+                    'response_preview': text[:200],
+                },
+                f'section-{section_name}',
+                'H6',
+            )
+            # #endregion
+
+
+def _generate_remediation_playbook_chunked(
+    section_name, cards, metrics, evidence_cards, client, language, config,
+):
+    schema = SECTION_SCHEMAS[section_name]
+    system = _section_system_prompt(section_name, config)
+    card_batches = list(chunk_cards(cards, chunk_card_count(config)))
+    partials = []
+    total_chunks = len(card_batches)
+
+    logger.info(
+        'enriched llm report section chunking section=%s chunks=%d cards=%d',
+        section_name,
+        total_chunks,
+        len(cards),
+    )
+
+    for chunk_index, card_batch in enumerate(card_batches, start=1):
+        chunk_cve_ids = {card.get('cve_id') for card in card_batch if card.get('cve_id')}
+        chunk_evidence = evidence_for_cve_ids(evidence_cards, chunk_cve_ids)
+        user_prompt = _section_prompt(
+            section_name,
+            card_batch,
+            metrics,
+            chunk_evidence,
+            language,
+            config,
+        )
+        logger.info(
+            'enriched llm report section chunk %d/%d section=%s cards=%d evidence=%d prompt_chars=%d',
+            chunk_index,
+            total_chunks,
+            section_name,
+            len(card_batch),
+            len(chunk_evidence),
+            len(user_prompt),
+        )
+        text, _ = client.complete_text(
+            system,
+            user_prompt,
+            max_output_tokens=client.report_max_output_tokens,
+        )
+        partials.append(
+            _complete_json_section_with_retries(
+                section_name,
+                system,
+                text,
+                schema,
+                client,
+                config,
+            ),
+        )
+
+    merged = merge_remediation_playbook_partials(partials)
+    logger.info(
+        'enriched llm report section merged section=%s chunks=%d actions=%d',
+        section_name,
+        total_chunks,
+        len(merged.get('actions') or []),
+    )
+    validate(instance=merged, schema=schema)
+    return merged
+
+
 def _generate_text_section(section_name, cards, metrics, evidence_cards, client, language, config):
     schema = SECTION_SCHEMAS[section_name]
     system = _section_system_prompt(section_name, config)
     user_prompt = _section_prompt(section_name, cards, metrics, evidence_cards, language, config)
+    if should_chunk_section(section_name, len(user_prompt), config):
+        if section_name == 'remediation_playbook':
+            return _generate_remediation_playbook_chunked(
+                section_name, cards, metrics, evidence_cards, client, language, config,
+            )
+    # #region agent log
+    debug_log(
+        'enriched_report/report_generator.py:_generate_text_section',
+        'Starting report section generation',
+        {
+            'section_name': section_name,
+            'language': language,
+            'system_prompt_chars': len(system),
+            'user_prompt_chars': len(user_prompt),
+            'card_count': len(cards),
+            'evidence_count': len(evidence_cards),
+        },
+        f'section-{section_name}',
+        'H5',
+    )
+    # #endregion
     text, _ = client.complete_text(
         system,
         user_prompt,
         max_output_tokens=client.report_max_output_tokens,
     )
-    try:
-        return _parse_and_validate_json_section(section_name, text, schema)
-    except EnrichedLLMError:
-        raise
-    except (ValidationError, TypeError, ValueError) as exc:
-        raise EnrichedLLMError(str(exc)) from exc
+    # #region agent log
+    debug_log(
+        'enriched_report/report_generator.py:_generate_text_section',
+        'Received report section text',
+        {
+            'section_name': section_name,
+            'response_chars': len(text),
+            'response_preview': text[:200],
+        },
+        f'section-{section_name}',
+        'H3',
+    )
+    # #endregion
+    return _complete_json_section_with_retries(
+        section_name,
+        system,
+        text,
+        schema,
+        client,
+        config,
+    )
 
 
 def _generate_section(section_name, cards, metrics, evidence_cards, client, language, config):

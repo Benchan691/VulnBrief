@@ -88,12 +88,18 @@ def _build_filter(args):
         if value:
             clauses.append({'$or': [{field: _regex(value)} for field in fields]})
 
-    status = args.get('status', '').strip()
-    if status and status not in VALID_SEVERITIES - {''}:
+    raw_statuses = args.getlist('status') if hasattr(args, 'getlist') else args.get('status', '')
+    statuses = raw_statuses if isinstance(raw_statuses, list) else [raw_statuses]
+    normalized_statuses = [str(status).strip() for status in statuses if str(status).strip()]
+    invalid_statuses = [
+        status for status in normalized_statuses
+        if status not in VALID_SEVERITIES - {''}
+    ]
+    if invalid_statuses:
         raise ValueError('Severity must be Critical, High, Medium, or Low.')
     if clauses or search or 'status' in args or 'include_unknown' in args:
         severity_clause = build_severity_filter(
-            status,
+            normalized_statuses,
             parse_include_unknown(args.get('include_unknown')),
         )
         if severity_clause:

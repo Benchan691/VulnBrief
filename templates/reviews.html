@@ -3,6 +3,60 @@
 
 {% block content %}
 <style>
+    .review-filter-card {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+    .review-filter-group {
+        height: 100%;
+        padding: 1rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.75rem;
+        background-color: var(--bs-body-bg);
+    }
+    .review-filter-group-title {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+        font-weight: 600;
+    }
+    .severity-check-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 0.5rem;
+    }
+    .severity-check-grid .form-check {
+        min-height: 0;
+        margin-bottom: 0;
+        padding: 0;
+    }
+    .severity-check-grid .form-check-input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+    }
+    .severity-check-label {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.45rem 0.75rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 999px;
+        background-color: var(--bs-tertiary-bg);
+        color: var(--bs-body-color);
+        cursor: pointer;
+        transition: all 0.15s ease-in-out;
+    }
+    .severity-check-grid .form-check-input:checked + .severity-check-label {
+        border-color: var(--bs-primary);
+        background-color: rgba(var(--bs-primary-rgb), 0.12);
+        color: var(--bs-primary-text-emphasis, var(--bs-primary));
+        box-shadow: inset 0 0 0 1px rgba(var(--bs-primary-rgb), 0.2);
+    }
+    .severity-check-grid .form-check-input:focus-visible + .severity-check-label {
+        outline: 0;
+        box-shadow: 0 0 0 0.25rem rgba(var(--bs-primary-rgb), 0.25);
+    }
     .related-modal-table {
         min-width: 900px;
     }
@@ -40,37 +94,66 @@
         </div>
     </div>
 
-    <form id="global-filter-form" class="card shadow-sm border-0 mb-4">
+    <form id="global-filter-form" class="card shadow-sm border-0 mb-4 review-filter-card">
         <div class="card-body">
-            <div class="row g-3 align-items-end">
-                <div class="col-12 col-lg-5">
-                    <label for="filter-search" class="form-label">Search keyword</label>
-                    <input id="filter-search" name="search" class="form-control" placeholder="Search keyword">
-                </div>
-                <div class="col-12 col-md-6 col-lg-2">
-                    <label for="filter-status" class="form-label">Severity</label>
-                    <select id="filter-status" name="status" class="form-select">
-                        <option value="">All known severities</option>
-                        <option value="Critical">Critical</option>
-                        <option value="High">High</option>
-                        <option value="Medium">Medium</option>
-                        <option value="Low">Low</option>
-                    </select>
-                </div>
-                <div class="col-12 col-md-6 col-lg-2 d-flex align-items-end">
-                    <div class="form-check mb-2">
-                        <input id="filter-include-unknown" name="include_unknown" class="form-check-input" type="checkbox" value="true">
-                        <label class="form-check-label" for="filter-include-unknown">Include unknown severity</label>
+            <div class="row g-3">
+                <div class="col-12 col-xl-4">
+                    <div class="review-filter-group">
+                        <div class="review-filter-group-title">
+                            <i class="bi bi-search text-primary"></i>
+                            <span>Keyword</span>
+                        </div>
+                        <label for="filter-search" class="form-label">Search keyword</label>
+                        <input id="filter-search" name="search" class="form-control" placeholder="Search by CVE, title, vendor, or product">
+                        <div class="form-text">Matches CVE ID, title, vendor, product, and related details.</div>
                     </div>
                 </div>
-                <div class="col-12 col-md-6 col-lg-2">
-                    <label for="filter-time-window" class="form-label">Scrape time</label>
-                    <select id="filter-time-window" name="time_window" class="form-select">
-                        <option value="all">All time</option>
-                        <option value="daily">Today</option>
-                        <option value="week">Last 7 days</option>
-                        <option value="custom">Custom</option>
-                    </select>
+                <div class="col-12 col-xl-4">
+                    <div class="review-filter-group">
+                        <div class="review-filter-group-title">
+                            <i class="bi bi-exclamation-triangle text-primary"></i>
+                            <span>Severity</span>
+                        </div>
+                        <div class="severity-check-grid" aria-describedby="filter-status-help">
+                            <div class="form-check">
+                                <input id="filter-status-critical" name="status" class="form-check-input" type="checkbox" value="Critical">
+                                <label class="form-check-label severity-check-label" for="filter-status-critical">Critical</label>
+                            </div>
+                            <div class="form-check">
+                                <input id="filter-status-high" name="status" class="form-check-input" type="checkbox" value="High">
+                                <label class="form-check-label severity-check-label" for="filter-status-high">High</label>
+                            </div>
+                            <div class="form-check">
+                                <input id="filter-status-medium" name="status" class="form-check-input" type="checkbox" value="Medium">
+                                <label class="form-check-label severity-check-label" for="filter-status-medium">Medium</label>
+                            </div>
+                            <div class="form-check">
+                                <input id="filter-status-low" name="status" class="form-check-input" type="checkbox" value="Low">
+                                <label class="form-check-label severity-check-label" for="filter-status-low">Low</label>
+                            </div>
+                        </div>
+                        <div class="form-check mt-3">
+                            <input id="filter-include-unknown" name="include_unknown" class="form-check-input" type="checkbox" value="true">
+                            <label class="form-check-label" for="filter-include-unknown">Include unknown severity</label>
+                        </div>
+                        <div id="filter-status-help" class="form-text">Choose one or more severity levels.</div>
+                    </div>
+                </div>
+                <div class="col-12 col-xl-4">
+                    <div class="review-filter-group">
+                        <div class="review-filter-group-title">
+                            <i class="bi bi-clock-history text-primary"></i>
+                            <span>Scrape time</span>
+                        </div>
+                        <label for="filter-time-window" class="form-label">Time window</label>
+                        <select id="filter-time-window" name="time_window" class="form-select">
+                            <option value="all">All time</option>
+                            <option value="daily">Today</option>
+                            <option value="week">Last 7 days</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                        <div class="form-text">Limit results to recently scraped review documents.</div>
+                    </div>
                 </div>
                 <div id="filter-custom-window" class="col-12 d-none">
                     <div class="row g-3">
@@ -84,21 +167,27 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-12 col-md-6 col-lg d-flex gap-2">
-                    <button class="btn btn-primary flex-grow-1" type="submit">
-                        <i class="bi bi-search me-1"></i>Apply Filter
-                    </button>
-                    <button id="clear-filter-btn" class="btn btn-outline-secondary" type="button">Clear</button>
-                </div>
-                <div class="col-12 col-md-6 col-lg-3">
-                    <label for="auto-select-count" class="form-label">Auto-select top</label>
-                    <div class="input-group">
-                        <input id="auto-select-count" type="number" class="form-control" min="1" max="500" value="25" aria-label="Number of records to auto-select">
-                        <button id="auto-select-btn" class="btn btn-outline-primary" type="button">
-                            <i class="bi bi-magic me-1"></i>By importance
-                        </button>
+                <div class="col-12">
+                    <div class="review-filter-group">
+                        <div class="row g-3 align-items-end">
+                            <div class="col-12 col-lg">
+                                <label for="auto-select-count" class="form-label">Auto-select top</label>
+                                <div class="input-group">
+                                    <input id="auto-select-count" type="number" class="form-control" min="1" max="500" value="25" aria-label="Number of records to auto-select">
+                                    <button id="auto-select-btn" class="btn btn-outline-primary" type="button">
+                                        <i class="bi bi-magic me-1"></i>By importance
+                                    </button>
+                                </div>
+                                <div class="form-text">Replaces the current selection using the active filters.</div>
+                            </div>
+                            <div class="col-12 col-lg-auto d-flex flex-wrap gap-2">
+                                <button class="btn btn-primary" type="submit">
+                                    <i class="bi bi-search me-1"></i>Apply Filter
+                                </button>
+                                <button id="clear-filter-btn" class="btn btn-outline-secondary" type="button">Clear</button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="form-text">Replaces the current selection using the active filters.</div>
                 </div>
             </div>
         </div>
@@ -313,10 +402,14 @@
         const params = new URLSearchParams();
         params.set('mode', 'cve');
         const search = document.getElementById('filter-search').value.trim();
-        const status = document.getElementById('filter-status').value.trim();
+        const statuses = Array.from(document.querySelectorAll('input[name="status"]:checked'))
+            .map(function (input) { return input.value.trim(); })
+            .filter(Boolean);
         const windowValue = timeWindow.value;
         if (search) params.set('search', search);
-        if (status) params.set('status', status);
+        statuses.forEach(function (status) {
+            params.append('status', status);
+        });
         if (document.getElementById('filter-include-unknown').checked) {
             params.set('include_unknown', 'true');
         }
@@ -422,7 +515,6 @@
     function renderHeaders() {
         resultsHead.replaceChildren();
         addHeader('Select');
-        addHeader('Relate');
         addHeader('CVE');
         addHeader('Severity');
         addHeader('Score');
@@ -566,7 +658,6 @@
             const projectedDocument = item.document;
             const row = document.createElement('tr');
             renderSelectCell(row, item, keys);
-            renderRelatedButtonCell(row, item);
             addCell(
                 row,
                 firstValue(projectedDocument, ['code', 'cve', 'title']),

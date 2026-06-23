@@ -423,6 +423,33 @@ def test_review_search_mode_cve_uses_cve_review_only(client, monkeypatch):
     assert captured == ['cve']
 
 
+def test_review_search_accepts_multiple_severity_filters(client, monkeypatch):
+    authenticate(client)
+    views = {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+    documents = {
+        'cve_review': [
+            {'_id': 'critical:1', 'code': 'CVE-2026-0001', 'severity': 'Critical', 'scraped_at': '2026-06-10T00:00:00+00:00'},
+            {'_id': 'high:1', 'code': 'CVE-2026-0002', 'severity': 'High', 'scraped_at': '2026-06-09T00:00:00+00:00'},
+            {'_id': 'low:1', 'code': 'CVE-2026-0003', 'severity': 'Low', 'scraped_at': '2026-06-08T00:00:00+00:00'},
+        ],
+    }
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    patch_cve_search_data(monkeypatch, views, documents)
+    monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
+
+    response = client.get('/api/reviews/search?mode=cve&status=Critical&status=High')
+    assert response.status_code == 200
+    assert [item['selection_id'] for item in response.get_json()['data']] == ['critical:1', 'high:1']
+
+
 def test_review_search_rejects_non_cve_mode(client, monkeypatch):
     authenticate(client)
     views = {

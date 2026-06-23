@@ -84,7 +84,7 @@
 
     const severityLevels = ['Critical', 'High', 'Medium', 'Low'];
     const newsletterTextFields = ['search', 'code', 'title', 'impact', 'affected', 'source'];
-    const reportTextFields = ['search', 'code'];
+    const reportTextFields = ['search'];
 
     function newsletterFilterMarkup() {
         return '<div class="row g-2">' +
@@ -122,7 +122,7 @@
     function reportFilterMarkup() {
         return '<div class="row g-2">' +
         reportTextFields.map(function (field) {
-            const labels = {search: 'Search all', code: 'Code / CVE'};
+            const labels = {search: 'Search all'};
             return '<div class="col-md-6"><label class="form-label small">' + labels[field] + '</label><input id="report-' + field + '" class="form-control form-control-sm"></div>';
         }).join('') +
         '<div class="col-12"><label class="form-label small">Severity / status</label><div class="d-flex flex-wrap gap-3">' +

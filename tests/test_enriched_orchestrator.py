@@ -37,13 +37,15 @@ class FakeLlamaClient:
             return 'Upgrade to version 2.0.', {}
         section_name = payload.get('section_name')
         if section_name == 'remediation_playbook':
+            cards = payload.get('vulnerability_cards') or []
+            cve_ids = [card['cve_id'] for card in cards if card.get('cve_id')]
             return json.dumps({
-                'summary': 'Patch Acme Widget first.',
+                'summary': 'Chunk summary.',
                 'actions': [{
                     'priority': 'High',
-                    'action': 'Upgrade Acme Widget to version 2.0.',
-                    'cve_ids': ['CVE-2026-7000'],
-                }],
+                    'action': f'Patch {cve_id}.',
+                    'cve_ids': [cve_id],
+                } for cve_id in cve_ids],
             }), {}
         if section_name == 'weekly_risk_trend':
             return json.dumps({
@@ -111,3 +113,48 @@ def test_run_enriched_pipeline_completes_with_mocked_tavily_and_llm(monkeypatch)
             web['report_jobs'].delete_many({'_id': ObjectId(job_id)})
             web['report_job_inputs'].delete_many({'job_id': ObjectId(job_id)})
             vulnerabilities['cve'].delete_many({'_id': 'cve:orchestrator'})
+
+
+def test_run_enriched_pipeline_chunks_remediation_playbook_for_large_reports(monkeypatch):
+    monkeypatch.setitem(app.config, 'TAVILY_API_KEY', 'fake')
+    monkeypatch.setitem(app.config, 'ENRICHED_LLM_BASE_URL', 'http://llama.example/v1')
+    monkeypatch.setitem(app.config, 'ENRICHED_RESULTS_PER_TASK', 1)
+    monkeypatch.setitem(app.config, 'REPORT_SECTION_CHUNK_PROMPT_CHARS', 1)
+    monkeypatch.setitem(app.config, 'REPORT_SECTION_CHUNK_CARD_COUNT', 2)
+    cve_ids = [f'CVE-2026-70{index:02d}' for index in range(4)]
+    with app.app_context():
+        vulnerabilities = get_vulnerabilities_database()
+        web = get_web_database()
+        vulnerabilities['cve'].delete_many({'_id': {'$in': [f'cve:orchestrator-{index}' for index in range(4)]}})
+        for index, cve_id in enumerate(cve_ids):
+            vulnerabilities['cve'].insert_one({
+                '_id': f'cve:orchestrator-{index}',
+                'code': cve_id,
+                'title': f'Acme Widget RCE {index}',
+                'severity': 'Critical',
+                'classification': {'best_vendor': 'Acme', 'best_product': 'Widget'},
+                'details': {'cve': {'description': 'Remote code execution.', 'affected_products': [{'vendor': 'Acme', 'product': 'Widget'}]}},
+                'source': {'detail_url': f'https://acme.example/{cve_id}'},
+            })
+        job_id = create_job([
+            {
+                'collection': 'cve_review',
+                'source_collection': 'cve',
+                'selection_id': f'cve:orchestrator-{index}',
+            }
+            for index in range(4)
+        ], 'review_selections', 'enriched_weekly')
+        try:
+            run_enriched_pipeline(app, job_id, FakeTavilyClient(), FakeLlamaClient())
+
+            job = web['report_jobs'].find_one({'_id': ObjectId(job_id)})
+            assert job['status'] == 'completed'
+            actions = job['report']['remediation_playbook']['actions']
+            assert len(actions) == 4
+            assert {action['cve_ids'][0] for action in actions} == set(cve_ids)
+        finally:
+            purge_run_artifacts(web, job_id)
+            web['report_jobs'].delete_many({'_id': ObjectId(job_id)})
+            web['report_job_inputs'].delete_many({'job_id': ObjectId(job_id)})
+            vulnerabilities['cve'].delete_many({'_id': {'$in': [f'cve:orchestrator-{index}' for index in range(4)]}})
+

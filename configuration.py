@@ -317,6 +317,20 @@ def load_application_config(base_dir):
             ('enriched', 'evidence_cache_version'),
             '1',
         ),
+        'REPORT_SECTION_CHUNK_PROMPT_CHARS': _resolve(
+            'REPORT_SECTION_CHUNK_PROMPT_CHARS',
+            file_config,
+            ('report', 'section_chunk_prompt_chars'),
+            20000,
+            int,
+        ),
+        'REPORT_SECTION_CHUNK_CARD_COUNT': _resolve(
+            'REPORT_SECTION_CHUNK_CARD_COUNT',
+            file_config,
+            ('report', 'section_chunk_card_count'),
+            4,
+            int,
+        ),
         'REPORT_ITEM_JSON_RETRIES': _resolve(
             'REPORT_ITEM_JSON_RETRIES',
             file_config,
