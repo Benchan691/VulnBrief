@@ -90,6 +90,16 @@
                     </button>
                     <button id="clear-filter-btn" class="btn btn-outline-secondary" type="button">Clear</button>
                 </div>
+                <div class="col-12 col-md-6 col-lg-3">
+                    <label for="auto-select-count" class="form-label">Auto-select top</label>
+                    <div class="input-group">
+                        <input id="auto-select-count" type="number" class="form-control" min="1" max="500" value="25" aria-label="Number of records to auto-select">
+                        <button id="auto-select-btn" class="btn btn-outline-primary" type="button">
+                            <i class="bi bi-magic me-1"></i>By importance
+                        </button>
+                    </div>
+                    <div class="form-text">Replaces the current selection using the active filters.</div>
+                </div>
             </div>
         </div>
     </form>
@@ -205,6 +215,8 @@
     const pageSize = document.getElementById('page-size');
     const exportButton = document.getElementById('export-btn');
     const clearSelection = document.getElementById('clear-selection-btn');
+    const autoSelectCount = document.getElementById('auto-select-count');
+    const autoSelectButton = document.getElementById('auto-select-btn');
     const selectedCount = document.getElementById('selected-count');
     const generateReportButton = document.getElementById('generate-report-btn');
     const documentModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('document-modal'));
@@ -223,6 +235,7 @@
     const selectionStorageKey = 'vulnerabilityReviewSelections';
     const exportUrl = {{ url_for('review.export_review_documents')|tojson }};
     const searchUrl = {{ url_for('review.search_review_documents')|tojson }};
+    const autoSelectUrl = {{ url_for('review.auto_select_review_documents')|tojson }};
     let activeFilters = null;
     let currentPage = 1;
     let totalPages = 1;
@@ -412,6 +425,8 @@
         addHeader('Relate');
         addHeader('CVE');
         addHeader('Severity');
+        addHeader('Score');
+        addHeader('Priority');
         addHeader('Description');
         addHeader('Vendor');
         addHeader('Product');
@@ -566,6 +581,18 @@
             );
             addCell(
                 row,
+                item.selection_score === undefined || item.selection_score === null ? '-' : String(item.selection_score),
+                '',
+                false
+            );
+            addCell(
+                row,
+                item.patch_priority || '-',
+                '',
+                false
+            );
+            addCell(
+                row,
                 firstValue(projectedDocument, ['description', 'summary', 'overview', 'intro']),
                 'small',
                 true
@@ -652,6 +679,76 @@
         }
         restoreRelatedModalAfterDocument = false;
         relatedModal.show();
+    });
+
+    function buildAutoSelectPayload() {
+        const payload = {};
+        activeFilters.forEach(function (value, key) {
+            payload[key] = value;
+        });
+        const count = parseInt(autoSelectCount.value, 10);
+        payload.count = Number.isFinite(count) ? count : 0;
+        if (payload.include_unknown === 'true') {
+            payload.include_unknown = true;
+        }
+        return payload;
+    }
+
+    function formatAutoSelectSummary(summary) {
+        return ['Critical', 'High', 'Medium', 'Low']
+            .map(function (priority) {
+                const count = summary && summary[priority] ? summary[priority] : 0;
+                return count ? priority + ': ' + count : '';
+            })
+            .filter(Boolean)
+            .join(', ');
+    }
+
+    autoSelectButton.addEventListener('click', function () {
+        activeFilters = buildFilterParams();
+        const payload = buildAutoSelectPayload();
+        if (!payload.count || payload.count < 1 || payload.count > 500) {
+            showError('Auto-select count must be between 1 and 500.');
+            return;
+        }
+
+        error.classList.add('d-none');
+        statusAlert.classList.add('d-none');
+        autoSelectButton.disabled = true;
+        autoSelectButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Selecting...';
+
+        fetch(autoSelectUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(function (response) { return parseJsonResponse(response, 'Unable to auto-select review documents.'); })
+            .then(function (body) {
+                const selections = (body.selections || []).map(function (item) {
+                    return {
+                        collection: item.collection,
+                        selection_id: item.selection_id,
+                    };
+                });
+                setSelections(selections);
+                updateSelectedCount();
+                if (currentBody) {
+                    syncVisibleSelections();
+                }
+                const summaryText = formatAutoSelectSummary(body.summary);
+                showStatus(
+                    'Auto-selected ' + body.selected + ' of ' + body.matched
+                    + ' matching document' + (body.matched === 1 ? '' : 's')
+                    + (summaryText ? ' (' + summaryText + ').' : '.')
+                );
+            })
+            .catch(function (reason) {
+                showError(reason.message);
+            })
+            .finally(function () {
+                autoSelectButton.disabled = false;
+                autoSelectButton.innerHTML = '<i class="bi bi-magic me-1"></i>By importance';
+            });
     });
 
     clearSelection.addEventListener('click', function () {

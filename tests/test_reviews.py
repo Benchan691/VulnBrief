@@ -133,6 +133,7 @@ def test_review_pages_require_authentication(client):
     assert client.post('/api/reports/search-cache/purge').status_code == 401
     assert client.put('/api/subscriptions/test@example.com', json={}).status_code == 401
     assert client.post('/api/reviews/export-json', json={}).status_code == 401
+    assert client.post('/api/reviews/auto-select', json={}).status_code == 401
 
 
 def test_review_collection_discovery_and_invalid_collection(client):
@@ -182,12 +183,142 @@ def test_review_collection_page_renders(client):
     assert b'Vendor' in main_page.data
     assert b'Review type' not in main_page.data
     assert b'Auto Select Best' not in main_page.data
+    assert b'By importance' in main_page.data
 
     response = client.get('/reviews/avd_review')
     assert response.status_code == 200
     assert b'avd_review' in response.data
     assert b'Click View to inspect' in response.data
     assert b'Clear Selection' in response.data
+
+
+def test_review_search_includes_selection_score(client, monkeypatch):
+    authenticate(client)
+    views = {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+    documents = {
+        'cve_review': [{
+            '_id': 'cve:1',
+            'code': 'CVE-2026-5001',
+            'severity': 'High',
+            'summary': 'Remote code execution exploited in the wild.',
+            'scraped_at': '2026-06-20T00:00:00+00:00',
+        }],
+    }
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    patch_cve_search_data(monkeypatch, views, documents)
+    monkeypatch.setattr('routes.review._attach_related_cve_documents', lambda *args: None)
+
+    response = client.get('/api/reviews/search?mode=cve')
+    assert response.status_code == 200
+    item = response.get_json()['data'][0]
+    assert 'selection_score' in item
+    assert 'patch_priority' in item
+    assert item['selection_score'] > 0
+
+
+def test_auto_select_returns_top_records_by_score(client, monkeypatch):
+    authenticate(client)
+    views = {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+    documents = {
+        'cve_review': [
+            {
+                '_id': 'low:1',
+                'code': 'CVE-2026-0001',
+                'severity': 'Low',
+                'summary': 'Minor issue.',
+                'scraped_at': '2026-06-01T00:00:00+00:00',
+            },
+            {
+                '_id': 'high:1',
+                'code': 'CVE-2026-0002',
+                'severity': 'Critical',
+                'cisa_kev': True,
+                'summary': 'Remote code execution exploited in the wild.',
+                'scraped_at': '2026-06-20T00:00:00+00:00',
+                'containers': {
+                    'cna': {
+                        'metrics': [{'cvssV3_1': {'baseSeverity': 'CRITICAL', 'baseScore': 9.8}}],
+                    },
+                },
+            },
+            {
+                '_id': 'medium:1',
+                'code': 'CVE-2026-0003',
+                'severity': 'Medium',
+                'summary': 'Privilege escalation proof of concept available.',
+                'scraped_at': '2026-06-15T00:00:00+00:00',
+            },
+        ],
+    }
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    patch_iter_collection_documents(monkeypatch, views, documents)
+
+    response = client.post('/api/reviews/auto-select', json={'count': 2})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['matched'] == 3
+    assert body['selected'] == 2
+    assert [item['selection_id'] for item in body['selections']] == ['high:1', 'medium:1']
+    assert body['selections'][0]['selection_score'] >= body['selections'][1]['selection_score']
+    assert body['summary']['Critical'] == 1
+
+
+@pytest.mark.parametrize('count, status', [
+    (0, 400),
+    (501, 400),
+])
+def test_auto_select_rejects_invalid_count(client, count, status):
+    authenticate(client)
+    response = client.post('/api/reviews/auto-select', json={'count': count})
+    assert response.status_code == status
+
+
+def test_auto_select_rejects_scan_over_limit(client, monkeypatch):
+    authenticate(client)
+    views = {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+    documents = {
+        'cve_review': [
+            {
+                '_id': f'cve:{index}',
+                'code': f'CVE-2026-{index:04d}',
+                'severity': 'Low',
+                'summary': 'Minor issue.',
+                'scraped_at': '2026-06-01T00:00:00+00:00',
+            }
+            for index in range(3)
+        ],
+    }
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    monkeypatch.setattr('routes.review.AUTO_SELECT_SCAN_LIMIT', 2)
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    patch_iter_collection_documents(monkeypatch, views, documents)
+
+    response = client.post('/api/reviews/auto-select', json={'count': 1})
+    assert response.status_code == 400
+    assert 'scan limit' in response.get_json()['error']
 
 
 def test_original_document_export_preserves_order(client):

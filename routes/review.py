@@ -1,5 +1,6 @@
 import heapq
 import re
+from collections import Counter
 from datetime import datetime, timezone
 
 from bson import json_util
@@ -15,6 +16,11 @@ from review_data import (
     promote_cve_display_fields,
     resolve_vulnerability_document,
     review_views,
+)
+from selection_scorer import (
+    AUTO_SELECT_SCAN_LIMIT,
+    rank_scored_selections,
+    score_review_document,
 )
 from subscription_data import (
     VALID_SEVERITIES,
@@ -360,10 +366,13 @@ def _prepare_review_document(collection_name, document, view=None):
 
 def _review_response_row(collection_name, document, view=None):
     document = _prepare_review_document(collection_name, document, view)
+    scored = score_review_document(document)
     return {
         'collection': collection_name,
         'selection_id': str(document.pop('_id')),
         'document': _serialize(document),
+        'selection_score': scored['selection_score'],
+        'patch_priority': scored['patch_priority'],
     }
 
 
@@ -386,6 +395,40 @@ def _merged_review_rows(database, views, view_names, mongo_filter, search=''):
             continue
         rows.append(_merged_review_row(name, document, views[name]))
     return rows
+
+
+def _collect_scored_review_rows(database, views, view_names, mongo_filter, search=''):
+    rows = []
+    for name, document in _iter_merged_documents(database, views, view_names, mongo_filter):
+        if not _document_matches_search(document, search):
+            continue
+        prepared = _prepare_review_document(name, document, views[name])
+        scored = score_review_document(prepared)
+        rows.append({
+            'collection': name,
+            'selection_id': str(prepared.pop('_id')),
+            'selection_score': scored['selection_score'],
+            'patch_priority': scored['patch_priority'],
+            'cve_id': scored['cve_id'],
+            'severity': scored['severity'],
+            'disclosure_date': scored['disclosure_date'],
+            'scraped_at': scored['scraped_at'],
+        })
+    return rows
+
+
+def _auto_select_filter_args(data):
+    if not isinstance(data, dict):
+        return {}
+    return {
+        parameter: str(data.get(parameter, '') or '')
+        for parameter in (
+            'search', 'status', 'time_window', 'start', 'end',
+            *FILTER_FIELDS,
+        )
+    } | {
+        'include_unknown': data.get('include_unknown', False),
+    }
 
 
 def _paginated_merged_rows(database, views, view_names, mongo_filter, search, skip, limit):
@@ -705,6 +748,74 @@ def get_review_documents(collection_name):
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
+
+
+@review_blueprint.route('/api/reviews/auto-select', methods=['POST'])
+@login_required
+def auto_select_review_documents():
+    data = request.get_json(silent=True) or {}
+    try:
+        count = int(data.get('count', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'count must be an integer.'}), 400
+    if count < 1 or count > MAX_EXPORT_SELECTIONS:
+        return jsonify({
+            'error': f'Select between 1 and {MAX_EXPORT_SELECTIONS} vulnerability records.',
+        }), 400
+
+    try:
+        mongo_filter = _build_filter(_auto_select_filter_args(data))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    try:
+        database = get_vulnerabilities_database()
+        views = _review_views(database)
+        view_names = _selected_review_collections({'mode': 'cve'}, views)
+        search = str(data.get('search', '') or '').strip()
+        rows = _collect_scored_review_rows(
+            database,
+            views,
+            view_names,
+            mongo_filter,
+            search,
+        )
+        if len(rows) > AUTO_SELECT_SCAN_LIMIT:
+            return jsonify({
+                'error': (
+                    f'Filter matched {len(rows)} documents, which exceeds the '
+                    f'{AUTO_SELECT_SCAN_LIMIT}-document auto-select scan limit. '
+                    'Narrow your filters and try again.'
+                ),
+            }), 400
+
+        selected = rank_scored_selections(rows, count)
+        summary = Counter(item['patch_priority'] for item in selected)
+        return jsonify({
+            'selections': [
+                {
+                    'collection': item['collection'],
+                    'selection_id': item['selection_id'],
+                    'selection_score': item['selection_score'],
+                    'patch_priority': item['patch_priority'],
+                    'cve_id': item['cve_id'],
+                }
+                for item in selected
+            ],
+            'summary': {
+                priority: summary.get(priority, 0)
+                for priority in ('Critical', 'High', 'Medium', 'Low')
+            },
+            'matched': len(rows),
+            'selected': len(selected),
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
+    except Exception:
+        current_app.logger.exception('Unexpected review auto-select failure.')
+        return jsonify({'error': 'Unable to auto-select review documents.'}), 500
 
 
 @review_blueprint.route('/api/reviews/export-json', methods=['POST'])
