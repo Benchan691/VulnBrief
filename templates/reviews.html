@@ -388,11 +388,11 @@
     function classificationDisplay(document) {
         const classification = document && document.classification;
         if (classification && typeof classification === 'object') {
-            if (classification.status === 'unclassified') {
-                return { vendor: '-', product: '-' };
-            }
             const vendor = classification.vendor || classification.best_vendor || (document && document.vendor) || '';
             const product = classification.product || classification.best_product || (document && document.product) || '';
+            if (classification.status === 'unclassified' && !vendor && !product) {
+                return { vendor: '-', product: '-' };
+            }
             return {
                 vendor: vendor || '-',
                 product: product || '-',

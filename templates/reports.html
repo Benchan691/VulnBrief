@@ -30,6 +30,9 @@
                 <div class="d-flex justify-content-between align-items-center mt-3">
                     <span id="selection-count" class="text-muted small">0 review selections available</span>
                     <div class="d-flex gap-2">
+                        <button id="purge-search-cache-btn" type="button" class="btn btn-outline-danger btn-sm d-none">
+                            <i class="bi bi-trash me-1"></i>Purge Search Cache
+                        </button>
                         <button id="purge-evidence-cache-btn" type="button" class="btn btn-outline-danger btn-sm d-none">
                             <i class="bi bi-trash me-1"></i>Purge Evidence Cache
                         </button>
@@ -38,7 +41,11 @@
                         </button>
                     </div>
                 </div>
-                <div id="evidence-cache-help" class="form-text d-none">Clears cached enriched evidence extractions (`source_evidence_cache`). The next enriched run will call the LLM again for evidence.</div>
+                <div id="enriched-cache-help" class="form-text d-none">
+                    Purge Search Cache clears cached Tavily/Exa results (<code>search_enrichment_cache</code>).
+                    Purge Evidence Cache clears cached LLM evidence extractions (<code>source_evidence_cache</code>).
+                    The next enriched weekly run will repeat any purged API calls.
+                </div>
             </form>
         </div>
     </div>
@@ -109,6 +116,7 @@
 (function () {
     const jobsUrl = {{ url_for('report.get_report_jobs')|tojson }};
     const purgeEvidenceCacheUrl = {{ url_for('report.purge_report_evidence_cache')|tojson }};
+    const purgeSearchCacheUrl = {{ url_for('report.purge_report_search_cache')|tojson }};
     const cancelUrlTemplate = {{ url_for('report.cancel_report_job', job_id='__JOB_ID__')|tojson }};
     const deleteUrlTemplate = {{ url_for('report.delete_report_job', job_id='__JOB_ID__')|tojson }};
     const logsUrlTemplate = {{ url_for('report.get_report_job_logs', job_id='__JOB_ID__')|tojson }};
@@ -126,7 +134,8 @@
     const translateConfirmButton = document.getElementById('translate-confirm-btn');
     const generationMode = document.getElementById('generation-mode');
     const purgeEvidenceCacheButton = document.getElementById('purge-evidence-cache-btn');
-    const evidenceCacheHelp = document.getElementById('evidence-cache-help');
+    const purgeSearchCacheButton = document.getElementById('purge-search-cache-btn');
+    const enrichedCacheHelp = document.getElementById('enriched-cache-help');
     let pollTimer = null;
     let selectedTranslateJob = null;
 
@@ -145,7 +154,24 @@
     function updateLanguageField() {
         const isEnriched = generationMode.value === 'enriched_weekly';
         purgeEvidenceCacheButton.classList.toggle('d-none', !isEnriched);
-        evidenceCacheHelp.classList.toggle('d-none', !isEnriched);
+        purgeSearchCacheButton.classList.toggle('d-none', !isEnriched);
+        enrichedCacheHelp.classList.toggle('d-none', !isEnriched);
+    }
+    function purgeSearchCache() {
+        if (!confirm('Purge all cached enriched search results? The next enriched weekly run will call Tavily/Exa again.')) {
+            return;
+        }
+        purgeSearchCacheButton.disabled = true;
+        requestJson(purgeSearchCacheUrl, { method: 'POST' })
+            .then(function (body) {
+                showMessage('Purged ' + (body.deleted_count || 0) + ' cached search record(s).', 'success');
+            })
+            .catch(function (reason) {
+                showMessage(reason.message, 'danger');
+            })
+            .finally(function () {
+                purgeSearchCacheButton.disabled = false;
+            });
     }
     function purgeEvidenceCache() {
         if (!confirm('Purge all cached enriched evidence extractions? The next enriched weekly run will re-call the LLM for evidence.')) {
@@ -502,6 +528,7 @@
     });
     applyStoredReportPreferences();
     generationMode.addEventListener('change', updateLanguageField);
+    purgeSearchCacheButton.addEventListener('click', purgeSearchCache);
     purgeEvidenceCacheButton.addEventListener('click', purgeEvidenceCache);
     translateLanguage.addEventListener('change', updateTranslateModalState);
     translateConfirmButton.addEventListener('click', function () {

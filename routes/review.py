@@ -12,6 +12,7 @@ from review_data import (
     canonical_selection_id,
     is_cve_record_document,
     normalize_cve_record_document,
+    promote_cve_display_fields,
     resolve_vulnerability_document,
     review_views,
 )
@@ -43,6 +44,10 @@ TEXT_SEARCH_FIELDS = (
     'classification.product', 'classification.best_product',
     'classification.candidate.product',
     'details.source.description',
+    'details.cve.description',
+    'details.description',
+    'details.summary',
+    'containers.cna.descriptions.value',
     'details.cve.affected.vendor',
     'details.cve.affected.product',
     'details.hkcert.vulnerability_identifiers.cve_id',
@@ -348,6 +353,8 @@ def _prepare_review_document(collection_name, document, view=None):
     source_name = (view or {}).get('options', {}).get('viewOn', '')
     if source_name == 'cve' or collection_name == 'cve_review' or is_cve_record_document(document):
         document = normalize_cve_record_document(document)
+    else:
+        document = promote_cve_display_fields(document)
     return document
 
 

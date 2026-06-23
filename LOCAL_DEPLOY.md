@@ -18,8 +18,7 @@ configured. Enriched Weekly reports additionally need Tavily or Exa and llama-se
 Install on your machine:
 
 - **Python 3.11+** (`python3 --version`)
-- **Atlas MongoDB** URI with vulnerability source collections and review views
-- **Local MongoDB** for application data (auth, subscriptions, report jobs)
+- **Local MongoDB** with vulnerability source collections/review views (`vulnerabilities` DB) and application data (`web` DB)
 - **Tavily or Exa API key** (for Enriched Weekly reports)
 - **llama-server** OpenAI-compatible endpoint (for Enriched Weekly; see `enriched.llm_base_url` in `config/config.json`)
 
@@ -65,9 +64,10 @@ use `.venv/bin/python` so they work even if the venv is not activated.
 
 ## 4. Start local MongoDB
 
-The app stores users, subscriptions, and report jobs in a **local**
-MongoDB instance (separate from Atlas). Docker Compose expects this database on
-the **host** at port 27017 (`web` connects via `host.docker.internal`).
+The app uses a single local MongoDB server with two databases: `vulnerabilities`
+for CVE/review data and `web` for users, subscriptions, and report jobs. Docker
+Compose expects MongoDB on the **host** at port 27017 (`web` connects via
+`host.docker.internal`).
 
 **Option A — Standalone Docker container on the host port**
 
@@ -103,7 +103,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Edit `.env` with MongoDB URIs and other credentials. Tune enriched, report, and
+Edit `.env` with the MongoDB URI and other credentials. Tune enriched, report, and
 search limits in `config/config.json`. The app loads `.env` automatically when
 any process starts (`app.py`) — you do not need to run
 `source .env` manually.
@@ -115,8 +115,8 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 
 | Variable | Purpose |
 |----------|---------|
-| `ATLAS_MONGO_URI` | Atlas connection for vulnerability data |
-| `LOCAL_MONGO_URI` | Local MongoDB (default `mongodb://localhost:27017/`) |
+| `LOCAL_MONGO_URI` | Local MongoDB for both `web` and `vulnerabilities` databases (default `mongodb://localhost:27017/`) |
+| `MONGO_URI` | Optional alias for `LOCAL_MONGO_URI` when both are set |
 | `FLASK_SECRET_KEY` | Flask session signing (use a long random string) |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly reports) |
 | `EXA_API_KEYS` | Exa search fallback (Enriched Weekly reports) |
@@ -203,14 +203,14 @@ MongoDB.
 
 | Goal | Required services |
 |------|-------------------|
-| Browse newsletters / reviews | Web + Atlas + local MongoDB |
-| Subscriptions and auth | Web + local MongoDB |
-| Fixed Template reports | Web + Atlas + local MongoDB |
-| Enriched Weekly reports | Web + Atlas + local MongoDB + Tavily or Exa + llama-server |
+| Browse newsletters / reviews | Web + local MongoDB (`vulnerabilities` DB) |
+| Subscriptions and auth | Web + local MongoDB (`web` DB) |
+| Fixed Template reports | Web + local MongoDB |
+| Enriched Weekly reports | Web + local MongoDB + Tavily or Exa + llama-server |
 
 ## Troubleshooting
 
-**`Missing required environment variable(s): ATLAS_MONGO_URI, LOCAL_MONGO_URI, FLASK_SECRET_KEY`**
+**`Missing required environment variable(s): LOCAL_MONGO_URI, FLASK_SECRET_KEY`**
 
 Create `.env` from `.env.example` and set the required variables.
 
@@ -220,14 +220,14 @@ Generate TLS certs (step 6) or use Gunicorn instead.
 
 **Cannot connect to MongoDB**
 
-Confirm local Mongo is listening on port 27017 and that Atlas allows your IP in
-the cluster network access list. For Docker Compose, `web` uses
+Confirm local Mongo is listening on port 27017. For Docker Compose, `web` uses
 `host.docker.internal:27017`; data you inspect with `mongosh localhost:27017` is
-the same database the UI uses (`web.subscriptions`, `report_jobs`, etc.).
+the same server the UI uses (`web.subscriptions`, `vulnerabilities.cve_review`, etc.).
 
 **Subscription data not visible in MongoDB**
 
-Subscriptions live in local MongoDB `web.subscriptions`, not Atlas. If the UI
+Subscriptions live in local MongoDB `web.subscriptions`. Vulnerability data lives in
+`vulnerabilities`. If the UI
 shows subscribers but `mongosh` does not, you are likely connected to a different
 Mongo instance than the app. With Docker Compose, use host Mongo on port 27017,
 not a separate unpublished compose Mongo container.

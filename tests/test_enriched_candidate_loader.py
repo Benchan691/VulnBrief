@@ -1,4 +1,10 @@
-from enriched_report.candidate_loader import load_candidates_from_inputs, query_cve_candidates
+from enriched_report.candidate_loader import (
+    dedupe_candidates,
+    load_candidates_from_inputs,
+    normalize_candidate,
+    query_cve_candidates,
+)
+from review_data import extract_document_cve_id
 
 
 class FakeCursor:
@@ -103,3 +109,84 @@ def test_load_candidates_from_inputs_supports_cve_json_5_documents():
     assert candidates[0]['severity'] == 'HIGH'
     assert candidates[0]['vendor'] == 'Acme'
 
+
+def test_normalize_candidate_uses_nested_details_description_for_summary():
+    candidate = normalize_candidate(
+        {
+            'code': 'CVE-2026-1000',
+            'title': 'Nested details CVE',
+            'details': {'cve': {'description': 'Detailed CVE record.'}},
+        },
+        'run-1',
+        0,
+    )
+
+    assert candidate['summary'] == 'Detailed CVE record.'
+
+
+def test_normalize_candidate_accepts_bare_code_and_cve_document_id():
+    by_code = normalize_candidate({'code': '2026-12206', 'title': 'Plugin issue'}, 'run-1', 0)
+    by_id = normalize_candidate({'_id': 'cve:2026-12206', 'title': 'Plugin issue'}, 'run-1', 1)
+    by_title = normalize_candidate({'title': 'CVE-2026-12206'}, 'run-1', 2)
+
+    assert by_code['cve_id'] == 'CVE-2026-12206'
+    assert by_id['cve_id'] == 'CVE-2026-12206'
+    assert by_title['cve_id'] == 'CVE-2026-12206'
+
+
+def test_extract_document_cve_id_prefers_document_code_over_shared_cve_codes():
+    document = {
+        'code': '2026-12007',
+        '_id': 'cve:2026-12007',
+        'title': 'CVE-2026-12007',
+        'cve_codes': ['2026-12000', '2026-12001', '2026-12007'],
+    }
+
+    assert extract_document_cve_id(document) == 'CVE-2026-12007'
+
+
+def test_dedupe_keeps_distinct_cves_when_cve_codes_lists_overlap():
+    from enriched_report.search_tasks import build_search_tasks
+
+    shared_codes = ['2026-12000', '2026-12001', '2026-12002']
+    docs = [
+        {
+            '_id': f'cve:2026-{12000 + index}',
+            'code': f'2026-{12000 + index}',
+            'title': f'CVE-2026-{12000 + index}',
+            'cve_codes': shared_codes,
+            'details': {'cve': {'descriptions': [{'value': f'Description {index}.'}]}},
+        }
+        for index in range(3)
+    ]
+    candidates = dedupe_candidates([
+        normalize_candidate(document, 'run-1', index)
+        for index, document in enumerate(docs)
+    ])
+
+    assert len(candidates) == 3
+    assert len(build_search_tasks('run-1', candidates)) == 54
+
+
+def test_dedupe_keeps_distinct_cves_with_shared_catalog_source_url():
+    from enriched_report.search_tasks import build_search_tasks
+
+    shared_url = 'https://github.com/CVEProject/cvelistV5'
+    docs = [
+        {
+            '_id': f'cve:{code}',
+            'code': code,
+            'title': f'CVE-{code}',
+            'cve_codes': [code],
+            'source_url': shared_url,
+            'details': {'cve': {'descriptions': [{'value': f'Description for {code}.'}]}},
+        }
+        for code in ['2024-0456', '2026-54231', '2026-53430']
+    ]
+    candidates = dedupe_candidates([
+        normalize_candidate(document, 'run-1', index)
+        for index, document in enumerate(docs)
+    ])
+
+    assert len(candidates) == 3
+    assert len(build_search_tasks('run-1', candidates)) == 54

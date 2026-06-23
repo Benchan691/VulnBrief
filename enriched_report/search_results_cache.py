@@ -66,3 +66,8 @@ def store_cached_results(web_database, task, documents, cache_version='1'):
             },
             payload,
         )
+
+
+def purge_search_cache(web_database):
+    result = web_database['search_enrichment_cache'].delete_many({})
+    return int(result.deleted_count)

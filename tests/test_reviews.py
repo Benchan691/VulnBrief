@@ -130,6 +130,7 @@ def test_review_pages_require_authentication(client):
     assert response.get_json()['error'] == 'Authentication required'
     assert client.get('/api/reviews/search?search=CVE').status_code == 401
     assert client.post('/api/reports/evidence-cache/purge').status_code == 401
+    assert client.post('/api/reports/search-cache/purge').status_code == 401
     assert client.put('/api/subscriptions/test@example.com', json={}).status_code == 401
     assert client.post('/api/reviews/export-json', json={}).status_code == 401
 

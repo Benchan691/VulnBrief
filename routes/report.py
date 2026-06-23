@@ -4,6 +4,7 @@ from flask import Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from enriched_report.evidence_cache import purge_evidence_cache
+from enriched_report.search_results_cache import purge_search_cache
 from mongo import get_web_database
 from report_harness import (
     _assemble_report,
@@ -136,6 +137,16 @@ def purge_report_evidence_cache():
         return jsonify({'deleted_count': deleted_count})
     except PyMongoError:
         return jsonify({'error': 'Unable to purge evidence cache.'}), 503
+
+
+@report_blueprint.route('/api/reports/search-cache/purge', methods=['POST'])
+@login_required
+def purge_report_search_cache():
+    try:
+        deleted_count = purge_search_cache(get_web_database())
+        return jsonify({'deleted_count': deleted_count})
+    except PyMongoError:
+        return jsonify({'error': 'Unable to purge search cache.'}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>/cancel', methods=['POST'])

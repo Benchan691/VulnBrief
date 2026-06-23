@@ -4,7 +4,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 
 ## Features
 
-- **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from Atlas records
+- **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from MongoDB records
 - **Subscriptions** — manage independent newsletter and report profiles with shared collection, severity/status, text, source, affected-system, and time filters
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
 - **Reports** — generate structured reports with **Enriched Weekly** (Tavily/Exa + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
@@ -14,8 +14,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 ```mermaid
 flowchart LR
   Browser --> Web["Flask web :6767"]
-  Web --> Atlas["Atlas vulnerability MongoDB"]
-  Web --> LocalMongo["Local application MongoDB"]
+  Web --> LocalMongo["Local MongoDB"]
   Web --> Search["Tavily / Exa API"]
   Web --> Llama["llama-server enriched.llm_base_url"]
 ```
@@ -23,14 +22,12 @@ flowchart LR
 | Process | Role |
 |---------|------|
 | `web` | Flask UI, report job orchestration, enriched pipeline |
-| Atlas MongoDB | Vulnerability source data and review views |
-| Local MongoDB | Auth, subscriptions, report jobs, enriched pipeline artifacts |
+| Local MongoDB | `vulnerabilities` DB for CVE/review data; `web` DB for auth, subscriptions, report jobs, enriched artifacts |
 
 ## Prerequisites
 
 - Python 3.11+
-- Atlas MongoDB containing vulnerability source collections and review views
-- Local MongoDB for application-owned data
+- Local MongoDB with vulnerability source collections/review views (`vulnerabilities` DB) and application data (`web` DB)
 - Tavily or Exa API key (for Enriched Weekly reports)
 - llama-server OpenAI-compatible endpoint (for Enriched Weekly reports; configured in `config/config.json` under `enriched.*`)
 
@@ -52,8 +49,8 @@ Minimum `.env` for local web:
 
 | Variable | Purpose |
 |----------|---------|
-| `ATLAS_MONGO_URI` | Atlas vulnerability data |
-| `LOCAL_MONGO_URI` | Local application MongoDB |
+| `LOCAL_MONGO_URI` | Local MongoDB (both `web` and `vulnerabilities` databases) |
+| `MONGO_URI` | Optional alias for `LOCAL_MONGO_URI` when both are set |
 | `FLASK_SECRET_KEY` | Session signing |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly) |
 | `EXA_API_KEYS` | Exa search fallback (Enriched Weekly) |
@@ -75,7 +72,7 @@ docker compose up -d --build
 ```
 
 - Web UI: http://localhost:6767
-- Local app data (auth, subscriptions, report jobs) uses **host** MongoDB at port 27017; Docker `web` connects via `host.docker.internal`.
+- Local MongoDB on the host (port 27017) hosts both `web` and `vulnerabilities` databases; Docker `web` connects via `host.docker.internal`.
 - Service: `webserver-web`
 
 ## Quick start (local Python)

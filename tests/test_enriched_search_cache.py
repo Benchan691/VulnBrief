@@ -1,9 +1,21 @@
 from enriched_report.search_executor import execute_pending_search_tasks
 from enriched_report.search_results_cache import (
     lookup_cached_results,
+    purge_search_cache,
     search_results_cache_key,
     store_cached_results,
 )
+
+
+import pytest
+
+from app import app
+
+
+@pytest.fixture()
+def client():
+    app.config.update(TESTING=True)
+    return app.test_client()
 
 
 class FakeSearchCacheCollection:
@@ -32,6 +44,13 @@ class FakeSearchCacheCollection:
             for field, amount in update['$inc'].items():
                 existing[field] = existing.get(field, 0) + amount
         self.docs[key] = existing
+
+    def delete_many(self, query):
+        if query:
+            return type('Result', (), {'deleted_count': 0})()
+        count = len(self.docs)
+        self.docs = {}
+        return type('Result', (), {'deleted_count': count})()
 
 
 class FakeTasksCollection:
@@ -122,6 +141,25 @@ def test_store_and_lookup_cached_results():
     assert cached == [documents[0]]
 
 
+def test_purge_search_cache_deletes_all_entries():
+    database = FakeDatabase({'search_enrichment_cache': FakeSearchCacheCollection()})
+    task = _sample_task()
+    store_cached_results(database, task, [{
+        'url': 'https://acme.example/advisory',
+        'title': 'Advisory',
+        'snippet': 'Snippet',
+        'page_content': 'Page content',
+        'score': 0.8,
+        'source_api': 'tavily',
+        'content_hash': 'content-1',
+    }], cache_version='1')
+
+    deleted_count = purge_search_cache(database)
+
+    assert deleted_count == 1
+    assert database['search_enrichment_cache'].docs == {}
+
+
 def test_execute_pending_search_tasks_reuses_cached_results_without_calling_tavily():
     TrackingTavilyClient.calls = 0
     task = _sample_task()
@@ -204,3 +242,27 @@ def test_execute_pending_search_tasks_stores_results_for_reuse_on_miss():
     assert TrackingTavilyClient.calls == 0
     assert len(second_results.documents) == 1
     assert second_results.documents[0]['run_id'] == 'run-b'
+
+
+def test_purge_search_cache_route(client, monkeypatch):
+    with client.session_transaction() as session:
+        session['username'] = 'test-user'
+
+    cache = FakeSearchCacheCollection()
+    database = FakeDatabase({'search_enrichment_cache': cache})
+    store_cached_results(database, _sample_task(), [{
+        'url': 'https://acme.example/advisory',
+        'title': 'Advisory',
+        'snippet': 'Snippet',
+        'page_content': 'Page content',
+        'score': 0.8,
+        'source_api': 'tavily',
+        'content_hash': 'content-1',
+    }], cache_version='1')
+    monkeypatch.setattr('routes.report.get_web_database', lambda: database)
+
+    response = client.post('/api/reports/search-cache/purge')
+
+    assert response.status_code == 200
+    assert response.get_json()['deleted_count'] == 1
+    assert cache.docs == {}

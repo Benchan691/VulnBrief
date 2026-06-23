@@ -1,4 +1,18 @@
-from review_data import normalize_cve_record_document
+from review_data import extract_document_cve_id, normalize_cve_id, normalize_cve_record_document
+
+
+def test_normalize_cve_id_accepts_common_storage_formats():
+    assert normalize_cve_id('2026-12206') == 'CVE-2026-12206'
+    assert normalize_cve_id('CVE-2026-12206') == 'CVE-2026-12206'
+    assert normalize_cve_id('cve:2026-12206') == 'CVE-2026-12206'
+    assert normalize_cve_id(['2026-12206', 'CVE-2026-9999']) == 'CVE-2026-12206'
+
+
+def test_extract_document_cve_id_prefers_code_before_cve_codes():
+    assert extract_document_cve_id({
+        'code': '2026-12007',
+        'cve_codes': ['2026-12000', '2026-12001'],
+    }) == 'CVE-2026-12007'
 
 
 def test_normalize_cve_record_document_maps_cna_fields():
@@ -59,4 +73,46 @@ def test_normalize_cve_record_document_unclassified_shows_dash_fields():
 
     assert normalized['title'] == 'CVE-2026-0001'
     assert normalized['classification']['status'] == 'unclassified'
-    assert 'vendor' not in normalized or not normalized.get('vendor')
+    assert normalized.get('vendor') == 'Ignored'
+    assert normalized.get('product') == 'Ignored'
+
+
+def test_normalize_cve_record_document_promotes_nested_details_description():
+    document = {
+        '_id': '2',
+        'code': 'CVE-2026-1000',
+        'title': 'Nested details CVE',
+        'details': {'cve': {'description': 'Remote code execution in widget.'}},
+    }
+
+    normalized = normalize_cve_record_document(document)
+
+    assert normalized['description'] == 'Remote code execution in widget.'
+    assert normalized['summary'] == 'Remote code execution in widget.'
+
+
+def test_promote_cve_display_fields_uses_nvd_descriptions_and_affected_vendor_product():
+    from review_data import promote_cve_display_fields
+
+    document = {
+        'classification': {'status': 'unclassified'},
+        'code': '2026-42411',
+        'description': 'CWE-288 Authentication Bypass Using an Alternate Path or Channel',
+        'summary': 'CWE-288 Authentication Bypass Using an Alternate Path or Channel',
+        'details': {
+            'cve': {
+                'affected': [{'vendor': 'XServer', 'product': 'CloudSecure WP Security'}],
+                'descriptions': [{
+                    'lang': 'en',
+                    'value': 'Unauthenticated Broken Authentication in CloudSecure WP Security <= 1.4.7 versions.',
+                }],
+            },
+        },
+        'title': 'CVE-2026-42411',
+    }
+
+    promoted = promote_cve_display_fields(document)
+
+    assert 'Broken Authentication' in promoted['description']
+    assert promoted['vendor'] == 'XServer'
+    assert promoted['product'] == 'CloudSecure WP Security'

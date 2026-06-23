@@ -1,9 +1,45 @@
+import re
+
 from bson import ObjectId
 from bson.errors import InvalidId
 
 from mongo import get_config
 
 MAX_EXPORT_SELECTIONS = 500
+_CWE_LABEL_PATTERN = re.compile(r'^CWE-\d+\b', re.IGNORECASE)
+CVE_ID_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)
+
+
+def normalize_cve_id(value):
+    if value is None:
+        return ''
+    if isinstance(value, list):
+        for item in value:
+            normalized = normalize_cve_id(item)
+            if normalized:
+                return normalized
+        return ''
+    text = _flatten_text(value) if isinstance(value, dict) else str(value).strip()
+    match = CVE_ID_PATTERN.search(text)
+    if not match:
+        return ''
+    return f'CVE-{match.group(1).upper()}'
+
+
+def extract_document_cve_id(document):
+    if not isinstance(document, dict):
+        return ''
+    metadata = document.get('cveMetadata') if isinstance(document.get('cveMetadata'), dict) else {}
+    return normalize_cve_id([
+        document.get('code'),
+        document.get('_id'),
+        document.get('title'),
+        metadata.get('cveId'),
+        document.get('cve_id'),
+        document.get('cve'),
+        document.get('cve_code'),
+        document.get('cve_codes'),
+    ])
 
 
 def _first_non_empty_str(*values):
@@ -14,6 +50,150 @@ def _first_non_empty_str(*values):
         if text:
             return text
     return ''
+
+
+def _flatten_text(value):
+    if value is None:
+        return ''
+    if isinstance(value, list):
+        return ' '.join(_flatten_text(item) for item in value)
+    if isinstance(value, dict):
+        return ' '.join(_flatten_text(item) for item in value.values())
+    return str(value).strip()
+
+
+def _first_nested_text(document, key_names):
+    key_names = set(key_names)
+    stack = [document]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if key in key_names:
+                    text = _flatten_text(value).strip()
+                    if text:
+                        return text
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(current)
+    return ''
+
+
+def _cve_details_block(document):
+    details = document.get('details') if isinstance(document.get('details'), dict) else {}
+    cve = details.get('cve') if isinstance(details.get('cve'), dict) else {}
+    return cve
+
+
+def _descriptions_list_values(container):
+    if not isinstance(container, dict):
+        return ''
+    parts = []
+    for item in container.get('descriptions') or []:
+        if isinstance(item, dict):
+            text = str(item.get('value') or '').strip()
+            if text:
+                parts.append(text)
+    return '\n'.join(parts)
+
+
+def _is_cwe_label(text):
+    return bool(_CWE_LABEL_PATTERN.match(str(text or '').strip()))
+
+
+def _affected_vendor_product(items):
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        vendor = str(item.get('vendor') or '').strip()
+        product = str(item.get('product') or '').strip()
+        if vendor or product:
+            return vendor, product
+    return '', ''
+
+
+def extract_document_description(document):
+    if not isinstance(document, dict):
+        return ''
+    cna = (document.get('containers') or {}).get('cna') or {}
+    cve_details = _cve_details_block(document)
+    structured = _first_non_empty_str(
+        _cna_descriptions(cna),
+        _descriptions_list_values(cve_details),
+        cve_details.get('description'),
+    )
+    if structured:
+        return structured
+    details = document.get('details') if isinstance(document.get('details'), dict) else {}
+    for candidate in (
+        document.get('summary'),
+        document.get('description'),
+        document.get('overview'),
+        _first_nested_text(details, ('summary', 'overview', 'vulDesc')),
+    ):
+        text = _first_non_empty_str(candidate)
+        if text and not _is_cwe_label(text):
+            return text
+    return _first_non_empty_str(
+        document.get('summary'),
+        document.get('description'),
+        document.get('overview'),
+    )
+
+
+def extract_document_vendor_product(document):
+    if not isinstance(document, dict):
+        return '', ''
+    classification = document.get('classification') if isinstance(document.get('classification'), dict) else {}
+    candidate = classification.get('candidate') if isinstance(classification.get('candidate'), dict) else {}
+    cna = (document.get('containers') or {}).get('cna') or {}
+    cve_details = _cve_details_block(document)
+    details = document.get('details') if isinstance(document.get('details'), dict) else {}
+
+    for vendor, product in (
+        _affected_vendor_product(cve_details.get('affected')),
+        _cna_vendor_product(cna),
+    ):
+        if vendor or product:
+            return vendor, product
+
+    return (
+        _first_non_empty_str(
+            classification.get('best_vendor'),
+            classification.get('vendor'),
+            candidate.get('vendor'),
+            document.get('vendor'),
+            _first_nested_text(details, ('vendor', 'vendor_name', 'manufacturer')),
+        ),
+        _first_non_empty_str(
+            classification.get('best_product'),
+            classification.get('product'),
+            candidate.get('product'),
+            document.get('product'),
+            _first_nested_text(details, ('product', 'product_name', 'packageName')),
+        ),
+    )
+
+
+def promote_cve_display_fields(document):
+    if not isinstance(document, dict):
+        return document
+    document = dict(document)
+    description = extract_document_description(document)
+    existing_description = _first_non_empty_str(document.get('description'))
+    existing_summary = _first_non_empty_str(document.get('summary'))
+    if description:
+        if not existing_description or (_is_cwe_label(existing_description) and description != existing_description):
+            document['description'] = description
+        if not existing_summary or (_is_cwe_label(existing_summary) and description != existing_summary):
+            document['summary'] = description
+    vendor, product = extract_document_vendor_product(document)
+    if vendor and not _first_non_empty_str(document.get('vendor')):
+        document['vendor'] = vendor
+    if product and not _first_non_empty_str(document.get('product')):
+        document['product'] = product
+    return document
 
 
 def _cna_descriptions(cna):
@@ -91,7 +271,7 @@ def normalize_cve_record_document(document):
     cna = (document.get('containers') or {}).get('cna') or {}
     metadata = document.get('cveMetadata') or {}
     if not cna and not metadata:
-        return document
+        return promote_cve_display_fields(document)
 
     cve_id = _first_non_empty_str(
         document.get('code'),
@@ -113,8 +293,11 @@ def normalize_cve_record_document(document):
     normalized['title'] = cve_id or advisory_title
     normalized['advisory_title'] = advisory_title
     normalized['description'] = _first_non_empty_str(
-        document.get('description'),
         _cna_descriptions(cna),
+        _descriptions_list_values(_cve_details_block(document)),
+        document.get('summary'),
+        document.get('description'),
+        _first_nested_text(document.get('details') or {}, ('summary', 'overview', 'vulDesc')),
         advisory_title,
     )
     normalized['severity'] = severity
@@ -133,8 +316,13 @@ def normalize_cve_record_document(document):
         normalized['disclosure_date'] = metadata.get('datePublished') or metadata.get('dateUpdated')
 
     classification = document.get('classification') if isinstance(document.get('classification'), dict) else {}
+    nested_vendor, nested_product = extract_document_vendor_product(document)
     if classification.get('status') == 'unclassified':
         normalized['classification'] = classification
+        if nested_vendor:
+            normalized['vendor'] = nested_vendor
+        if nested_product:
+            normalized['product'] = nested_product
     elif _first_non_empty_str(
         classification.get('vendor'),
         classification.get('best_vendor'),
@@ -159,7 +347,7 @@ def normalize_cve_record_document(document):
             'best_vendor': vendor,
             'best_product': product,
         }
-    return normalized
+    return promote_cve_display_fields(normalized)
 
 
 def is_cve_record_document(document):

@@ -8,13 +8,15 @@ from configuration import DEFAULT_JSON_ERROR_MESSAGE, load_application_config
 
 def _set_required_env(monkeypatch, **overrides):
     values = {
-        'ATLAS_MONGO_URI': 'mongodb://example/',
         'LOCAL_MONGO_URI': 'mongodb://local.example/',
         'FLASK_SECRET_KEY': 'secret',
     }
     values.update(overrides)
     for key, value in values.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.delenv('MONGO_URI', raising=False)
+    if 'MONGO_URI' in overrides:
+        monkeypatch.setenv('MONGO_URI', overrides['MONGO_URI'])
 
 
 def test_settings_load_from_environment(tmp_path, monkeypatch):
@@ -42,7 +44,7 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     )
 
     loaded = load_application_config(str(tmp_path))
-    assert loaded['ATLAS_MONGO_URI'] == 'mongodb://example/'
+    assert loaded['MONGO_URI'] == 'mongodb://local.example/'
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
     assert loaded['LOCAL_DATABASE'] == 'web'
     assert loaded['TAVILY_API_KEY'] == 'tavily-key'
@@ -70,22 +72,22 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert overridden['REPORT_JSON_ERROR_MESSAGE'] == 'Environment JSON error: ${error}'
 
 
-def test_separate_mongo_connections(tmp_path, monkeypatch):
+def test_mongo_uri_alias_overrides_local_uri(tmp_path, monkeypatch):
     _set_required_env(
         monkeypatch,
-        ATLAS_MONGO_URI='mongodb+srv://atlas.example/',
+        MONGO_URI='mongodb://mongo-alias/',
         LOCAL_MONGO_URI='mongodb://local.example/',
         LOCAL_DATABASE='local_app',
     )
 
     loaded = load_application_config(str(tmp_path))
-    assert loaded['ATLAS_MONGO_URI'] == 'mongodb+srv://atlas.example/'
-    assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
+    assert loaded['MONGO_URI'] == 'mongodb://mongo-alias/'
+    assert loaded['LOCAL_MONGO_URI'] == 'mongodb://mongo-alias/'
     assert loaded['LOCAL_DATABASE'] == 'local_app'
 
     monkeypatch.setenv('LOCAL_MONGO_URI', 'mongodb://environment-local/')
     assert load_application_config(str(tmp_path))['LOCAL_MONGO_URI'] == (
-        'mongodb://environment-local/'
+        'mongodb://mongo-alias/'
     )
 
 
@@ -99,14 +101,36 @@ def test_web_database_uses_web_database_name(monkeypatch):
     monkeypatch.setattr(mongo, '_config', {
         'LOCAL_DATABASE': 'local_app',
         'WEB_DATABASE': 'web_app',
+        'MONGO_URI': 'mongodb://local.example/',
     })
-    monkeypatch.setattr(mongo, '_local_client', FakeClient())
+    monkeypatch.setattr(mongo, '_client', FakeClient())
 
     assert mongo.get_web_database() == 'web_app'
 
 
+def test_vulnerabilities_database_uses_shared_client(monkeypatch):
+    import mongo
+
+    class FakeClient:
+        def __getitem__(self, name):
+            return name
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(mongo, '_config', {
+        'LOCAL_DATABASE': 'web',
+        'WEB_DATABASE': 'web',
+        'VULNERABILITIES_DATABASE': 'vulnerabilities',
+        'MONGO_URI': 'mongodb://local.example/',
+    })
+    monkeypatch.setattr(mongo, '_client', fake_client)
+
+    assert mongo.get_web_database() == 'web'
+    assert mongo.get_vulnerabilities_database() == 'vulnerabilities'
+    assert mongo.get_mongo_client() is fake_client
+
+
 def test_mongo_connections_are_required(tmp_path, monkeypatch):
-    monkeypatch.delenv('ATLAS_MONGO_URI', raising=False)
+    monkeypatch.delenv('MONGO_URI', raising=False)
     monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)
     monkeypatch.delenv('FLASK_SECRET_KEY', raising=False)
 
@@ -190,12 +214,11 @@ def test_single_tavily_key_backfills_key_list(tmp_path, monkeypatch):
 def test_load_dotenv_from_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for name in (
-        'ATLAS_MONGO_URI', 'LOCAL_MONGO_URI', 'FLASK_SECRET_KEY',
+        'MONGO_URI', 'LOCAL_MONGO_URI', 'FLASK_SECRET_KEY',
     ):
         monkeypatch.delenv(name, raising=False)
     (tmp_path / '.env').write_text(
         '\n'.join([
-            'ATLAS_MONGO_URI=mongodb://dotenv-atlas/',
             'LOCAL_MONGO_URI=mongodb://dotenv-local/',
             'FLASK_SECRET_KEY=dotenv-secret',
         ]),
@@ -204,6 +227,6 @@ def test_load_dotenv_from_file(tmp_path, monkeypatch):
 
     _load_env(str(tmp_path))
     loaded = load_application_config(str(tmp_path))
-    assert loaded['ATLAS_MONGO_URI'] == 'mongodb://dotenv-atlas/'
+    assert loaded['MONGO_URI'] == 'mongodb://dotenv-local/'
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://dotenv-local/'
     assert loaded['SECRET_KEY'] == 'dotenv-secret'

@@ -118,13 +118,15 @@ def load_application_config(base_dir):
     if not os.path.isabs(newsletter_root):
         newsletter_root = os.path.join(base_dir, newsletter_root)
 
-    atlas_mongo_uri = os.environ.get('ATLAS_MONGO_URI', '')
-    local_mongo_uri = os.environ.get('LOCAL_MONGO_URI', '')
-    _require_env('ATLAS_MONGO_URI', 'LOCAL_MONGO_URI', 'FLASK_SECRET_KEY')
+    mongo_uri = os.environ.get('MONGO_URI') or os.environ.get('LOCAL_MONGO_URI', '')
+    if not mongo_uri:
+        _require_env('LOCAL_MONGO_URI', 'FLASK_SECRET_KEY')
+    else:
+        _require_env('FLASK_SECRET_KEY')
 
     return {
-        'ATLAS_MONGO_URI': atlas_mongo_uri,
-        'LOCAL_MONGO_URI': local_mongo_uri,
+        'MONGO_URI': mongo_uri,
+        'LOCAL_MONGO_URI': mongo_uri,
         'LOCAL_DATABASE': local_database,
         'WEB_DATABASE': _resolve(
             'WEB_DATABASE',

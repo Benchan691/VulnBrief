@@ -1,11 +1,13 @@
 import hashlib
 import json
-import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from review_data import (
     MAX_EXPORT_SELECTIONS,
+    extract_document_cve_id,
+    extract_document_description,
+    extract_document_vendor_product,
     is_cve_record_document,
     normalize_cve_record_document,
     resolve_vulnerability_document,
@@ -14,9 +16,6 @@ from review_data import (
 from subscription_data import build_match_filter, severity_projection_fields
 
 from .pipeline_collections import collection
-
-
-CVE_PATTERN = re.compile(r'\bCVE-\d{4}-\d{4,}\b', re.IGNORECASE)
 
 
 def _now_iso():
@@ -31,13 +30,6 @@ def _text(value):
     if isinstance(value, dict):
         return ' '.join(_text(item) for item in value.values())
     return str(value)
-
-
-def normalize_cve_id(value):
-    if value is None:
-        return ''
-    match = CVE_PATTERN.search(_text(value))
-    return match.group(0).upper() if match else ''
 
 
 def _first_text(*values):
@@ -105,7 +97,7 @@ def _references(document):
 def _content_hash(document):
     payload = {
         'title': document.get('title'),
-        'summary': document.get('summary') or document.get('description') or document.get('impacts'),
+        'summary': extract_document_description(document) or document.get('impacts'),
         'details': document.get('details'),
     }
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode('utf-8')
@@ -132,29 +124,13 @@ def _detail_completeness_score(document):
 
 
 def _vendor(document):
-    classification = document.get('classification') if isinstance(document.get('classification'), dict) else {}
-    candidate = classification.get('candidate') if isinstance(classification.get('candidate'), dict) else {}
-    return _first_text(
-        classification.get('best_vendor'),
-        classification.get('vendor'),
-        candidate.get('vendor'),
-        document.get('vendor'),
-        _first_nested_text(document.get('details') or {}, ('vendor', 'vendor_name', 'manufacturer')),
-    )
+    vendor, _ = extract_document_vendor_product(document)
+    return vendor
 
 
 def _product(document):
-    classification = document.get('classification') if isinstance(document.get('classification'), dict) else {}
-    candidate = classification.get('candidate') if isinstance(classification.get('candidate'), dict) else {}
-    return _first_text(
-        classification.get('best_product'),
-        classification.get('product'),
-        candidate.get('product'),
-        document.get('product'),
-        document.get('affected'),
-        document.get('affected_products'),
-        _first_nested_text(document.get('details') or {}, ('product', 'product_name', 'affected_products')),
-    )
+    _, product = extract_document_vendor_product(document)
+    return product
 
 
 def _advisory_id(document, cve_id):
@@ -170,17 +146,7 @@ def _vendor_domain(source_url, vendor, domain_map=None):
 
 
 def normalize_candidate(document, run_id, position=0, domain_map=None):
-    metadata = document.get('cveMetadata') if isinstance(document.get('cveMetadata'), dict) else {}
-    cve_id = normalize_cve_id([
-        document.get('cve_id'),
-        document.get('cve'),
-        document.get('cve_code'),
-        document.get('cve_codes'),
-        document.get('code'),
-        metadata.get('cveId'),
-        document.get('title'),
-        document.get('details'),
-    ])
+    cve_id = extract_document_cve_id(document)
     if not cve_id:
         return None
     source_url = _source_url(document)
@@ -188,6 +154,7 @@ def normalize_candidate(document, run_id, position=0, domain_map=None):
     product = _product(document)
     content_hash = _content_hash(document)
     candidate_id = hashlib.sha256(f'{run_id}:{cve_id}:{content_hash}'.encode('utf-8')).hexdigest()[:24]
+    summary = extract_document_description(document) or _first_text(document.get('impacts'))
     return {
         'run_id': run_id,
         'candidate_id': candidate_id,
@@ -200,7 +167,7 @@ def normalize_candidate(document, run_id, position=0, domain_map=None):
         'product': product,
         'title': _first_text(document.get('title'), cve_id),
         'severity': _first_text(document.get('severity'), document.get('status')),
-        'summary': _first_text(document.get('summary'), document.get('description'), document.get('impacts')),
+        'summary': summary,
         'disclosure_date': document.get('disclosure_date'),
         'scraped_at': document.get('scraped_at'),
         'source_url': source_url,
@@ -211,6 +178,20 @@ def normalize_candidate(document, run_id, position=0, domain_map=None):
         'raw_snapshot': document,
         'created_at': _now_iso(),
     }
+
+
+def _dedupe_identity_keys(candidate):
+    keys = {
+        f"cve:{candidate['cve_id']}",
+        f"advisory:{candidate.get('advisory_id') or ''}",
+        f"title:{candidate.get('vendor') or ''}:{candidate.get('product') or ''}:{candidate.get('title') or ''}",
+        f"hash:{candidate['content_hash']}",
+    }
+    source_url = str(candidate.get('source_url') or '').strip()
+    cve_bare = candidate['cve_id'].removeprefix('CVE-').lower()
+    if source_url and cve_bare in source_url.lower():
+        keys.add(f"url:{source_url}")
+    return {key for key in keys if not key.endswith(':') and not key.endswith('::')}
 
 
 def dedupe_candidates(candidates):
@@ -225,14 +206,7 @@ def dedupe_candidates(candidates):
     deduped = []
     seen_keys = set()
     for candidate in sorted(by_cve.values(), key=lambda item: item.get('position', 0)):
-        keys = {
-            f"cve:{candidate['cve_id']}",
-            f"advisory:{candidate.get('advisory_id') or ''}",
-            f"title:{candidate.get('vendor') or ''}:{candidate.get('product') or ''}:{candidate.get('title') or ''}",
-            f"url:{candidate.get('source_url') or ''}",
-            f"hash:{candidate['content_hash']}",
-        }
-        keys = {key for key in keys if not key.endswith(':') and not key.endswith('::')}
+        keys = _dedupe_identity_keys(candidate)
         if seen_keys.intersection(keys):
             continue
         seen_keys.update(keys)
