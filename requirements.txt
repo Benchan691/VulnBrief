@@ -1,7 +1,6 @@
 Flask>=2.3,<4
 bcrypt>=4,<6
 bleach>=6,<7
-croniter>=2,<7
 cryptography>=42,<47
 gunicorn>=21,<24
 json-repair>=0,<1

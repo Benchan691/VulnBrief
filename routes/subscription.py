@@ -6,7 +6,6 @@ from pymongo.errors import PyMongoError
 from mongo import get_vulnerabilities_database, get_web_database
 from newsletter_store import filter_newsletter_feed
 from subscription_data import (
-    next_cron_run,
     normalize_subscription,
     profile_with_window,
     query_profile_matches,
@@ -19,6 +18,19 @@ from .common import login_required
 
 def get_collection():
     return get_web_database()['subscriptions']
+
+
+SCHEDULE_FIELD_UNSET = {
+    'schedule_claim_owner': '',
+    'schedule_claim_until': '',
+    'report_profile.schedule_enabled': '',
+    'report_profile.cron': '',
+    'report_profile.next_run_at': '',
+    'report_profile.last_run_at': '',
+    'report_profile.last_job_id': '',
+    'report_profile.last_error': '',
+    'report_profile.last_match_count': '',
+}
 
 
 def _public_subscription(database, document):
@@ -36,8 +48,6 @@ def _profiles(database, data):
         report_value = {'enabled': True, 'filters': {'collections': data.get('subscriptions')}}
     newsletter_profile = validate_profile(database, newsletter_value, 'newsletter')
     report_profile = validate_profile(database, report_value, 'report')
-    if report_profile['schedule_enabled']:
-        report_profile['next_run_at'] = next_cron_run(report_profile['cron'])
     return newsletter_profile, report_profile
 
 
@@ -95,6 +105,7 @@ def add_subscription():
             'created_at': now,
             'updated_at': now,
         })
+        get_collection().update_one({'email': email}, {'$unset': SCHEDULE_FIELD_UNSET})
         return jsonify({'success': True}), 201
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
@@ -125,7 +136,7 @@ def edit_subscription(email):
             update['team'] = data['team'].strip()
         get_collection().update_one(
             {'email': email},
-            {'$set': update, '$unset': {'subscriptions': ''}},
+            {'$set': update, '$unset': {'subscriptions': '', **SCHEDULE_FIELD_UNSET}},
         )
         return jsonify({'success': True})
     except ValueError as exc:

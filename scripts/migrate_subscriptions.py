@@ -91,12 +91,8 @@ def build_profiles(database, legacy_record, mapped_collections):
         'filters': {'collections': mapped_collections},
         'generation_mode': 'template',
         'report_language': 'en',
-        'schedule_enabled': False,
-        'cron': '0 9 * * 1',
     }, 'report')
     report_profile['enabled'] = False
-    report_profile['schedule_enabled'] = False
-    report_profile.pop('next_run_at', None)
     return newsletter_profile, report_profile
 
 

@@ -18,15 +18,11 @@ flowchart LR
   Web --> LocalMongo["Local application MongoDB"]
   Web --> Search["Tavily / Exa API"]
   Web --> Llama["llama-server enriched.llm_base_url"]
-  Scheduler["scheduler.py"] --> Atlas
-  Scheduler --> LocalMongo
-  Scheduler --> Web
 ```
 
 | Process | Role |
 |---------|------|
 | `web` | Flask UI, report job orchestration, enriched pipeline |
-| `scheduler` | Claims cron schedules and generates scheduled reports |
 | Atlas MongoDB | Vulnerability source data and review views |
 | Local MongoDB | Auth, subscriptions, report jobs, enriched pipeline artifacts |
 
@@ -79,8 +75,8 @@ docker compose up -d --build
 ```
 
 - Web UI: http://localhost:6767
-- Local app data (auth, subscriptions, report jobs) uses **host** MongoDB at port 27017; Docker `web` and `scheduler` connect via `host.docker.internal`.
-- Services: `webserver-web`, `webserver-scheduler`
+- Local app data (auth, subscriptions, report jobs) uses **host** MongoDB at port 27017; Docker `web` connects via `host.docker.internal`.
+- Service: `webserver-web`
 
 ## Quick start (local Python)
 
@@ -92,9 +88,6 @@ python3 -m venv .venv
 
 # Terminal 1 — web server
 .venv/bin/python app.py
-
-# Terminal 2 — report scheduler
-.venv/bin/python scheduler.py
 ```
 
 Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`).
@@ -110,7 +103,6 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 | Path | Description |
 |------|-------------|
 | `config/config.json` | Non-sensitive application settings (enriched, report, search limits) |
-| `scheduler.py` | Scheduled report generation worker |
 | `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and live feed queries |
 | `report_harness.py` | Report generation pipeline |
 | `enriched_report/` | Enriched Weekly search + llama-server pipeline |

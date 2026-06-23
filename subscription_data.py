@@ -3,8 +3,6 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from croniter import croniter
-
 from review_data import MAX_EXPORT_SELECTIONS, review_views
 
 
@@ -47,8 +45,6 @@ DEFAULT_REPORT_PROFILE = {
     'filters': DEFAULT_FILTERS,
     'generation_mode': 'template',
     'report_language': 'en',
-    'schedule_enabled': False,
-    'cron': '0 9 * * 1',
 }
 
 
@@ -101,18 +97,6 @@ def build_scraped_at_window(window, start='', end='', now=None):
             '$lt': end_dt.astimezone(timezone.utc).isoformat(),
         },
     }
-
-
-def validate_cron(value):
-    if not isinstance(value, str) or len(value.split()) != 5 or not croniter.is_valid(value):
-        raise ValueError('Schedule must be a valid five-field cron expression.')
-    return value.strip()
-
-
-def next_cron_run(value, now=None):
-    value = validate_cron(value)
-    local_now = (now or datetime.now(timezone.utc)).astimezone(HONG_KONG)
-    return croniter(value, local_now).get_next(datetime).astimezone(timezone.utc)
 
 
 def validate_filters(database, value):
@@ -189,8 +173,6 @@ def validate_profile(database, value, profile_type):
         if profile['generation_mode'] in {'company_ai', 'ai'}:
             profile['generation_mode'] = 'enriched_weekly'
         profile['report_language'] = value.get('report_language', 'en')
-        profile['schedule_enabled'] = bool(value.get('schedule_enabled', False))
-        profile['cron'] = validate_cron(value.get('cron', '0 9 * * 1'))
         if profile['generation_mode'] not in VALID_GENERATION_MODES:
             raise ValueError('Invalid report generation mode.')
         if profile['report_language'] not in VALID_LANGUAGES:
@@ -202,9 +184,6 @@ def validate_profile(database, value, profile_type):
             if collections and collections != ['cve_review']:
                 raise ValueError('enriched_weekly report profiles only support cve_review.')
             profile['filters']['collections'] = ['cve_review']
-        for field in ('next_run_at', 'last_run_at', 'last_job_id', 'last_error', 'last_match_count'):
-            if field in value:
-                profile[field] = value[field]
     return profile
 
 

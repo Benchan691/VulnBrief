@@ -73,11 +73,9 @@ def test_build_profiles_disables_report_and_maps_newsletter_enabled(monkeypatch)
     assert newsletter_profile['enabled'] is False
     assert newsletter_profile['filters']['collections'] == ['hkcert_review']
     assert report_profile['enabled'] is False
-    assert report_profile['schedule_enabled'] is False
     assert report_profile['filters']['collections'] == ['hkcert_review']
     assert report_profile['generation_mode'] == 'template'
     assert report_profile['report_language'] == 'en'
-    assert report_profile['cron'] == '0 9 * * 1'
 
 
 def test_migrate_record_builds_expected_document(indexes, monkeypatch):

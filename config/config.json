@@ -63,8 +63,5 @@
     "max_list_items": 100,
     "max_string_chars": 12000,
     "preview_after_each_item": true
-  },
-  "scheduler": {
-    "scan_interval_seconds": 60
   }
 }

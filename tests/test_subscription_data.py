@@ -1,15 +1,11 @@
-from datetime import datetime, timezone
-
 import pytest
 
 from subscription_data import (
     build_match_filter,
     build_scraped_at_window,
-    next_cron_run,
     parse_hong_kong_datetime,
     parse_include_unknown,
     query_profile_matches,
-    validate_cron,
     validate_filters,
     validate_profile,
 )
@@ -73,18 +69,6 @@ def test_parse_include_unknown_accepts_common_truthy_values():
     assert parse_include_unknown('true') is True
     assert parse_include_unknown('1') is True
     assert parse_include_unknown(None) is False
-
-
-def test_five_field_cron_validation_and_next_run_use_hong_kong_time():
-    assert validate_cron('0 9 * * 1') == '0 9 * * 1'
-    with pytest.raises(ValueError, match='five-field cron'):
-        validate_cron('0 9 * *')
-
-    next_run = next_cron_run(
-        '0 9 * * *',
-        datetime(2026, 6, 11, 0, 30, tzinfo=timezone.utc),
-    )
-    assert next_run == datetime(2026, 6, 11, 1, 0, tzinfo=timezone.utc)
 
 
 class FakeDatabase:

@@ -13,15 +13,3 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./newsletters:/app/newsletters
-
-  scheduler:
-    build: .
-    container_name: webserver-scheduler
-    restart: unless-stopped
-    command: ["python", "scheduler.py"]
-    env_file:
-      - .env
-    environment:
-      LOCAL_MONGO_URI: mongodb://host.docker.internal:27017/
-    extra_hosts:
-      - "host.docker.internal:host-gateway"

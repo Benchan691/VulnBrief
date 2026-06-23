@@ -8,7 +8,6 @@ Python virtual environment. For Docker-based deployment, see [README.md](README.
 | Process | Command | Purpose |
 |---------|---------|---------|
 | Web UI | `app.py` or Gunicorn | Flask app on port **6767** |
-| Scheduler | `scheduler.py` | Scheduled report generation |
 
 All processes read the same **`.env`** file (loaded automatically on startup).
 The web UI is usable for browsing newsletters and reviews with only MongoDB
@@ -66,10 +65,9 @@ use `.venv/bin/python` so they work even if the venv is not activated.
 
 ## 4. Start local MongoDB
 
-The app stores users, subscriptions, report jobs, and schedules in a **local**
+The app stores users, subscriptions, and report jobs in a **local**
 MongoDB instance (separate from Atlas). Docker Compose expects this database on
-the **host** at port 27017 (`web` and `scheduler` connect via
-`host.docker.internal`).
+the **host** at port 27017 (`web` connects via `host.docker.internal`).
 
 **Option A — Standalone Docker container on the host port**
 
@@ -107,7 +105,7 @@ chmod 600 .env
 
 Edit `.env` with MongoDB URIs and other credentials. Tune enriched, report, and
 search limits in `config/config.json`. The app loads `.env` automatically when
-any process starts (`app.py`, `scheduler.py`) — you do not need to run
+any process starts (`app.py`) — you do not need to run
 `source .env` manually.
 
 Environment variables override `config/config.json` when both are set. Point at
@@ -131,7 +129,6 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `report.*` | Report compaction settings |
 | `enriched.*` | Enriched Weekly llama-server tuning |
 | `tavily.*` / `exa.*` | Search defaults |
-| `scheduler.*` | Scheduler scan interval |
 
 See [`.env.example`](.env.example), [`config/config.json`](config/config.json),
 and [configuration.py](configuration.py) for every supported setting.
@@ -154,10 +151,10 @@ require these files.
 
 ## 7. Run the application
 
-Open separate terminals from the project root. Activate the venv in each (or use
+Open a terminal from the project root. Activate the venv (or use
 the `.venv/bin/python` paths shown).
 
-### Terminal 1 — web server
+### Web server
 
 **Development (Flask built-in server, HTTPS on 6767)**
 
@@ -175,14 +172,6 @@ Open: **https://localhost:6767**
 
 Open: **http://localhost:6767**
 
-### Terminal 2 — scheduler
-
-```sh
-.venv/bin/python scheduler.py
-```
-
-Handles cron-based scheduled report generation. Newsletter feeds query Atlas live from the web app and do not require the scheduler.
-
 ## 8. Sign in
 
 On first startup, the app creates a bootstrap user from `WEB_AUTH_BOOTSTRAP_USERNAME`
@@ -199,7 +188,6 @@ Change the password after first login, or create another user:
 |-------|-----|
 | Web UI loads | Open http(s)://localhost:6767 and sign in |
 | Local MongoDB | User appears under the `web` database `auth` collection |
-| Scheduler | Terminal 2 logs periodic scan cycles |
 | Tests | `.venv/bin/python -m pytest` |
 
 ## 10. Run tests
@@ -219,7 +207,6 @@ MongoDB.
 | Subscriptions and auth | Web + local MongoDB |
 | Fixed Template reports | Web + Atlas + local MongoDB |
 | Enriched Weekly reports | Web + Atlas + local MongoDB + Tavily or Exa + llama-server |
-| Scheduled reports | Web + scheduler + (report dependencies above) |
 
 ## Troubleshooting
 
@@ -234,7 +221,7 @@ Generate TLS certs (step 6) or use Gunicorn instead.
 **Cannot connect to MongoDB**
 
 Confirm local Mongo is listening on port 27017 and that Atlas allows your IP in
-the cluster network access list. For Docker Compose, `web` and `scheduler` use
+the cluster network access list. For Docker Compose, `web` uses
 `host.docker.internal:27017`; data you inspect with `mongosh localhost:27017` is
 the same database the UI uses (`web.subscriptions`, `report_jobs`, etc.).
 
@@ -258,7 +245,7 @@ Stop the other process or change the bind address in `gunicorn_config.py` /
 
 ## Stopping services
 
-Press `Ctrl+C` in each terminal. To stop a standalone Docker MongoDB container:
+Press `Ctrl+C` in the terminal. To stop a standalone Docker MongoDB container:
 
 ```sh
 docker stop webserver-local-mongo

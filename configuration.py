@@ -410,10 +410,4 @@ def load_application_config(base_dir):
             ('report', 'preview_after_each_item'),
             True,
         ),
-        'SCHEDULER_SCAN_INTERVAL_SECONDS': _resolve_int(
-            'SCHEDULER_SCAN_INTERVAL_SECONDS',
-            file_config,
-            ('scheduler', 'scan_interval_seconds'),
-            60,
-        ),
     }

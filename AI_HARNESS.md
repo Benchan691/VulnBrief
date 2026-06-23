@@ -35,8 +35,7 @@ newsletter and report profiles using the same validated curated filters.
 Newsletter profiles expose a local-MongoDB metadata feed with View and Copy HTML.
 Those actions resolve the latest Atlas source record and render HTML live.
 Report profile Run actions prepare the browser's Vulnerability Reviews selection
-list. Enabled five-field cron schedules are executed in `Asia/Hong_Kong` by the
-dedicated `scheduler.py` process and generate report jobs automatically.
+list for manual report generation on the Reports page.
 
 ## Enriched Weekly configuration
 
@@ -75,11 +74,6 @@ Structured report data and job metadata are stored in the local MongoDB
 `report_job_inputs`. Preview/download routes render HTML live and gradually
 remove legacy stored HTML fields.
 
-## Independent processes
-
-The web server and scheduler are separate processes. Both use
-`bootstrap.configure_application()`.
-
 ## Local startup
 
 Create the virtual environment and install dependencies:
@@ -89,14 +83,13 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Start the scheduler and web server in separate terminals:
+Start the web server:
 
 ```sh
-.venv/bin/python scheduler.py
 .venv/bin/python app.py
 ```
 
-Or start everything with Docker Compose (MongoDB must be reachable from containers,
+Or start with Docker Compose (MongoDB must be reachable from containers,
 for example via `host.docker.internal` on Docker Desktop):
 
 ```sh

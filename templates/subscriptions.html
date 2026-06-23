@@ -16,7 +16,7 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="mb-1"><i class="bi bi-people me-2"></i>Subscription Management</h2>
-            <p class="text-muted mb-0">Manage independent newsletter feeds and scheduled report profiles.</p>
+            <p class="text-muted mb-0">Manage independent newsletter feeds and report profiles.</p>
         </div>
         <button id="add-btn" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add Subscription</button>
     </div>
@@ -58,8 +58,6 @@
                                 <div class="col-md-6"><label class="form-label small">Generation mode</label><select id="report-generation-mode" class="form-select"><option value="enriched_weekly">Enriched Weekly</option><option value="template">Fixed Template</option></select></div>
                                 <div class="col-md-6"><label class="form-label small">Language</label><select id="report-language" class="form-select"><option value="en">English</option><option value="zh">Traditional Chinese</option><option value="ch">Simplified Chinese</option></select></div>
                             </div>
-                            <div class="form-check form-switch mt-3"><input id="schedule-enabled" class="form-check-input" type="checkbox"><label class="form-check-label" for="schedule-enabled">Generate reports periodically</label></div>
-                            <label class="form-label small mt-2">Five-field cron, Asia/Hong_Kong</label><input id="report-cron" class="form-control" value="0 9 * * 1" placeholder="0 9 * * 1">
                         </div></div>
                     </div>
                 </div>
@@ -114,7 +112,6 @@
     function showMessage(text, kind) { message.textContent = text; message.className = 'alert alert-' + kind; }
     function requestJson(url, options) { return fetch(url, options).then(function (response) { return response.json().then(function (body) { if (!response.ok) throw new Error(body.error || 'Request failed.'); return body; }); }); }
     function apiUrl(email, suffix) { return subscriptionsUrl + '/' + encodeURIComponent(email) + (suffix || ''); }
-    function displayDate(value) { return value ? new Date(value).toLocaleString() : 'Not scheduled'; }
     function getCollectionCheckboxes(prefix) {
         return Array.from(document.querySelectorAll('#' + prefix + '-collections-options .subscription-collection-checkbox'));
     }
@@ -258,13 +255,11 @@
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
         const newsletter = subscription ? subscription.newsletter_profile : {enabled:false,filters:{}};
-        const report = subscription ? subscription.report_profile : {enabled:true,filters:{},generation_mode:'template',report_language:'en',schedule_enabled:false,cron:'0 9 * * 1'};
+        const report = subscription ? subscription.report_profile : {enabled:true,filters:{},generation_mode:'template',report_language:'en'};
         document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters);
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
         document.getElementById('report-generation-mode').value = report.generation_mode;
         document.getElementById('report-language').value = report.report_language;
-        document.getElementById('schedule-enabled').checked = report.schedule_enabled;
-        document.getElementById('report-cron').value = report.cron;
         updateReportModeControls();
         modal.show();
     }
@@ -275,7 +270,7 @@
             tr.innerHTML = '<td><strong></strong><div class="text-muted small"></div></td><td></td><td></td><td></td>';
             tr.children[0].querySelector('strong').textContent = item.email; tr.children[0].querySelector('div').textContent = item.team;
             tr.children[1].textContent = item.newsletter_profile.enabled ? 'Enabled · ' + (item.newsletter_profile.filters.collections.length || 'all') + ' collection(s)' : 'Disabled';
-            tr.children[2].textContent = item.report_profile.enabled ? (item.report_profile.schedule_enabled ? 'Scheduled · next ' + displayDate(item.report_profile.next_run_at) : 'Manual') : 'Disabled';
+            tr.children[2].textContent = item.report_profile.enabled ? 'Enabled' : 'Disabled';
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
             if (item.newsletter_profile.enabled) actions.innerHTML += '<a class="btn btn-outline-primary btn-sm" href="/subscriptions/' + encodeURIComponent(item.email) + '/newsletter-feed">View Feed</a>';
             if (item.report_profile.enabled) {
@@ -299,7 +294,7 @@
         event.preventDefault();
         const payload = { email:document.getElementById('email').value, team:document.getElementById('team').value,
             newsletter_profile:{enabled:document.getElementById('newsletter-enabled').checked,filters:readFilters('newsletter')},
-            report_profile:{enabled:document.getElementById('report-enabled').checked,filters:readFilters('report'),generation_mode:document.getElementById('report-generation-mode').value,report_language:document.getElementById('report-language').value,schedule_enabled:document.getElementById('schedule-enabled').checked,cron:document.getElementById('report-cron').value} };
+            report_profile:{enabled:document.getElementById('report-enabled').checked,filters:readFilters('report'),generation_mode:document.getElementById('report-generation-mode').value,report_language:document.getElementById('report-language').value} };
         requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage('Subscription saved.','success');return load();}).catch(function(e){showMessage(e.message,'danger');});
     };
     requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});
