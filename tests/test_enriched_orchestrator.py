@@ -37,42 +37,35 @@ class FakeLlamaClient:
             return 'Upgrade to version 2.0.', {}
         section_name = payload.get('section_name')
         if section_name == 'remediation_playbook':
-            return (
-                'SUMMARY:\n'
-                'Patch Acme Widget first.\n\n'
-                'ACTIONS:\n'
-                'High | Upgrade Acme Widget to version 2.0. | CVE-2026-7000'
-            ), {}
+            return json.dumps({
+                'summary': 'Patch Acme Widget first.',
+                'actions': [{
+                    'priority': 'High',
+                    'action': 'Upgrade Acme Widget to version 2.0.',
+                    'cve_ids': ['CVE-2026-7000'],
+                }],
+            }), {}
         if section_name == 'weekly_risk_trend':
-            return (
-                'SUMMARY:\n'
-                'Risk is concentrated in one critical CVE.\n\n'
-                'TREND_POINTS:\n'
-                '- One critical Acme issue.'
-            ), {}
+            return json.dumps({
+                'summary': 'Risk is concentrated in one critical CVE.',
+                'trend_points': ['One critical Acme issue.'],
+            }), {}
         if section_name == 'research_scope':
-            return (
-                'SUMMARY:\n'
-                'CVE-only Mongo discovery with Tavily enrichment.\n\n'
-                'CRITERIA:\n'
-                '- cve_review only'
-            ), {}
+            return json.dumps({
+                'summary': 'CVE-only Mongo discovery with Tavily enrichment.',
+                'criteria': ['cve_review only'],
+            }), {}
         if section_name == 'executive_summary':
-            return (
-                'SUMMARY:\n'
-                'One Acme Widget CVE requires patching.\n\n'
-                'KEY_FINDINGS:\n'
-                '- Upgrade to 2.0.'
-            ), {}
+            return json.dumps({
+                'summary': 'One Acme Widget CVE requires patching.',
+                'key_findings': ['Upgrade to 2.0.'],
+            }), {}
         if section_name == 'management_brief':
-            return (
-                'SUMMARY:\n'
-                'Prioritize remediation for Acme Widget.\n\n'
-                'BUSINESS_IMPACT:\n'
-                'Potential service compromise.\n\n'
-                'DECISIONS_NEEDED:\n'
-                '- Approve emergency patching.'
-            ), {}
+            return json.dumps({
+                'summary': 'Prioritize remediation for Acme Widget.',
+                'business_impact': 'Potential service compromise.',
+                'decisions_needed': ['Approve emergency patching.'],
+            }), {}
         raise AssertionError(payload)
 
 

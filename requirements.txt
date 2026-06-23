@@ -4,6 +4,7 @@ bleach>=6,<7
 croniter>=2,<7
 cryptography>=42,<47
 gunicorn>=21,<24
+json-repair>=0,<1
 jsonschema>=4,<5
 pymongo>=4,<5
 python-dotenv>=1,<2

@@ -1,10 +1,10 @@
 import json
-import re
 from copy import deepcopy
 
 from jsonschema import ValidationError
 
-from .llama_client import EnrichedLLMError, EnrichedLlamaClient
+from .json_response import extract_json
+from .llama_client import EnrichedLlamaClient
 from .schemas import validate_enriched_report
 
 
@@ -25,42 +25,12 @@ _PROTECTED_KEYS = {
 }
 
 
-def _extract_json(text):
-    cleaned = str(text or '').strip()
-    if not cleaned:
-        raise EnrichedLLMError('Translation returned an empty response.')
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        match = re.search(r'```(?:json)?\s*(.*?)```', cleaned, flags=re.DOTALL | re.IGNORECASE)
-        if match:
-            return json.loads(match.group(1).strip())
-        start = cleaned.find('{')
-        end = cleaned.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            return json.loads(cleaned[start:end + 1])
-        start = cleaned.find('[')
-        end = cleaned.rfind(']')
-        if start != -1 and end != -1 and end > start:
-            return json.loads(cleaned[start:end + 1])
-        raise
-
-
 def _system_prompt(language_name):
     return (
         f'Translate user-facing report text to {language_name}. '
         'Return only valid JSON with exactly the same structure, keys, arrays, and scalar types. '
         'Do not translate URLs, CVE identifiers, product version strings, field names, or source identifiers. '
         'Do not add Markdown or explanations.'
-    )
-
-
-def _repair_prompt(raw_text, error):
-    return (
-        'The translation response below is not valid JSON or does not match the requested shape.\n\n'
-        f'Error: {error}\n\n'
-        'Fix it and return only valid JSON. Keep the translated meaning and the original JSON structure.\n\n'
-        f'{raw_text}'
     )
 
 
@@ -110,34 +80,17 @@ def _translate_fragment(fragment, language, client):
         'Translate the JSON value below. Preserve the JSON shape exactly and translate only user-facing text.\n\n'
         f'{source_json}'
     )
-    raw_text = ''
-    try:
-        raw_text, _ = client.complete_text(
-            _system_prompt(language_name),
-            prompt,
-            max_output_tokens=client.report_max_output_tokens,
-        )
-        translated = _extract_json(raw_text)
-        translated = _normalize_scalar_translation(translatable, translated)
-        translated = _restore_non_string_scalars(translatable, translated)
-        _assert_same_shape(translatable, translated)
-        merged = _merge_translation(fragment, translated)
-        return _restore_protected_values(fragment, merged)
-    except (json.JSONDecodeError, EnrichedLLMError, ValidationError, TypeError, ValueError) as exc:
-        repaired_text, _ = client.complete_text(
-            _system_prompt(language_name),
-            _repair_prompt(raw_text, exc),
-            max_output_tokens=client.report_max_output_tokens,
-        )
-        try:
-            translated = _extract_json(repaired_text)
-            translated = _normalize_scalar_translation(translatable, translated)
-            translated = _restore_non_string_scalars(translatable, translated)
-            _assert_same_shape(translatable, translated)
-            merged = _merge_translation(fragment, translated)
-            return _restore_protected_values(fragment, merged)
-        except (json.JSONDecodeError, TypeError, ValueError) as repair_exc:
-            raise EnrichedLLMError(str(repair_exc)) from repair_exc
+    raw_text, _ = client.complete_text(
+        _system_prompt(language_name),
+        prompt,
+        max_output_tokens=client.report_max_output_tokens,
+    )
+    translated = extract_json(raw_text)
+    translated = _normalize_scalar_translation(translatable, translated)
+    translated = _restore_non_string_scalars(translatable, translated)
+    _assert_same_shape(translatable, translated)
+    merged = _merge_translation(fragment, translated)
+    return _restore_protected_values(fragment, merged)
 
 
 def _normalize_scalar_translation(source, translated):

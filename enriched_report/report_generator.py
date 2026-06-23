@@ -3,14 +3,12 @@ import logging
 
 from jsonschema import ValidationError
 
+from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
 from .schemas import ENRICHED_REPORT_SCHEMA, validate_enriched_report
 from .section_parsers import (
-    SECTION_TEXT_FORMATS,
-    SectionParseError,
     build_appendix,
     build_vulnerability_detail_table,
-    parse_section_text,
     validate_section,
 )
 
@@ -28,6 +26,34 @@ SECTION_SCHEMAS = {
 }
 
 DETERMINISTIC_SECTIONS = frozenset({'vulnerability_detail_table', 'appendix'})
+
+SECTION_JSON_EXAMPLES = {
+    'executive_summary': {
+        'summary': '<paragraph>',
+        'key_findings': ['<finding>'],
+    },
+    'research_scope': {
+        'summary': '<paragraph>',
+        'criteria': ['<criterion>'],
+    },
+    'weekly_risk_trend': {
+        'summary': '<paragraph>',
+        'trend_points': ['<trend point>'],
+    },
+    'management_brief': {
+        'summary': '<paragraph>',
+        'business_impact': '<paragraph>',
+        'decisions_needed': ['<decision>'],
+    },
+    'remediation_playbook': {
+        'summary': '<paragraph>',
+        'actions': [{
+            'priority': '<priority>',
+            'action': '<action>',
+            'cve_ids': ['CVE-YYYY-NNNN'],
+        }],
+    },
+}
 
 
 def _card_payload(cards):
@@ -86,32 +112,44 @@ def _build_deterministic_section(section_name, cards, metrics, evidence_cards):
     raise ValueError(f'Unsupported deterministic section: {section_name}')
 
 
-def _section_system_prompt(section_name):
-    output_format = SECTION_TEXT_FORMATS[section_name]
-    return (
-        'You write one section of an enriched weekly cybersecurity report in plain text. '
-        'Use only the supplied vulnerability_cards, report_metrics, and evidence references. '
-        'Do not invent facts. Do not return JSON, markdown, bullet lists outside the format, '
-        'or field labels other than those shown below. '
-        f'Use exactly this output format:\n{output_format}'
+def _section_json_example(section_name):
+    return json.dumps(
+        SECTION_JSON_EXAMPLES[section_name],
+        ensure_ascii=False,
+        indent=2,
     )
+
+
+def _section_system_prompt(section_name):
+    example = _section_json_example(section_name)
+    return (
+        'You write one section of an enriched weekly cybersecurity report. '
+        'Use only the supplied vulnerability_cards, report_metrics, and evidence references. '
+        'Do not invent facts. Return only valid JSON matching exactly this shape and keys. '
+        'Do not add markdown, explanations, or extra keys.\n\n'
+        f'Required JSON shape:\n{example}'
+    )
+
+
+def _parse_and_validate_json_section(section_name, text, schema):
+    section = extract_json(text)
+    return validate_section(section_name, section, schema)
 
 
 def _generate_text_section(section_name, cards, metrics, evidence_cards, client, language):
     schema = SECTION_SCHEMAS[section_name]
     system = _section_system_prompt(section_name)
     user_prompt = _section_prompt(section_name, cards, metrics, evidence_cards, language)
+    text, _ = client.complete_text(
+        system,
+        user_prompt,
+        max_output_tokens=client.report_max_output_tokens,
+    )
     try:
-        text, _ = client.complete_text(
-            system,
-            user_prompt,
-            max_output_tokens=client.report_max_output_tokens,
-        )
-        section = parse_section_text(section_name, text)
-        return validate_section(section_name, section, schema)
+        return _parse_and_validate_json_section(section_name, text, schema)
     except EnrichedLLMError:
         raise
-    except (SectionParseError, ValidationError) as exc:
+    except (ValidationError, TypeError, ValueError) as exc:
         raise EnrichedLLMError(str(exc)) from exc
 
 

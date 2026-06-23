@@ -1,10 +1,17 @@
 import hashlib
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from .pipeline_collections import collection
+from .search_results_cache import (
+    lookup_cached_results,
+    store_cached_results,
+)
 from .tavily_client import TavilyClient
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso():
@@ -33,9 +40,9 @@ def _result_document(task, result):
         'snippet': snippet,
         'page_content': page_content[:60000],
         'score': result.get('score'),
-        'source_api': 'tavily',
+        'source_api': result.get('source_api') or 'tavily',
         'retrieved_at': _now_iso(),
-        'content_hash': _content_hash(url, title, snippet, page_content),
+        'content_hash': result.get('content_hash') or _content_hash(url, title, snippet, page_content),
     }
 
 
@@ -59,6 +66,19 @@ def _execute_one(client, task, max_retries):
     raise SearchTaskError(task, attempts, last_error)
 
 
+def _complete_task(tasks_collection, results_collection, task, documents, attempts):
+    if documents:
+        results_collection.insert_many(documents)
+    tasks_collection.update_one(
+        {'_id': task['_id']},
+        {'$set': {
+            'status': 'completed',
+            'result_count': len(documents),
+            'updated_at': _now_iso(),
+        }, '$inc': {'attempts': attempts}},
+    )
+
+
 def execute_pending_search_tasks(web_database, run_id, config, client=None, progress_callback=None):
     tasks_collection = collection(web_database, 'search_enrichment_tasks')
     results_collection = collection(web_database, 'search_enrichment_results')
@@ -66,6 +86,7 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
     if not tasks:
         return 0
 
+    cache_version = '1'
     client = client or TavilyClient(
         config.get('TAVILY_API_KEY'),
         config.get('TAVILY_SEARCH_DEPTH', 'basic'),
@@ -76,8 +97,42 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
     max_retries = max(0, int(config.get('TAVILY_MAX_RETRIES', 1)))
     total_tasks = len(tasks)
     completed = 0
+    cache_hits = 0
+    pending_tavily = []
+
+    for task in tasks:
+        cached_payloads = lookup_cached_results(web_database, task, cache_version)
+        if cached_payloads is not None:
+            cache_hits += 1
+            documents = [
+                _result_document(task, payload)
+                for payload in cached_payloads
+                if (payload.get('url') or '').strip()
+            ]
+            _complete_task(tasks_collection, results_collection, task, documents, 0)
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(
+                    completed,
+                    total_tasks,
+                    f'Reused cached Tavily search {completed}/{total_tasks} for {task.get("cve_id")}',
+                )
+            continue
+        pending_tavily.append(task)
+
+    if cache_hits:
+        logger.info(
+            'enriched tavily search cache hits run=%s hits=%d/%d',
+            run_id,
+            cache_hits,
+            total_tasks,
+        )
+
+    if not pending_tavily:
+        return completed
+
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = [executor.submit(_execute_one, client, task, max_retries) for task in tasks]
+        futures = [executor.submit(_execute_one, client, task, max_retries) for task in pending_tavily]
         for future in as_completed(futures):
             task = None
             try:
@@ -87,16 +142,9 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                     for result in results
                     if (result.get('url') or '').strip()
                 ]
+                _complete_task(tasks_collection, results_collection, task, documents, attempts)
                 if documents:
-                    results_collection.insert_many(documents)
-                tasks_collection.update_one(
-                    {'_id': task['_id']},
-                    {'$set': {
-                        'status': 'completed',
-                        'result_count': len(documents),
-                        'updated_at': _now_iso(),
-                    }, '$inc': {'attempts': attempts}},
-                )
+                    store_cached_results(web_database, task, documents, cache_version)
                 completed += 1
                 if progress_callback is not None:
                     progress_callback(
