@@ -82,32 +82,68 @@
     const message = document.getElementById('message');
     let collections = [], subscriptions = [], editingEmail = null;
 
-    function filterMarkup(prefix) {
+    const severityLevels = ['Critical', 'High', 'Medium', 'Low'];
+    const newsletterTextFields = ['search', 'code', 'title', 'impact', 'affected', 'source'];
+    const reportTextFields = ['search', 'code'];
+
+    function newsletterFilterMarkup() {
         return '<div class="row g-2">' +
         '<div class="col-md-6">' +
-        '<label for="' + prefix + '-collections-toggle" class="form-label small">Collections</label>' +
+        '<label for="newsletter-collections-toggle" class="form-label small">Collections</label>' +
         '<div class="dropdown w-100">' +
-        '<button id="' + prefix + '-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">All collections</button>' +
-        '<div id="' + prefix + '-collections-menu" class="dropdown-menu w-100 shadow-sm p-2">' +
-        '<input id="' + prefix + '-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="Search collections..." autocomplete="off">' +
-        '<div id="' + prefix + '-collections-options" class="subscription-collections-options"></div>' +
+        '<button id="newsletter-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">All collections</button>' +
+        '<div id="newsletter-collections-menu" class="dropdown-menu w-100 shadow-sm p-2">' +
+        '<input id="newsletter-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="Search collections..." autocomplete="off">' +
+        '<div id="newsletter-collections-options" class="subscription-collections-options"></div>' +
         '<div class="dropdown-divider my-2"></div>' +
         '<div class="d-flex justify-content-between px-1">' +
         '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">Select all</button>' +
         '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="clear">Clear</button>' +
         '</div></div></div></div>' +
-        ['search:Search all','code:Code / CVE','title:Title','impact:Impact','affected:Affected system','source:Source'].map(function (item) {
-            const parts = item.split(':'); return '<div class="col-md-6"><label class="form-label small">' + parts[1] + '</label><input id="' + prefix + '-' + parts[0] + '" class="form-control form-control-sm"></div>';
+        newsletterTextFields.map(function (field) {
+            const labels = {
+                search: 'Search all',
+                code: 'Code / CVE',
+                title: 'Title',
+                impact: 'Impact',
+                affected: 'Affected system',
+                source: 'Source',
+            };
+            return '<div class="col-md-6"><label class="form-label small">' + labels[field] + '</label><input id="newsletter-' + field + '" class="form-control form-control-sm"></div>';
         }).join('') +
-        '<div class="col-md-6"><label class="form-label small">Severity / status</label><select id="' + prefix + '-status" class="form-select form-select-sm"><option value="">All known severities</option><option value="Critical">Critical</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option></select></div>' +
-        '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="' + prefix + '-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="' + prefix + '-include-unknown">Include unknown severity</label></div></div>' +
-        '<div class="col-md-6"><label class="form-label small">Time window</label><select id="' + prefix + '-time-window" class="form-select form-select-sm"><option value="all">All time</option><option value="daily">Today</option><option value="week">Last 7 days</option><option value="custom">Custom</option></select></div>' +
+        '<div class="col-md-6"><label class="form-label small">Severity / status</label><select id="newsletter-status" class="form-select form-select-sm"><option value="">All known severities</option>' +
+        severityLevels.map(function (level) { return '<option value="' + level + '">' + level + '</option>'; }).join('') +
+        '</select></div>' +
+        '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="newsletter-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="newsletter-include-unknown">Include unknown severity</label></div></div>' +
+        timeWindowMarkup('newsletter') +
+        '</div>';
+    }
+
+    function reportFilterMarkup() {
+        return '<div class="row g-2">' +
+        reportTextFields.map(function (field) {
+            const labels = {search: 'Search all', code: 'Code / CVE'};
+            return '<div class="col-md-6"><label class="form-label small">' + labels[field] + '</label><input id="report-' + field + '" class="form-control form-control-sm"></div>';
+        }).join('') +
+        '<div class="col-12"><label class="form-label small">Severity / status</label><div class="d-flex flex-wrap gap-3">' +
+        severityLevels.map(function (level) {
+            return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + level + '</label></div>';
+        }).join('') +
+        '</div><div class="form-text">Leave all unchecked to match all known severities.</div></div>' +
+        '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">Include unknown severity</label></div></div>' +
+        timeWindowMarkup('report') +
+        '</div>';
+    }
+
+    function timeWindowMarkup(prefix) {
+        return '<div class="col-md-6"><label class="form-label small">Time window</label><select id="' + prefix + '-time-window" class="form-select form-select-sm"><option value="all">All time</option><option value="daily">Today</option><option value="week">Last 7 days</option><option value="custom">Custom</option></select></div>' +
         '<div id="' + prefix + '-custom-window" class="col-12 d-none"><div class="row g-2">' +
         '<div class="col-md-6"><label class="form-label small">Start</label><input id="' + prefix + '-start" type="datetime-local" class="form-control form-control-sm"></div>' +
-        '<div class="col-md-6"><label class="form-label small">End</label><input id="' + prefix + '-end" type="datetime-local" class="form-control form-control-sm"></div></div></div></div>';
+        '<div class="col-md-6"><label class="form-label small">End</label><input id="' + prefix + '-end" type="datetime-local" class="form-control form-control-sm"></div></div></div>';
     }
-    document.getElementById('newsletter-fields').innerHTML = filterMarkup('newsletter');
-    document.getElementById('report-fields').innerHTML = filterMarkup('report');
+
+    document.getElementById('newsletter-fields').innerHTML = newsletterFilterMarkup();
+    document.getElementById('report-fields').innerHTML = reportFilterMarkup();
 
     function showMessage(text, kind) { message.textContent = text; message.className = 'alert alert-' + kind; }
     function requestJson(url, options) { return fetch(url, options).then(function (response) { return response.json().then(function (body) { if (!response.ok) throw new Error(body.error || 'Request failed.'); return body; }); }); }
@@ -150,23 +186,6 @@
     function isReportEnriched() {
         return document.getElementById('report-generation-mode').value === 'enriched_weekly';
     }
-    function updateReportModeControls() {
-        const enriched = isReportEnriched();
-        const toggle = document.getElementById('report-collections-toggle');
-        getCollectionCheckboxes('report').forEach(function (input) {
-            if (enriched) input.checked = input.value === 'cve_review';
-            input.disabled = enriched;
-        });
-        document.getElementById('report-collections-search').disabled = enriched;
-        document.querySelectorAll('#report-collections-menu .collections-action').forEach(function (button) {
-            button.classList.toggle('disabled', enriched);
-        });
-        if (enriched) {
-            toggle.textContent = 'cve_review only';
-        } else {
-            updateCollectionsLabel('report');
-        }
-    }
 
     function renderCollections(prefix, selected) {
         const options = document.getElementById(prefix + '-collections-options');
@@ -208,7 +227,6 @@
             const action = event.target.closest('.collections-action');
             if (!action) return;
             event.preventDefault();
-            if (prefix === 'report' && isReportEnriched()) return;
             const checkboxes = action.dataset.action === 'all'
                 ? getVisibleCollectionCheckboxes(prefix)
                 : getCollectionCheckboxes(prefix);
@@ -229,23 +247,54 @@
         const custom = document.getElementById(prefix + '-time-window').value === 'custom';
         document.getElementById(prefix + '-custom-window').classList.toggle('d-none', !custom);
     }
+    function setStatusFilters(prefix, status) {
+        const selected = Array.isArray(status) ? status : (status ? [status] : []);
+        if (prefix === 'report') {
+            document.querySelectorAll('#report-fields .report-status-checkbox').forEach(function (input) {
+                input.checked = selected.includes(input.value);
+            });
+            return;
+        }
+        document.getElementById(prefix + '-status').value = selected[0] || '';
+    }
+    function readStatusFilters(prefix) {
+        if (prefix === 'report') {
+            return Array.from(document.querySelectorAll('#report-fields .report-status-checkbox'))
+                .filter(function (input) { return input.checked; })
+                .map(function (input) { return input.value; });
+        }
+        return document.getElementById(prefix + '-status').value;
+    }
     function setFilters(prefix, filters) {
-        filters = filters || {}; renderCollections(prefix, filters.collections || []);
-        ['search','code','title','impact','affected','status','source','start','end'].forEach(function (field) { document.getElementById(prefix + '-' + field).value = filters[field] || ''; });
+        filters = filters || {};
+        if (prefix === 'newsletter') renderCollections(prefix, filters.collections || []);
+        const textFields = prefix === 'report' ? reportTextFields : newsletterTextFields;
+        textFields.forEach(function (field) {
+            document.getElementById(prefix + '-' + field).value = filters[field] || '';
+        });
+        setStatusFilters(prefix, filters.status || []);
         document.getElementById(prefix + '-include-unknown').checked = filters.include_unknown === true;
         document.getElementById(prefix + '-time-window').value = filters.time_window || 'all';
         toggleCustomWindow(prefix);
     }
     function readFilters(prefix) {
-        const filters = {
-            collections: getCollectionCheckboxes(prefix)
+        const filters = {};
+        if (prefix === 'newsletter') {
+            filters.collections = getCollectionCheckboxes(prefix)
                 .filter(function (input) { return input.checked; })
-                .map(function (input) { return input.value; }),
-        };
-        if (prefix === 'report' && isReportEnriched()) filters.collections = ['cve_review'];
-        ['search','code','title','impact','affected','status','source','start','end'].forEach(function (field) { filters[field] = document.getElementById(prefix + '-' + field).value; });
+                .map(function (input) { return input.value; });
+        } else if (isReportEnriched()) {
+            filters.collections = ['cve_review'];
+        }
+        const textFields = prefix === 'report' ? reportTextFields : newsletterTextFields;
+        textFields.forEach(function (field) {
+            filters[field] = document.getElementById(prefix + '-' + field).value;
+        });
+        filters.status = readStatusFilters(prefix);
         filters.include_unknown = document.getElementById(prefix + '-include-unknown').checked;
         filters.time_window = document.getElementById(prefix + '-time-window').value;
+        filters.start = document.getElementById(prefix + '-start').value;
+        filters.end = document.getElementById(prefix + '-end').value;
         if (filters.time_window !== 'custom') { filters.start = ''; filters.end = ''; }
         return filters;
     }
@@ -260,7 +309,6 @@
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
         document.getElementById('report-generation-mode').value = report.generation_mode;
         document.getElementById('report-language').value = report.report_language;
-        updateReportModeControls();
         modal.show();
     }
     function renderRows() {
@@ -284,12 +332,10 @@
         });
     }
     function load() { return requestJson(subscriptionsUrl).then(function(body){subscriptions=body.data;renderRows();}).catch(function(e){showMessage(e.message,'danger');}).finally(function(){document.getElementById('loading').classList.add('d-none');}); }
-    ['newsletter', 'report'].forEach(function (prefix) {
-        wireCollectionsDropdown(prefix);
-        document.getElementById(prefix + '-time-window').addEventListener('change', function () { toggleCustomWindow(prefix); });
-    });
+    wireCollectionsDropdown('newsletter');
+    document.getElementById('newsletter-time-window').addEventListener('change', function () { toggleCustomWindow('newsletter'); });
+    document.getElementById('report-time-window').addEventListener('change', function () { toggleCustomWindow('report'); });
     document.getElementById('add-btn').onclick = function () { openEditor(null); };
-    document.getElementById('report-generation-mode').addEventListener('change', updateReportModeControls);
     document.getElementById('subscription-form').onsubmit = function (event) {
         event.preventDefault();
         const payload = { email:document.getElementById('email').value, team:document.getElementById('team').value,

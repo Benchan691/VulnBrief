@@ -36,23 +36,36 @@ def test_severity_filter_uses_fixed_choices_and_separate_unknown_switch():
             return []
 
     filters = validate_filters(FakeDatabase(), {'status': 'Critical'})
-    assert filters['status'] == 'Critical'
+    assert filters['status'] == ['Critical']
     with pytest.raises(ValueError, match='Severity/status'):
         validate_filters(FakeDatabase(), {'status': 'urgent'})
+    with pytest.raises(ValueError, match='Severity/status'):
+        validate_filters(FakeDatabase(), {'status': ['Critical', 'Urgent']})
 
     legacy_unknown = validate_filters(FakeDatabase(), {'status': 'Unknown'})
-    assert legacy_unknown['status'] == ''
+    assert legacy_unknown['status'] == []
     assert legacy_unknown['include_unknown'] is True
+
+    multi = validate_filters(FakeDatabase(), {'status': ['Critical', 'High', 'Critical']})
+    assert multi['status'] == ['Critical', 'High']
 
     high_with_unknown = build_match_filter({
         **filters,
-        'status': 'High',
+        'status': ['High'],
         'include_unknown': True,
     })
     assert '$or' in high_with_unknown
     assert {'severity': {'$exists': False}} in high_with_unknown['$or']
 
-    known_only = build_match_filter({**filters, 'status': '', 'include_unknown': False})
+    multi_filter = build_match_filter({
+        'status': ['Critical', 'High'],
+        'include_unknown': False,
+        'time_window': 'all',
+    })
+    assert '$or' in multi_filter
+    assert len(multi_filter['$or']) == 2
+
+    known_only = build_match_filter({**filters, 'status': [], 'include_unknown': False})
     assert known_only['severity']['$regex'].startswith('^(?:Critical')
 
 

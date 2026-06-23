@@ -23,7 +23,7 @@ DEFAULT_FILTERS = {
     'title': '',
     'impact': '',
     'affected': '',
-    'status': '',
+    'status': [],
     'severity_threshold': '',
     'include_unknown': False,
     'source': '',
@@ -117,12 +117,19 @@ def validate_filters(database, value):
         if raw is not None and not isinstance(raw, str):
             raise ValueError(f'Filter {field} must be text.')
         filters[field] = (raw or '').strip()
-    status = value.get('status', '')
-    include_unknown = value.get('include_unknown', status == 'Unknown')
-    if status == 'Unknown':
-        status = ''
-    if not isinstance(status, str) or status not in VALID_SEVERITIES:
+    raw_status = value.get('status', [])
+    include_unknown = value.get('include_unknown', raw_status == 'Unknown')
+    if raw_status == 'Unknown':
+        raw_status = []
+    if isinstance(raw_status, str):
+        status = [raw_status] if raw_status else []
+    elif isinstance(raw_status, list):
+        status = raw_status
+    else:
         raise ValueError('Severity/status must be Critical, High, Medium, or Low.')
+    if any(not isinstance(item, str) or item not in VALID_SEVERITIES - {''} for item in status):
+        raise ValueError('Severity/status must be Critical, High, Medium, or Low.')
+    status = list(dict.fromkeys(item for item in status if item))
     severity_threshold = value.get('severity_threshold', '')
     if not isinstance(severity_threshold, str) or severity_threshold not in VALID_SEVERITIES:
         raise ValueError('Severity threshold must be Critical, High, Medium, or Low.')
@@ -233,14 +240,29 @@ def unknown_severity_clauses():
     ]
 
 
+def _normalize_status_values(status):
+    if isinstance(status, list):
+        return [item.strip() for item in status if isinstance(item, str) and item.strip()]
+    if isinstance(status, str) and status.strip():
+        return [status.strip()]
+    return []
+
+
 def build_severity_filter(status='', include_unknown=False):
-    status = (status or '').strip()
+    statuses = _normalize_status_values(status)
     include_unknown = bool(include_unknown)
-    if status:
-        severity_clause = {'severity': {
-            '$regex': f'^{re.escape(status)}(?:\\s+Risk)?$',
-            '$options': 'i',
-        }}
+    if statuses:
+        severity_clauses = [
+            {'severity': {
+                '$regex': f'^{re.escape(value)}(?:\\s+Risk)?$',
+                '$options': 'i',
+            }}
+            for value in statuses
+        ]
+        severity_clause = (
+            severity_clauses[0]
+            if len(severity_clauses) == 1 else {'$or': severity_clauses}
+        )
         return (
             {'$or': [severity_clause, *unknown_severity_clauses()]}
             if include_unknown else severity_clause
