@@ -9,7 +9,7 @@ from .search_results_cache import (
     lookup_cached_results,
     store_cached_results,
 )
-from .tavily_client import TavilyClient
+from .tavily_client import build_search_client
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +87,7 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
         return 0
 
     cache_version = '1'
-    client = client or TavilyClient(
-        config.get('TAVILY_API_KEY'),
-        config.get('TAVILY_SEARCH_DEPTH', 'basic'),
-        config.get('TAVILY_MAX_RESULTS', 5),
-        config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
-    )
+    client = client or build_search_client(config)
     concurrency = max(1, int(config.get('TAVILY_MAX_CONCURRENT_REQUESTS', 4)))
     max_retries = max(0, int(config.get('TAVILY_MAX_RETRIES', 1)))
     total_tasks = len(tasks)
@@ -115,14 +110,14 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                 progress_callback(
                     completed,
                     total_tasks,
-                    f'Reused cached Tavily search {completed}/{total_tasks} for {task.get("cve_id")}',
+                    f'Reused cached search {completed}/{total_tasks} for {task.get("cve_id")}',
                 )
             continue
         pending_tavily.append(task)
 
     if cache_hits:
         logger.info(
-            'enriched tavily search cache hits run=%s hits=%d/%d',
+            'enriched search cache hits run=%s hits=%d/%d',
             run_id,
             cache_hits,
             total_tasks,
@@ -150,7 +145,7 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                     progress_callback(
                         completed,
                         total_tasks,
-                        f'Completed Tavily search {completed}/{total_tasks} for {task.get("cve_id")}',
+                        f'Completed search {completed}/{total_tasks} for {task.get("cve_id")}',
                     )
             except SearchTaskError as exc:
                 task = exc.task

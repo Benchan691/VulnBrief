@@ -5,6 +5,7 @@ from jsonschema import ValidationError
 
 from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient
+from .prompts import resolve_prompt
 from .schemas import validate_enriched_report
 
 
@@ -25,12 +26,11 @@ _PROTECTED_KEYS = {
 }
 
 
-def _system_prompt(language_name):
-    return (
-        f'Translate user-facing report text to {language_name}. '
-        'Return only valid JSON with exactly the same structure, keys, arrays, and scalar types. '
-        'Do not translate URLs, CVE identifiers, product version strings, field names, or source identifiers. '
-        'Do not add Markdown or explanations.'
+def _system_prompt(language_name, config):
+    return resolve_prompt(
+        config,
+        'translation_system',
+        language_name=language_name,
     )
 
 
@@ -72,16 +72,13 @@ def _merge_translation(source, translated):
     return translated
 
 
-def _translate_fragment(fragment, language, client):
+def _translate_fragment(fragment, language, client, config):
     language_name = TRANSLATION_LANGUAGES[language]
     translatable = _fragment_for_translation(fragment)
     source_json = json.dumps(translatable, ensure_ascii=False, default=str)
-    prompt = (
-        'Translate the JSON value below. Preserve the JSON shape exactly and translate only user-facing text.\n\n'
-        f'{source_json}'
-    )
+    prompt = resolve_prompt(config, 'translation_user_prefix') + source_json
     raw_text, _ = client.complete_text(
-        _system_prompt(language_name),
+        _system_prompt(language_name, config),
         prompt,
         max_output_tokens=client.report_max_output_tokens,
     )
@@ -162,13 +159,13 @@ def _progress(progress_callback, current, total, section_name):
         progress_callback(current, total, f'Translating {section_name}')
 
 
-def _translate_enriched_report(report, language, client, progress_callback=None):
+def _translate_enriched_report(report, language, client, config, progress_callback=None):
     translated = deepcopy(report)
     row_count = len((report.get('vulnerability_detail_table') or {}).get('rows') or [])
     section_total = 6 + row_count
     current = 0
 
-    translated['title'] = _translate_fragment(report['title'], language, client)
+    translated['title'] = _translate_fragment(report['title'], language, client, config)
     current += 1
     _progress(progress_callback, current, section_total, 'title')
 
@@ -179,13 +176,13 @@ def _translate_enriched_report(report, language, client, progress_callback=None)
         'remediation_playbook',
         'management_brief',
     ):
-        translated[section_name] = _translate_fragment(report[section_name], language, client)
+        translated[section_name] = _translate_fragment(report[section_name], language, client, config)
         current += 1
         _progress(progress_callback, current, section_total, section_name)
 
     rows = []
     for index, row in enumerate((report.get('vulnerability_detail_table') or {}).get('rows') or [], start=1):
-        rows.append(_translate_fragment(row, language, client))
+        rows.append(_translate_fragment(row, language, client, config))
         current += 1
         _progress(progress_callback, current, section_total, f'vulnerability row {index}/{row_count}')
     translated['vulnerability_detail_table'] = {'rows': rows}
@@ -193,7 +190,7 @@ def _translate_enriched_report(report, language, client, progress_callback=None)
     return validate_enriched_report(translated)
 
 
-def _translate_template_highlight(highlight, language, client):
+def _translate_template_highlight(highlight, language, client, config):
     translated = deepcopy(highlight)
     fragment = {
         'title': highlight.get('title', ''),
@@ -202,15 +199,15 @@ def _translate_template_highlight(highlight, language, client):
         'affected': highlight.get('affected') or [],
         'table': highlight.get('table') or {},
     }
-    translated_fragment = _translate_fragment(fragment, language, client)
+    translated_fragment = _translate_fragment(fragment, language, client, config)
     translated.update(translated_fragment)
     newsletter = highlight.get('newsletter')
     if isinstance(newsletter, dict):
-        translated['newsletter'] = _translate_fragment(newsletter, language, client)
+        translated['newsletter'] = _translate_fragment(newsletter, language, client, config)
     return translated
 
 
-def _translate_template_report(report, language, client, progress_callback=None):
+def _translate_template_report(report, language, client, config, progress_callback=None):
     translated = deepcopy(report)
     highlights = report.get('highlights') or []
     section_total = 1 + len(highlights)
@@ -220,12 +217,12 @@ def _translate_template_report(report, language, client, progress_callback=None)
         'trends': report.get('trends') or [],
         'recommendations': report.get('recommendations') or [],
     }
-    translated.update(_translate_fragment(top_fragment, language, client))
+    translated.update(_translate_fragment(top_fragment, language, client, config))
     _progress(progress_callback, 1, section_total, 'summary')
 
     translated_highlights = []
     for index, highlight in enumerate(highlights, start=1):
-        translated_highlights.append(_translate_template_highlight(highlight, language, client))
+        translated_highlights.append(_translate_template_highlight(highlight, language, client, config))
         _progress(progress_callback, index + 1, section_total, f'item {index}/{len(highlights)}')
     translated['highlights'] = translated_highlights
     return translated
@@ -236,5 +233,5 @@ def translate_report(report, generation_mode, language, config, client=None, pro
         raise ValueError('Translation language must be "zh" or "ch".')
     client = client or EnrichedLlamaClient(config)
     if generation_mode == 'enriched_weekly':
-        return _translate_enriched_report(report, language, client, progress_callback)
-    return _translate_template_report(report, language, client, progress_callback)
+        return _translate_enriched_report(report, language, client, config, progress_callback)
+    return _translate_template_report(report, language, client, config, progress_callback)

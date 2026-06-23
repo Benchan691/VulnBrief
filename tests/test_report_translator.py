@@ -24,7 +24,7 @@ def test_translate_string_fragment_unwraps_single_key_object():
             self.calls.append((system_prompt, user_prompt, max_output_tokens))
             return '{"English Report": "中文報告"}', {}
 
-    translated = _translate_fragment(report, 'zh', WrappingClient())
+    translated = _translate_fragment(report, 'zh', WrappingClient(), {})
     assert translated == '中文報告'
 
 
@@ -86,7 +86,7 @@ def test_translate_row_fragment_strips_source_urls_from_llm_payload():
         'what_happened': 'English details',
         'source_urls': ['https://example.com/' + ('a' * 300)],
     }
-    translated = _translate_fragment(row, 'zh', UrlPreservingClient())
+    translated = _translate_fragment(row, 'zh', UrlPreservingClient(), {})
     assert translated['source_urls'] == row['source_urls']
     assert translated['what_happened'] == '中文說明'
 

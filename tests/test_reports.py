@@ -307,7 +307,7 @@ def test_create_enriched_weekly_job_requires_cve_review_selections():
             job = get_web_database()['report_jobs'].find_one({'_id': job_object_id})
             assert job['generation_mode'] == 'enriched_weekly'
             assert job['status'] == 'queued'
-            assert job['provider'] == 'Tavily + llama-server'
+            assert job['provider'] == 'Search API + llama-server'
             assert job['report_language'] == 'en'
             assert job['effective_report_language'] == 'en'
         finally:

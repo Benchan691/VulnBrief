@@ -5,6 +5,7 @@ from jsonschema import ValidationError
 
 from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
+from .prompts import resolve_prompt
 from .schemas import ENRICHED_REPORT_SCHEMA, validate_enriched_report
 from .section_parsers import (
     build_appendix,
@@ -89,15 +90,11 @@ def _evidence_payload(evidence_cards):
     ]
 
 
-def _section_prompt(section_name, cards, metrics, evidence_cards, language):
+def _section_prompt(section_name, cards, metrics, evidence_cards, language, config):
     return json.dumps({
         'section_name': section_name,
         'language': language,
-        'instructions': (
-            'Use only vulnerability_cards, report_metrics, and evidence references. '
-            'Do not use raw Tavily results. Do not invent facts. Use "Not confirmed from '
-            'available sources." when evidence is missing.'
-        ),
+        'instructions': resolve_prompt(config, 'report_section_user_instructions'),
         'vulnerability_cards': _card_payload(cards),
         'report_metrics': metrics,
         'evidence_references': _evidence_payload(evidence_cards),
@@ -120,14 +117,12 @@ def _section_json_example(section_name):
     )
 
 
-def _section_system_prompt(section_name):
+def _section_system_prompt(section_name, config):
     example = _section_json_example(section_name)
-    return (
-        'You write one section of an enriched weekly cybersecurity report. '
-        'Use only the supplied vulnerability_cards, report_metrics, and evidence references. '
-        'Do not invent facts. Return only valid JSON matching exactly this shape and keys. '
-        'Do not add markdown, explanations, or extra keys.\n\n'
-        f'Required JSON shape:\n{example}'
+    return resolve_prompt(
+        config,
+        'report_section_system',
+        section_example=example,
     )
 
 
@@ -136,10 +131,10 @@ def _parse_and_validate_json_section(section_name, text, schema):
     return validate_section(section_name, section, schema)
 
 
-def _generate_text_section(section_name, cards, metrics, evidence_cards, client, language):
+def _generate_text_section(section_name, cards, metrics, evidence_cards, client, language, config):
     schema = SECTION_SCHEMAS[section_name]
-    system = _section_system_prompt(section_name)
-    user_prompt = _section_prompt(section_name, cards, metrics, evidence_cards, language)
+    system = _section_system_prompt(section_name, config)
+    user_prompt = _section_prompt(section_name, cards, metrics, evidence_cards, language, config)
     text, _ = client.complete_text(
         system,
         user_prompt,
@@ -153,12 +148,12 @@ def _generate_text_section(section_name, cards, metrics, evidence_cards, client,
         raise EnrichedLLMError(str(exc)) from exc
 
 
-def _generate_section(section_name, cards, metrics, evidence_cards, client, language):
+def _generate_section(section_name, cards, metrics, evidence_cards, client, language, config):
     schema = SECTION_SCHEMAS[section_name]
     if section_name in DETERMINISTIC_SECTIONS:
         section = _build_deterministic_section(section_name, cards, metrics, evidence_cards)
         return validate_section(section_name, section, schema)
-    return _generate_text_section(section_name, cards, metrics, evidence_cards, client, language)
+    return _generate_text_section(section_name, cards, metrics, evidence_cards, client, language, config)
 
 
 def generate_enriched_report(
@@ -192,7 +187,7 @@ def generate_enriched_report(
             section_name,
         )
         sections[section_name] = _generate_section(
-            section_name, cards, report_metrics, evidence_cards, client, report_language,
+            section_name, cards, report_metrics, evidence_cards, client, report_language, config,
         )
         if progress_callback is not None:
             progress_callback(

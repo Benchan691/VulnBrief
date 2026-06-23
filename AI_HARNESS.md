@@ -3,7 +3,7 @@
 The Reports page supports two generation modes:
 
 - **Enriched Weekly** loads candidates only from MongoDB `cve` / `cve_review`,
-  enriches those already-selected CVEs with Tavily search, extracts evidence and
+  enriches those already-selected CVEs with Tavily/Exa search, extracts evidence and
   report sections through the configured llama-server OpenAI-compatible API, and
   validates the final 8-section report with Python plus an AI verification pass.
 - **Fixed Template** copies source fields into a structured report and generates
@@ -19,7 +19,7 @@ remain English.
 
 `enriched_weekly` jobs are CVE-only by design. Subscription profiles using this
 mode force `filters.collections = ['cve_review']`, and manual report generation
-rejects non-`cve_review` selections or uploaded JSON. Tavily is used only after
+rejects non-`cve_review` selections or uploaded JSON. Search APIs are used only after
 MongoDB has produced a known CVE candidate; it must not discover or add new CVEs.
 The pipeline stores run-scoped artifacts in the local `web` database under
 `candidate_vulnerability_items`, `search_enrichment_tasks`,
@@ -40,8 +40,8 @@ dedicated `scheduler.py` process and generate report jobs automatically.
 
 ## Enriched Weekly configuration
 
-Secrets live in `.env` (`TAVILY_API_KEY`). Other enriched settings live in
-`config/config.json` under `enriched.*`. `TAVILY_API_KEY` is required for Tavily
+Secrets live in `.env` (`TAVILY_API_KEYS` or `EXA_API_KEYS`). Other enriched/search settings live in
+`config/config.json` under `enriched.*`, `tavily.*`, and `exa.*`. At least one Tavily or Exa key is required for search
 enrichment. `ENRICHED_LLM_BASE_URL` (or `enriched.llm_base_url` in JSON) must
 point at a llama-server OpenAI-compatible `/v1` base URL. The pipeline calls that
 endpoint directly for evidence extraction, report section generation, and AI
@@ -58,7 +58,7 @@ Common tunables:
 | `ENRICHED_LLM_REPORT_MAX_OUTPUT_TOKENS` | Report section cap |
 | `ENRICHED_LLM_CONNECTION_RETRIES` | Connection retry count |
 | `ENRICHED_LLM_PAGE_CHARS` | Max chars per fetched page |
-| `ENRICHED_RESULTS_PER_TASK` | Tavily results per CVE |
+| `ENRICHED_RESULTS_PER_TASK` | Search results per CVE |
 | `ENRICHED_EVIDENCE_CACHE_ENABLED` | Toggle evidence cache |
 | `ENRICHED_EVIDENCE_CACHE_VERSION` | Cache invalidation version |
 

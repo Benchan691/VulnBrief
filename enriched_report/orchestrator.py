@@ -21,7 +21,7 @@ from .result_ranker import rank_results_for_run
 from .scorer import score_cards_and_metrics
 from .search_executor import execute_pending_search_tasks
 from .search_tasks import write_search_tasks
-from .tavily_client import TavilyClient
+from .tavily_client import build_search_client
 
 
 def _now():
@@ -96,7 +96,7 @@ class _EnrichedProgress:
     def tavily_progress(self, completed, message):
         self.step(
             self._tavily_offset() + (max(int(completed), 0) * TAVILY_TASK_WEIGHT),
-            f'Searching Tavily {completed}/{self.tavily_total}',
+            f'Searching web {completed}/{self.tavily_total}',
             message,
         )
 
@@ -129,8 +129,10 @@ def _cancelled(job_id):
 
 def _require_config(config):
     missing = []
-    if not config.get('TAVILY_API_KEY'):
-        missing.append('TAVILY_API_KEY')
+    if not (config.get('TAVILY_API_KEYS') or config.get('TAVILY_API_KEY')) and not (
+        config.get('EXA_API_KEYS') or config.get('EXA_API_KEY')
+    ):
+        missing.append('TAVILY_API_KEYS or EXA_API_KEYS')
     if not config.get('ENRICHED_LLM_BASE_URL'):
         missing.append('ENRICHED_LLM_BASE_URL')
     if missing:
@@ -163,7 +165,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                     'status': 'running',
                     'pipeline_stage': 'starting',
                     'updated_at': _now(),
-                    'provider': 'Tavily + llama-server',
+                    'provider': 'Search API + llama-server',
                     'model': config.get('ENRICHED_LLM_MODEL') or 'qwen-local',
                 }, '$unset': {'html': '', 'html_updated_at': '', 'html_path': ''}},
             )
@@ -200,14 +202,14 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
             if _cancelled(job_object_id):
                 return
             _stage(job_object_id, 'creating_search_tasks', {'processed_count': 0})
-            progress.step(3, 'Creating search tasks', 'Creating Tavily search tasks.')
+            progress.step(3, 'Creating search tasks', 'Creating search tasks.')
             write_search_tasks(web_database, run_id, candidates)
             tavily_total = collection(web_database, 'search_enrichment_tasks').count_documents({'run_id': run_id})
             progress.set_tavily_total(tavily_total)
 
             if _cancelled(job_object_id):
                 return
-            _stage(job_object_id, 'searching_tavily')
+            _stage(job_object_id, 'searching')
 
             def on_tavily_progress(completed, total, message):
                 progress.tavily_progress(completed, message)
@@ -216,12 +218,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 web_database,
                 run_id,
                 config,
-                tavily_client or TavilyClient(
-                    config.get('TAVILY_API_KEY'),
-                    config.get('TAVILY_SEARCH_DEPTH', 'basic'),
-                    config.get('TAVILY_MAX_RESULTS', 5),
-                    config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
-                ),
+                tavily_client or build_search_client(config),
                 progress_callback=on_tavily_progress,
             )
 
@@ -234,7 +231,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 int(config.get('ENRICHED_RESULTS_PER_TASK', 4)),
             )
             if not filtered:
-                raise ValueError('No relevant Tavily enrichment results were found for selected CVEs.')
+                raise ValueError('No relevant search enrichment results were found for selected CVEs.')
             evidence_total = len(filtered)
             progress.set_evidence_total(evidence_total)
             progress.step(

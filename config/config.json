@@ -10,10 +10,17 @@
     "bootstrap_username": "admin"
   },
   "tavily": {
+    "api_keys": [],
     "search_depth": "basic",
     "max_results": 5,
     "request_timeout_seconds": 30,
     "max_concurrent_requests": 4
+  },
+  "exa": {
+    "api_keys": [],
+    "type": "auto",
+    "max_results": 5,
+    "request_timeout_seconds": 30
   },
   "enriched": {
     "llm_base_url": "http://100.102.169.17:8080/v1",
@@ -32,10 +39,17 @@
     "evidence_cache_version": "2",
     "vendor_domain_map": {}
   },
+  "prompts": {
+    "evidence_extraction_system": "You extract cybersecurity evidence from one source page. Use only the supplied page content. Do not infer or invent facts. Answer only the requested task_type in plain text. Write 2-4 sentences maximum. If the page does not support an answer, return exactly: NULL. Do not return JSON, markdown, bullet lists, or field labels.",
+    "report_section_system": "You write one section of an enriched weekly cybersecurity report. Use only the supplied vulnerability_cards, report_metrics, and evidence references. Do not invent facts. Return only valid JSON matching exactly this shape and keys. Do not add markdown, explanations, or extra keys.\n\nRequired JSON shape:\n${section_example}",
+    "report_section_user_instructions": "Use only vulnerability_cards, report_metrics, and evidence references. Do not use raw search results. Do not invent facts. Use \"Not confirmed from available sources.\" when evidence is missing.",
+    "translation_system": "Translate user-facing report text to ${language_name}. Return only valid JSON with exactly the same structure, keys, arrays, and scalar types. Do not translate URLs, CVE identifiers, product version strings, field names, or source identifiers. Do not add Markdown or explanations.",
+    "translation_user_prefix": "Translate the JSON value below. Preserve the JSON shape exactly and translate only user-facing text.\n\n",
+    "json_error_message": "The JSON above is invalid.\n\nError:\n${error}\n\nFix it and return only valid JSON. No Markdown, no explanation, no extra text. Keep the original fields and meaning. Make only the minimum changes needed so it can parse with `json.loads()`."
+  },
   "report": {
     "item_json_retries": 2,
     "final_json_retries": 2,
-    "json_error_message": "The JSON above is invalid.\n\nError:\n${error}\n\nFix it and return only valid JSON. No Markdown, no explanation, no extra text. Keep the original fields and meaning. Make only the minimum changes needed so it can parse with `json.loads()`.",
     "deny_keys": [
       "raw",
       "raw_fields",

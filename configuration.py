@@ -1,13 +1,10 @@
 import json
 import os
 
+from enriched_report.prompts import DEFAULT_PROMPTS, merge_prompts
 
-DEFAULT_JSON_ERROR_MESSAGE = (
-    'The JSON above is invalid.\n\nError:\n${error}\n\n'
-    'Fix it and return only valid JSON. No Markdown, no explanation, no extra text. '
-    'Keep the original fields and meaning. Make only the minimum changes needed so '
-    'it can parse with `json.loads()`.'
-)
+
+DEFAULT_JSON_ERROR_MESSAGE = DEFAULT_PROMPTS['json_error_message']
 
 def _config_file_path(base_dir):
     return os.environ.get('APP_CONFIG', os.path.join(base_dir, 'config', 'config.json'))
@@ -151,8 +148,27 @@ def _resolve_dict(env_name, file_config, json_keys, default):
     return dict(default)
 
 
+def _resolve_key_list(list_env, single_env, file_config, json_keys):
+    keys = _resolve_list(list_env, file_config, json_keys, [])
+    if not keys and _env_set(single_env):
+        keys = [_env_str(single_env)]
+    return [str(key).strip() for key in keys if str(key).strip()]
+
+
+def _resolve_prompts(file_config):
+    return merge_prompts(_dig(file_config, 'prompts'))
+
+
 def load_application_config(base_dir):
     file_config = _load_file_config(base_dir)
+    ai_prompts = _resolve_prompts(file_config)
+    json_error_message = _resolve_str(
+        'REPORT_JSON_ERROR_MESSAGE',
+        file_config,
+        ('prompts', 'json_error_message'),
+        DEFAULT_PROMPTS['json_error_message'],
+    )
+    ai_prompts = {**ai_prompts, 'json_error_message': json_error_message}
 
     local_database = _resolve_str(
         'LOCAL_DATABASE',
@@ -199,6 +215,12 @@ def load_application_config(base_dir):
         ),
         'WEB_AUTH_BOOTSTRAP_PASSWORD': _env_str('WEB_AUTH_BOOTSTRAP_PASSWORD', 'changeme'),
         'NEWSLETTER_ROOT': newsletter_root,
+        'TAVILY_API_KEYS': _resolve_key_list(
+            'TAVILY_API_KEYS',
+            'TAVILY_API_KEY',
+            file_config,
+            ('tavily', 'api_keys'),
+        ),
         'TAVILY_API_KEY': _env_str('TAVILY_API_KEY'),
         'TAVILY_SEARCH_DEPTH': _resolve_str(
             'TAVILY_SEARCH_DEPTH',
@@ -223,6 +245,30 @@ def load_application_config(base_dir):
             file_config,
             ('tavily', 'max_concurrent_requests'),
             4,
+        ),
+        'EXA_API_KEYS': _resolve_key_list(
+            'EXA_API_KEYS',
+            'EXA_API_KEY',
+            file_config,
+            ('exa', 'api_keys'),
+        ),
+        'EXA_SEARCH_TYPE': _resolve_str(
+            'EXA_SEARCH_TYPE',
+            file_config,
+            ('exa', 'type'),
+            'auto',
+        ),
+        'EXA_MAX_RESULTS': _resolve_int(
+            'EXA_MAX_RESULTS',
+            file_config,
+            ('exa', 'max_results'),
+            5,
+        ),
+        'EXA_REQUEST_TIMEOUT_SECONDS': _resolve_int(
+            'EXA_REQUEST_TIMEOUT_SECONDS',
+            file_config,
+            ('exa', 'request_timeout_seconds'),
+            30,
         ),
         'ENRICHED_VENDOR_DOMAIN_MAP': _resolve_dict(
             'ENRICHED_VENDOR_DOMAIN_MAP',
@@ -326,12 +372,8 @@ def load_application_config(base_dir):
             ('report', 'final_json_retries'),
             2,
         ),
-        'REPORT_JSON_ERROR_MESSAGE': _resolve_str(
-            'REPORT_JSON_ERROR_MESSAGE',
-            file_config,
-            ('report', 'json_error_message'),
-            DEFAULT_JSON_ERROR_MESSAGE,
-        ),
+        'REPORT_JSON_ERROR_MESSAGE': json_error_message,
+        'AI_PROMPTS': ai_prompts,
         'REPORT_DENY_KEYS': _resolve_list(
             'REPORT_DENY_KEYS',
             file_config,

@@ -88,6 +88,7 @@ def test_generate_text_section_accepts_json_in_code_fence():
         [],
         FenceClient(),
         'en',
+        {},
     )
 
     assert section['summary'] == 'Risk is concentrated.'
@@ -119,6 +120,7 @@ def test_generate_text_section_repairs_malformed_json_without_second_llm_call():
         [],
         SingleCallClient(),
         'en',
+        {},
     )
 
     assert SingleCallClient.calls == 1

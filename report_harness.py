@@ -707,7 +707,7 @@ def create_job(inputs, input_source, generation_mode='enriched_weekly', report_l
         queued_inputs.append({'position': position, **queued})
     now = datetime.now(timezone.utc)
     if generation_mode == 'enriched_weekly':
-        provider = 'Tavily + llama-server'
+        provider = 'Search API + llama-server'
         model = 'Enriched Weekly'
     else:
         provider = None

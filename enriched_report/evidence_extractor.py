@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from .evidence_cache import lookup_cached_payload, store_cached_payload
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
+from .prompts import resolve_prompt
 from .pipeline_collections import collection
 from .schemas import TASK_TYPES, validate_source_evidence_card
 
@@ -72,23 +73,18 @@ def _list(value):
     return []
 
 
-def _prompt(result, candidate, page_char_limit):
+def _prompt(result, candidate, page_char_limit, config):
     page_content = (result.get('page_content') or result.get('snippet') or '')[:page_char_limit]
     source = {
         'url': result.get('url'),
         'title': result.get('title'),
         'page_content': page_content,
     }
-    # Avoid duplicating Tavily snippet when full page_content is already present.
+    # Avoid duplicating search snippet when full page_content is already present.
     if not result.get('page_content') and result.get('snippet'):
         source['snippet'] = page_content
     task_type = result['task_type']
-    system = (
-        'You extract cybersecurity evidence from one source page. Use only the supplied page '
-        'content. Do not infer or invent facts. Answer only the requested task_type in plain text. '
-        'Write 2-4 sentences maximum. If the page does not support an answer, return exactly: NULL. '
-        'Do not return JSON, markdown, bullet lists, or field labels.'
-    )
+    system = resolve_prompt(config, 'evidence_extraction_system')
     user = {
         'task_type': task_type,
         'cve_id': candidate['cve_id'],
@@ -219,7 +215,7 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
             result.get('cve_id'),
             result.get('task_type'),
         )
-        system, prompt = _prompt(result, candidate, page_char_limit)
+        system, prompt = _prompt(result, candidate, page_char_limit, config)
         extracted = False
         try:
             text, _ = client.complete_text(
@@ -263,4 +259,3 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
     if cards:
         target.insert_many(cards)
     return cards
-

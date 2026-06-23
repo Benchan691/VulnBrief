@@ -12,7 +12,7 @@ Python virtual environment. For Docker-based deployment, see [README.md](README.
 
 All processes read the same **`.env`** file (loaded automatically on startup).
 The web UI is usable for browsing newsletters and reviews with only MongoDB
-configured. Enriched Weekly reports additionally need Tavily and llama-server.
+configured. Enriched Weekly reports additionally need Tavily or Exa and llama-server.
 
 ## Prerequisites
 
@@ -21,7 +21,7 @@ Install on your machine:
 - **Python 3.11+** (`python3 --version`)
 - **Atlas MongoDB** URI with vulnerability source collections and review views
 - **Local MongoDB** for application data (auth, subscriptions, report jobs)
-- **Tavily API key** (for Enriched Weekly reports)
+- **Tavily or Exa API key** (for Enriched Weekly reports)
 - **llama-server** OpenAI-compatible endpoint (for Enriched Weekly; see `enriched.llm_base_url` in `config/config.json`)
 
 Optional:
@@ -106,7 +106,7 @@ chmod 600 .env
 ```
 
 Edit `.env` with MongoDB URIs and other credentials. Tune enriched, report, and
-Tavily limits in `config/config.json`. The app loads `.env` automatically when
+search limits in `config/config.json`. The app loads `.env` automatically when
 any process starts (`app.py`, `scheduler.py`) — you do not need to run
 `source .env` manually.
 
@@ -120,7 +120,8 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `ATLAS_MONGO_URI` | Atlas connection for vulnerability data |
 | `LOCAL_MONGO_URI` | Local MongoDB (default `mongodb://localhost:27017/`) |
 | `FLASK_SECRET_KEY` | Flask session signing (use a long random string) |
-| `TAVILY_API_KEY` | Tavily search (Enriched Weekly reports) |
+| `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly reports) |
+| `EXA_API_KEYS` | Exa search fallback (Enriched Weekly reports) |
 
 ### Common `config/config.json` sections
 
@@ -129,7 +130,7 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `mongodb.*` | Database names |
 | `report.*` | Report compaction settings |
 | `enriched.*` | Enriched Weekly llama-server tuning |
-| `tavily.*` | Tavily search defaults |
+| `tavily.*` / `exa.*` | Search defaults |
 | `scheduler.*` | Scheduler scan interval |
 
 See [`.env.example`](.env.example), [`config/config.json`](config/config.json),
@@ -217,7 +218,7 @@ MongoDB.
 | Browse newsletters / reviews | Web + Atlas + local MongoDB |
 | Subscriptions and auth | Web + local MongoDB |
 | Fixed Template reports | Web + Atlas + local MongoDB |
-| Enriched Weekly reports | Web + Atlas + local MongoDB + Tavily + llama-server |
+| Enriched Weekly reports | Web + Atlas + local MongoDB + Tavily or Exa + llama-server |
 | Scheduled reports | Web + scheduler + (report dependencies above) |
 
 ## Troubleshooting
@@ -246,7 +247,7 @@ not a separate unpublished compose Mongo container.
 
 **Enriched Weekly report fails**
 
-Check `TAVILY_API_KEY` in `.env` and `enriched.llm_base_url` in
+Check `TAVILY_API_KEYS` or `EXA_API_KEYS` in `.env` and `enriched.llm_base_url` in
 `config/config.json`. The llama-server endpoint must accept OpenAI-compatible
 `/v1/chat/completions` requests.
 

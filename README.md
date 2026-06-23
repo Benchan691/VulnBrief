@@ -7,7 +7,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 - **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from Atlas records
 - **Subscriptions** — manage independent newsletter and report profiles with shared collection, severity/status, text, source, affected-system, and time filters
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
-- **Reports** — generate structured reports with **Enriched Weekly** (Tavily + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
+- **Reports** — generate structured reports with **Enriched Weekly** (Tavily/Exa + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
 
 ## Architecture
 
@@ -16,7 +16,7 @@ flowchart LR
   Browser --> Web["Flask web :6767"]
   Web --> Atlas["Atlas vulnerability MongoDB"]
   Web --> LocalMongo["Local application MongoDB"]
-  Web --> Tavily["Tavily API"]
+  Web --> Search["Tavily / Exa API"]
   Web --> Llama["llama-server enriched.llm_base_url"]
   Scheduler["scheduler.py"] --> Atlas
   Scheduler --> LocalMongo
@@ -35,7 +35,7 @@ flowchart LR
 - Python 3.11+
 - Atlas MongoDB containing vulnerability source collections and review views
 - Local MongoDB for application-owned data
-- Tavily API key (for Enriched Weekly reports)
+- Tavily or Exa API key (for Enriched Weekly reports)
 - llama-server OpenAI-compatible endpoint (for Enriched Weekly reports; configured in `config/config.json` under `enriched.*`)
 
 ## Configuration
@@ -59,7 +59,8 @@ Minimum `.env` for local web:
 | `ATLAS_MONGO_URI` | Atlas vulnerability data |
 | `LOCAL_MONGO_URI` | Local application MongoDB |
 | `FLASK_SECRET_KEY` | Session signing |
-| `TAVILY_API_KEY` | Tavily search (Enriched Weekly) |
+| `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly) |
+| `EXA_API_KEYS` | Exa search fallback (Enriched Weekly) |
 
 See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full setup and troubleshooting.
 
@@ -108,11 +109,11 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 
 | Path | Description |
 |------|-------------|
-| `config/config.json` | Non-sensitive application settings (enriched, report, tavily limits) |
+| `config/config.json` | Non-sensitive application settings (enriched, report, search limits) |
 | `scheduler.py` | Scheduled report generation worker |
 | `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and live feed queries |
 | `report_harness.py` | Report generation pipeline |
-| `enriched_report/` | Enriched Weekly Tavily + llama-server pipeline |
+| `enriched_report/` | Enriched Weekly search + llama-server pipeline |
 | `routes/` | HTTP blueprints (auth, newsletter, subscription, review, report) |
 | `templates/` | Jinja HTML templates |
 | `tests/` | Pytest suite |

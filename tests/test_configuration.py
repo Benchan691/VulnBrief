@@ -21,6 +21,8 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     _set_required_env(
         monkeypatch,
         TAVILY_API_KEY='tavily-key',
+        TAVILY_API_KEYS='["tavily-a","tavily-b"]',
+        EXA_API_KEYS='exa-a,exa-b',
         TAVILY_SEARCH_DEPTH='advanced',
         TAVILY_MAX_RESULTS='7',
         TAVILY_REQUEST_TIMEOUT_SECONDS='31',
@@ -44,6 +46,8 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['LOCAL_MONGO_URI'] == 'mongodb://local.example/'
     assert loaded['LOCAL_DATABASE'] == 'web'
     assert loaded['TAVILY_API_KEY'] == 'tavily-key'
+    assert loaded['TAVILY_API_KEYS'] == ['tavily-a', 'tavily-b']
+    assert loaded['EXA_API_KEYS'] == ['exa-a', 'exa-b']
     assert loaded['TAVILY_SEARCH_DEPTH'] == 'advanced'
     assert loaded['TAVILY_MAX_RESULTS'] == 7
     assert loaded['TAVILY_REQUEST_TIMEOUT_SECONDS'] == 31
@@ -118,6 +122,27 @@ def test_environment_list_and_report_defaults(tmp_path, monkeypatch):
     assert loaded['REPORT_JSON_ERROR_MESSAGE'] == DEFAULT_JSON_ERROR_MESSAGE
 
 
+def test_settings_load_prompts_from_config_json(tmp_path, monkeypatch):
+    _set_required_env(monkeypatch)
+
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.json').write_text(
+        json.dumps({
+            'prompts': {
+                'evidence_extraction_system': 'Configured evidence prompt.',
+                'json_error_message': 'Configured JSON error: ${error}',
+            },
+        }),
+        encoding='utf-8',
+    )
+
+    loaded = load_application_config(str(tmp_path))
+    assert loaded['AI_PROMPTS']['evidence_extraction_system'] == 'Configured evidence prompt.'
+    assert loaded['REPORT_JSON_ERROR_MESSAGE'] == 'Configured JSON error: ${error}'
+    assert loaded['AI_PROMPTS']['json_error_message'] == 'Configured JSON error: ${error}'
+
+
 def test_settings_load_from_config_json(tmp_path, monkeypatch):
     _set_required_env(monkeypatch)
     monkeypatch.delenv('REPORT_MAX_DEPTH', raising=False)
@@ -135,6 +160,15 @@ def test_settings_load_from_config_json(tmp_path, monkeypatch):
 
     loaded = load_application_config(str(tmp_path))
     assert loaded['REPORT_MAX_DEPTH'] == 11
+
+
+def test_single_tavily_key_backfills_key_list(tmp_path, monkeypatch):
+    _set_required_env(monkeypatch, TAVILY_API_KEY='legacy-key')
+    monkeypatch.delenv('TAVILY_API_KEYS', raising=False)
+
+    loaded = load_application_config(str(tmp_path))
+
+    assert loaded['TAVILY_API_KEYS'] == ['legacy-key']
 
 
 def test_load_dotenv_from_file(tmp_path, monkeypatch):
