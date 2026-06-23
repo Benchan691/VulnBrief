@@ -73,7 +73,7 @@ def _list(value):
     return []
 
 
-def _prompt(result, candidate, page_char_limit, config):
+def _prompt(result, candidate, page_char_limit, config=None):
     page_content = (result.get('page_content') or result.get('snippet') or '')[:page_char_limit]
     source = {
         'url': result.get('url'),
@@ -84,7 +84,7 @@ def _prompt(result, candidate, page_char_limit, config):
     if not result.get('page_content') and result.get('snippet'):
         source['snippet'] = page_content
     task_type = result['task_type']
-    system = resolve_prompt(config, 'evidence_extraction_system')
+    system = resolve_prompt(config or {}, 'evidence_extraction_system')
     user = {
         'task_type': task_type,
         'cve_id': candidate['cve_id'],

@@ -8,24 +8,10 @@ COLLECTION_NAMES = (
     'report_metrics',
 )
 
-EVIDENCE_CACHE_COLLECTION = 'source_evidence_cache'
-SEARCH_RESULTS_CACHE_COLLECTION = 'search_enrichment_cache'
-
-
 def collection(database, name):
     if name not in COLLECTION_NAMES:
         raise ValueError(f'Unknown enriched report collection: {name}')
     return database[name]
-
-
-def evidence_cache_collection(database):
-    return database[EVIDENCE_CACHE_COLLECTION]
-
-
-def search_results_cache_collection(database):
-    return database[SEARCH_RESULTS_CACHE_COLLECTION]
-
-
 def ensure_indexes(database):
     candidates = collection(database, 'candidate_vulnerability_items')
     candidates.create_index([('run_id', 1), ('cve_id', 1)], name='run_cve')
@@ -54,12 +40,12 @@ def ensure_indexes(database):
     metrics = collection(database, 'report_metrics')
     metrics.create_index([('run_id', 1)], name='run_id')
 
-    cache = evidence_cache_collection(database)
+    cache = database['source_evidence_cache']
     cache.create_index([('cache_key', 1)], name='cache_key', unique=True)
     cache.create_index([('cve_id', 1), ('task_type', 1), ('source_url', 1)], name='cve_task_url')
     cache.create_index([('cache_version', 1), ('updated_at', -1)], name='cache_version_updated')
 
-    search_cache = search_results_cache_collection(database)
+    search_cache = database['search_enrichment_cache']
     search_cache.create_index([('cache_key', 1)], name='cache_key', unique=True)
     search_cache.create_index([('query_hash', 1), ('cache_version', 1)], name='query_hash_version')
     search_cache.create_index([('cache_version', 1), ('updated_at', -1)], name='cache_version_updated')
@@ -68,4 +54,3 @@ def ensure_indexes(database):
 def purge_run_artifacts(database, run_id):
     for name in COLLECTION_NAMES:
         collection(database, name).delete_many({'run_id': run_id})
-

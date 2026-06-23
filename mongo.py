@@ -44,7 +44,8 @@ def get_mongo_client():
 
 
 def get_web_database():
-    return get_local_mongo_client()[get_config()['LOCAL_DATABASE']]
+    config = get_config()
+    return get_local_mongo_client()[config.get('WEB_DATABASE') or config['LOCAL_DATABASE']]
 
 
 def get_vulnerabilities_database():

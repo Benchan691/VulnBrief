@@ -89,6 +89,22 @@ def test_separate_mongo_connections(tmp_path, monkeypatch):
     )
 
 
+def test_web_database_uses_web_database_name(monkeypatch):
+    import mongo
+
+    class FakeClient:
+        def __getitem__(self, name):
+            return name
+
+    monkeypatch.setattr(mongo, '_config', {
+        'LOCAL_DATABASE': 'local_app',
+        'WEB_DATABASE': 'web_app',
+    })
+    monkeypatch.setattr(mongo, '_local_client', FakeClient())
+
+    assert mongo.get_web_database() == 'web_app'
+
+
 def test_mongo_connections_are_required(tmp_path, monkeypatch):
     monkeypatch.delenv('ATLAS_MONGO_URI', raising=False)
     monkeypatch.delenv('LOCAL_MONGO_URI', raising=False)

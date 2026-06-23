@@ -39,8 +39,12 @@ TEXT_SEARCH_FIELDS = (
     'code', 'cve', 'cve_code', 'cve_codes', 'title', 'severity', 'status',
     'affected', 'affected_products', 'description', 'impacts', 'recommendation',
     'classification.vendor', 'classification.best_vendor',
+    'classification.candidate.vendor',
     'classification.product', 'classification.best_product',
+    'classification.candidate.product',
     'details.source.description',
+    'details.cve.affected.vendor',
+    'details.cve.affected.product',
     'details.hkcert.vulnerability_identifiers.cve_id',
 )
 CVE_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)

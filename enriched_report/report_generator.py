@@ -2,6 +2,7 @@ import json
 import logging
 
 from jsonschema import ValidationError
+from jsonschema import validate
 
 from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
@@ -10,7 +11,6 @@ from .schemas import ENRICHED_REPORT_SCHEMA, validate_enriched_report
 from .section_parsers import (
     build_appendix,
     build_vulnerability_detail_table,
-    validate_section,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,8 @@ def _section_system_prompt(section_name, config):
 
 def _parse_and_validate_json_section(section_name, text, schema):
     section = extract_json(text)
-    return validate_section(section_name, section, schema)
+    validate(instance=section, schema=schema)
+    return section
 
 
 def _generate_text_section(section_name, cards, metrics, evidence_cards, client, language, config):
@@ -152,7 +153,8 @@ def _generate_section(section_name, cards, metrics, evidence_cards, client, lang
     schema = SECTION_SCHEMAS[section_name]
     if section_name in DETERMINISTIC_SECTIONS:
         section = _build_deterministic_section(section_name, cards, metrics, evidence_cards)
-        return validate_section(section_name, section, schema)
+        validate(instance=section, schema=schema)
+        return section
     return _generate_text_section(section_name, cards, metrics, evidence_cards, client, language, config)
 
 

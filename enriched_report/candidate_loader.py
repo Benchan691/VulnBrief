@@ -133,9 +133,11 @@ def _detail_completeness_score(document):
 
 def _vendor(document):
     classification = document.get('classification') if isinstance(document.get('classification'), dict) else {}
+    candidate = classification.get('candidate') if isinstance(classification.get('candidate'), dict) else {}
     return _first_text(
         classification.get('best_vendor'),
         classification.get('vendor'),
+        candidate.get('vendor'),
         document.get('vendor'),
         _first_nested_text(document.get('details') or {}, ('vendor', 'vendor_name', 'manufacturer')),
     )
@@ -143,9 +145,11 @@ def _vendor(document):
 
 def _product(document):
     classification = document.get('classification') if isinstance(document.get('classification'), dict) else {}
+    candidate = classification.get('candidate') if isinstance(classification.get('candidate'), dict) else {}
     return _first_text(
         classification.get('best_product'),
         classification.get('product'),
+        candidate.get('product'),
         document.get('product'),
         document.get('affected'),
         document.get('affected_products'),

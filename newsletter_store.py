@@ -507,8 +507,7 @@ def normalize_newsletter(document, source_collection):
 
 def render_newsletter(document, source_collection):
     newsletter = normalize_newsletter(document, source_collection)
-    template = f"newsletter/generated_{newsletter['template_key']}.html"
-    return render_template(template, newsletter=newsletter), newsletter
+    return render_template('newsletter/generated.html', newsletter=newsletter), newsletter
 
 
 def _record_id(source_collection, selection_id):

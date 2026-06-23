@@ -1,6 +1,3 @@
-from jsonschema import validate
-
-
 def build_vulnerability_detail_table(cards):
     return {
         'rows': [
@@ -59,8 +56,3 @@ def build_appendix(cards, evidence_cards, metrics):
         'source_references': refs,
         'metrics': appendix_metrics,
     }
-
-
-def validate_section(section_name, section, schema):
-    validate(instance=section, schema=schema)
-    return section

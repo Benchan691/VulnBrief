@@ -31,6 +31,9 @@ SCHEDULE_FIELD_UNSET = {
     'report_profile.last_error': '',
     'report_profile.last_match_count': '',
 }
+TOP_LEVEL_SCHEDULE_FIELD_UNSET = {
+    key: value for key, value in SCHEDULE_FIELD_UNSET.items() if '.' not in key
+}
 
 
 def _public_subscription(database, document):
@@ -136,7 +139,7 @@ def edit_subscription(email):
             update['team'] = data['team'].strip()
         get_collection().update_one(
             {'email': email},
-            {'$set': update, '$unset': {'subscriptions': '', **SCHEDULE_FIELD_UNSET}},
+            {'$set': update, '$unset': {'subscriptions': '', **TOP_LEVEL_SCHEDULE_FIELD_UNSET}},
         )
         return jsonify({'success': True})
     except ValueError as exc:

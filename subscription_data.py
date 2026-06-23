@@ -345,14 +345,17 @@ def build_match_filter(filters, now=None):
         'source': ('source_provider',),
         'target_vendor': (
             'classification.best_vendor', 'classification.vendor',
+            'classification.candidate.vendor', 'details.cve.affected.vendor',
             'details.cve.affected_products.vendor', 'vendor',
         ),
         'target_product': (
             'classification.best_product', 'classification.product',
+            'classification.candidate.product', 'details.cve.affected.product',
             'details.cve.affected_products.product', 'affected', 'affected_products',
         ),
         'affected_product_name': (
-            'classification.best_product', 'details.cve.affected_products.product',
+            'classification.best_product', 'classification.candidate.product',
+            'details.cve.affected.product', 'details.cve.affected_products.product',
             'affected', 'affected_products',
         ),
     }

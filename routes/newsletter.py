@@ -9,17 +9,11 @@ from review_data import resolve_vulnerability_document
 from .common import login_required
 
 
-@newsletter_blueprint.route('/en')
-def get_new_en():
-    return render_template('news_en.html')
-
-@newsletter_blueprint.route('/zh')
-def get_news_zh():
-    return render_template('news_zh.html')
-
-@newsletter_blueprint.route('/cn')
-def get_news_cn():
-    return render_template('news_cn.html')
+@newsletter_blueprint.route('/<lang>')
+def get_news(lang):
+    if lang not in {'en', 'zh', 'cn'}:
+        return jsonify({'error': 'Not found'}), 404
+    return render_template(f'news_{lang}.html')
 
 
 @newsletter_blueprint.route('/set-news', methods=['POST'])

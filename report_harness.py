@@ -11,6 +11,7 @@ from flask import current_app, render_template
 from jsonschema import validate
 from pymongo import ReturnDocument
 
+from enriched_report.prompts import DEFAULT_PROMPTS
 from newsletter_store import normalize_newsletter
 from mongo import get_vulnerabilities_database, get_web_database
 from report_job_progress import (
@@ -28,12 +29,7 @@ from review_data import (
 
 
 
-DEFAULT_JSON_ERROR_MESSAGE = (
-    'The JSON above is invalid.\n\nError:\n${error}\n\n'
-    'Fix it and return only valid JSON. No Markdown, no explanation, no extra text. '
-    'Keep the original fields and meaning. Make only the minimum changes needed so it can parse '
-    'with `json.loads()`.'
-)
+DEFAULT_JSON_ERROR_MESSAGE = DEFAULT_PROMPTS['json_error_message']
 REPORT_TEMPLATE = 'generated_report.html'
 ENRICHED_REPORT_TEMPLATE = 'enriched_report.html'
 GENERATION_MODES = {'template', 'enriched_weekly'}

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from app import app
 from newsletter_store import (
     SOURCE_TEMPLATE_KEYS,
@@ -42,9 +40,6 @@ def test_generic_newsletter_has_required_sections_and_sanitizes_source_html():
 def test_every_active_source_has_a_dedicated_template():
     for source in SOURCE_TEMPLATE_KEYS:
         assert template_key_for_source(source) == source
-        assert Path(
-            app.root_path, app.template_folder, 'newsletter', f'generated_{source}.html',
-        ).is_file()
 
 
 def test_hkcert_newsletter_omits_empty_table():
