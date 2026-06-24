@@ -54,6 +54,8 @@ Minimum `.env` for local web:
 | `FLASK_SECRET_KEY` | Session signing |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly) |
 | `EXA_API_KEYS` | Exa search fallback (Enriched Weekly) |
+| `SEARXNG_BASE_URL` | Optional self-hosted SearXNG search (Enriched Weekly) |
+| `SEARCH_PROVIDER_ORDER` | Optional provider order, e.g. `searxng,tavily,exa` |
 
 See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full setup and troubleshooting.
 

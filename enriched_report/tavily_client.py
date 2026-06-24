@@ -1,4 +1,7 @@
 import logging
+import re
+from html.parser import HTMLParser
+from urllib.parse import urljoin
 
 import requests
 
@@ -23,6 +26,38 @@ def _keys(config, list_name, single_name):
     if not keys and config.get(single_name):
         keys = [config.get(single_name)]
     return [str(key).strip() for key in keys if str(key).strip()]
+
+
+def _provider_order(config):
+    order = config.get('SEARCH_PROVIDER_ORDER') or ['tavily', 'exa', 'searxng']
+    if isinstance(order, str):
+        order = [item.strip() for item in order.split(',')]
+    return [str(item).strip().lower() for item in order if str(item).strip()]
+
+
+class _TextHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {'script', 'style', 'noscript'}:
+            self.skip += 1
+
+    def handle_endtag(self, tag):
+        if tag in {'script', 'style', 'noscript'} and self.skip:
+            self.skip -= 1
+
+    def handle_data(self, data):
+        if not self.skip and data.strip():
+            self.parts.append(data.strip())
+
+
+def _html_to_text(html):
+    parser = _TextHTMLParser()
+    parser.feed(html or '')
+    return re.sub(r'\s+', ' ', ' '.join(parser.parts)).strip()
 
 
 class TavilyClient:
@@ -112,12 +147,71 @@ class ExaClient:
         }
 
 
+class SearXNGClient:
+    def __init__(
+        self,
+        base_url,
+        max_results=5,
+        timeout_seconds=30,
+        fetch_timeout_seconds=30,
+        max_snippet_chars=8192,
+    ):
+        if not base_url:
+            raise ValueError('SEARXNG_BASE_URL must be configured for SearXNG search.')
+        self.base_url = base_url.rstrip('/')
+        self.max_results = int(max_results)
+        self.timeout_seconds = int(timeout_seconds)
+        self.fetch_timeout_seconds = int(fetch_timeout_seconds)
+        self.max_snippet_chars = max(1, int(max_snippet_chars))
+        self.provider = 'searxng'
+
+    def search(self, query):
+        response = requests.get(
+            f'{self.base_url}/search',
+            params={'q': query, 'format': 'json'},
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        body = response.json()
+        results = []
+        for item in (body.get('results') or [])[:self.max_results]:
+            parsed = self._result(item)
+            if parsed is not None:
+                results.append(parsed)
+        return results
+
+    def _result(self, item):
+        url = (item.get('url') or '').strip()
+        if not url:
+            return None
+        snippet = (item.get('content') or item.get('snippet') or '').strip()
+        if not snippet:
+            logger.info('searxng snippet skipped url=%s reason=empty', url)
+            return None
+        if len(snippet) > self.max_snippet_chars:
+            logger.info(
+                'searxng snippet skipped url=%s reason=too_long chars=%d limit=%d',
+                url,
+                len(snippet),
+                self.max_snippet_chars,
+            )
+            return None
+        return {
+            'url': url,
+            'title': item.get('title') or '',
+            'snippet': snippet,
+            'page_content': snippet,
+            'score': item.get('score'),
+            'source_api': 'searxng',
+        }
+
+
 class FailoverSearchClient:
     def __init__(self, clients):
         self.clients = list(clients)
         self.disabled = set()
         if not self.clients:
-            raise ValueError('At least one Tavily or Exa API key must be configured.')
+            raise ValueError('At least one Tavily, Exa, or SearXNG provider must be configured.')
 
     def search(self, query):
         last_error = None
@@ -150,25 +244,45 @@ class FailoverSearchClient:
 
 
 def build_search_client(config):
-    clients = [
-        TavilyClient(
-            key,
-            config.get('TAVILY_SEARCH_DEPTH', 'basic'),
-            config.get('TAVILY_MAX_RESULTS', 5),
-            config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
-        )
-        for key in _keys(config, 'TAVILY_API_KEYS', 'TAVILY_API_KEY')
-    ]
-    clients.extend(
-        ExaClient(
-            key,
-            config.get('EXA_SEARCH_TYPE', 'auto'),
-            config.get('EXA_MAX_RESULTS', config.get('TAVILY_MAX_RESULTS', 5)),
-            config.get(
-                'EXA_REQUEST_TIMEOUT_SECONDS',
-                config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
-            ),
-        )
-        for key in _keys(config, 'EXA_API_KEYS', 'EXA_API_KEY')
-    )
+    clients = []
+    for provider in _provider_order(config):
+        if provider == 'tavily':
+            clients.extend(
+                TavilyClient(
+                    key,
+                    config.get('TAVILY_SEARCH_DEPTH', 'basic'),
+                    config.get('TAVILY_MAX_RESULTS', 5),
+                    config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
+                )
+                for key in _keys(config, 'TAVILY_API_KEYS', 'TAVILY_API_KEY')
+            )
+        elif provider == 'exa':
+            clients.extend(
+                ExaClient(
+                    key,
+                    config.get('EXA_SEARCH_TYPE', 'auto'),
+                    config.get('EXA_MAX_RESULTS', config.get('TAVILY_MAX_RESULTS', 5)),
+                    config.get(
+                        'EXA_REQUEST_TIMEOUT_SECONDS',
+                        config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
+                    ),
+                )
+                for key in _keys(config, 'EXA_API_KEYS', 'EXA_API_KEY')
+            )
+        elif provider == 'searxng' and config.get('SEARXNG_BASE_URL'):
+            clients.append(
+                SearXNGClient(
+                    config.get('SEARXNG_BASE_URL'),
+                    config.get('SEARXNG_MAX_RESULTS', config.get('TAVILY_MAX_RESULTS', 5)),
+                    config.get(
+                        'SEARXNG_REQUEST_TIMEOUT_SECONDS',
+                        config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
+                    ),
+                    config.get(
+                        'SEARXNG_FETCH_TIMEOUT_SECONDS',
+                        config.get('TAVILY_REQUEST_TIMEOUT_SECONDS', 30),
+                    ),
+                    config.get('SEARXNG_MAX_SNIPPET_CHARS', 8192),
+                ),
+            )
     return FailoverSearchClient(clients)

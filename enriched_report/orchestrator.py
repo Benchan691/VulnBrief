@@ -131,8 +131,8 @@ def _require_config(config):
     missing = []
     if not (config.get('TAVILY_API_KEYS') or config.get('TAVILY_API_KEY')) and not (
         config.get('EXA_API_KEYS') or config.get('EXA_API_KEY')
-    ):
-        missing.append('TAVILY_API_KEYS or EXA_API_KEYS')
+    ) and not config.get('SEARXNG_BASE_URL'):
+        missing.append('TAVILY_API_KEYS, EXA_API_KEYS, or SEARXNG_BASE_URL')
     if not config.get('ENRICHED_LLM_BASE_URL'):
         missing.append('ENRICHED_LLM_BASE_URL')
     if missing:

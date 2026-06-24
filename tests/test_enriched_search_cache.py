@@ -102,6 +102,18 @@ class TrackingTavilyClient:
         }]
 
 
+class SearXNGSearchClient:
+    def search(self, query):
+        return [{
+            'url': 'https://acme.example/advisory',
+            'title': 'Advisory',
+            'snippet': 'Snippet',
+            'page_content': 'Snippet',
+            'score': 0.9,
+            'source_api': 'searxng',
+        }]
+
+
 def _sample_task():
     return {
         '_id': 'task-1',
@@ -242,6 +254,49 @@ def test_execute_pending_search_tasks_stores_results_for_reuse_on_miss():
     assert TrackingTavilyClient.calls == 0
     assert len(second_results.documents) == 1
     assert second_results.documents[0]['run_id'] == 'run-b'
+
+
+def test_execute_pending_search_tasks_stores_searxng_snippet_without_compression():
+    task = _sample_task()
+    results = FakeResultsCollection()
+    cache = FakeSearchCacheCollection()
+    database = FakeDatabase({
+        'search_enrichment_tasks': FakeTasksCollection([dict(task)]),
+        'search_enrichment_results': results,
+        'search_enrichment_cache': cache,
+    })
+
+    completed = execute_pending_search_tasks(
+        database,
+        'run-a',
+        {},
+        client=SearXNGSearchClient(),
+    )
+
+    assert completed == 1
+    assert results.documents[0]['source_api'] == 'searxng'
+    assert results.documents[0]['snippet'] == 'Snippet'
+    assert results.documents[0]['page_content'] == 'Snippet'
+    assert list(cache.docs.values())[0]['payload']['page_content'] == 'Snippet'
+
+
+def test_execute_pending_search_tasks_does_not_compress_tavily_page_content():
+    task = _sample_task()
+    results = FakeResultsCollection()
+    database = FakeDatabase({
+        'search_enrichment_tasks': FakeTasksCollection([dict(task)]),
+        'search_enrichment_results': results,
+        'search_enrichment_cache': FakeSearchCacheCollection(),
+    })
+
+    execute_pending_search_tasks(
+        database,
+        'run-a',
+        {},
+        client=TrackingTavilyClient(),
+    )
+
+    assert results.documents[0]['page_content'] == 'CVE details and patch info'
 
 
 def test_purge_search_cache_route(client, monkeypatch):

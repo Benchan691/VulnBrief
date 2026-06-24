@@ -22,6 +22,18 @@
     "max_results": 5,
     "request_timeout_seconds": 30
   },
+  "search": {
+    "provider_order": ["searxng"]
+  },
+  "searxng": {
+    "base_url": "http://searxng:8080",
+    "max_results": 5,
+    "request_timeout_seconds": 30,
+    "fetch_timeout_seconds": 30,
+    "max_snippet_chars": 8192,
+    "compression_chunk_chars": 8192,
+    "compression_fan_in": 2
+  },
   "enriched": {
     "llm_base_url": "http://100.102.169.17:8080/v1",
     "llm_model": "qwen3-4b-ipex",
@@ -41,6 +53,8 @@
   },
   "prompts": {
     "evidence_extraction_system": "You extract cybersecurity evidence from one source page. Use only the supplied page content. Do not infer or invent facts. Answer only the requested task_type in plain text. Write 2-4 sentences maximum. If the page does not support an answer, return exactly: NULL. Do not return JSON, markdown, bullet lists, or field labels.",
+    "searxng_page_compression_system": "Compress one fetched web page chunk for cybersecurity evidence extraction. Use only the supplied page_content. Keep facts relevant to the query, cve_id, and task_type. Preserve CVE IDs, product names, versions, exploit status, patches, mitigations, CVSS, EPSS, and CISA KEV facts. Return plain text only. Do not add markdown or invented facts. Return NULL if nothing is relevant.",
+    "searxng_page_compression_merge_system": "Merge compressed web page chunks for cybersecurity evidence extraction. Use only partial_contents. Deduplicate repeated facts, preserve useful source facts, and keep the result compact. Return plain text only. Do not add markdown or invented facts. Return NULL if nothing is relevant.",
     "report_section_system": "You write one section of an enriched weekly cybersecurity report. Use only the supplied section payload. Do not invent facts. Return only valid JSON matching exactly this shape and keys. Do not add markdown, explanations, or extra keys.\n\nRequired JSON shape:\n${section_example}",
     "report_section_user_instructions": "Use only the supplied section payload. Do not use raw search results. Do not invent facts. Use \"Not confirmed from available sources.\" when evidence is missing.",
     "report_section_user_instructions_remediation_playbook": "Use only vulnerability_rows from the vulnerability detail table. Do not use raw search results. Do not invent facts. Use \"Not confirmed from available sources.\" when evidence is missing.",
