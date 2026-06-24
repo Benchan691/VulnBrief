@@ -34,12 +34,6 @@
         <ul>{% for finding in report.executive_summary.key_findings or [] %}<li>{{ finding }}</li>{% endfor %}</ul>
     </div>
 
-    <h2>{{ labels.research_scope }}</h2>
-    <div class="section">
-        <p>{{ report.research_scope.summary }}</p>
-        <ul>{% for criterion in report.research_scope.criteria or [] %}<li>{{ criterion }}</li>{% endfor %}</ul>
-    </div>
-
     <h2>{{ labels.weekly_risk_trend }}</h2>
     <div class="section">
         <p>{{ report.weekly_risk_trend.summary }}</p>
@@ -78,13 +72,6 @@
             <li><strong>{{ action.priority }}:</strong> {{ action.action }} <span class="meta">{{ action.cve_ids|join(', ') }}</span></li>
             {% endfor %}
         </ol>
-    </div>
-
-    <h2>{{ labels.management_brief }}</h2>
-    <div class="section brief">
-        <p>{{ report.management_brief.summary }}</p>
-        <p><strong>{{ labels.business_impact }}:</strong> {{ report.management_brief.business_impact }}</p>
-        <ul>{% for decision in report.management_brief.decisions_needed or [] %}<li>{{ decision }}</li>{% endfor %}</ul>
     </div>
 
     <h2>{{ labels.appendix }}</h2>

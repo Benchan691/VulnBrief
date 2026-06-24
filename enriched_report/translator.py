@@ -162,7 +162,7 @@ def _progress(progress_callback, current, total, section_name):
 def _translate_enriched_report(report, language, client, config, progress_callback=None):
     translated = deepcopy(report)
     row_count = len((report.get('vulnerability_detail_table') or {}).get('rows') or [])
-    section_total = 6 + row_count
+    section_total = 4 + row_count
     current = 0
 
     translated['title'] = _translate_fragment(report['title'], language, client, config)
@@ -171,10 +171,8 @@ def _translate_enriched_report(report, language, client, config, progress_callba
 
     for section_name in (
         'executive_summary',
-        'research_scope',
         'weekly_risk_trend',
         'remediation_playbook',
-        'management_brief',
     ):
         translated[section_name] = _translate_fragment(report[section_name], language, client, config)
         current += 1

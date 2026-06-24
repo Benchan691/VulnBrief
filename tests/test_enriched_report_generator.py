@@ -1,3 +1,5 @@
+import json
+
 from enriched_report.section_parsers import (
     build_appendix,
     build_vulnerability_detail_table,
@@ -198,67 +200,182 @@ def _card(cve_id, priority_score=50, patch_priority='High'):
     }
 
 
-def test_merge_remediation_playbook_partials_dedupes_and_sorts_actions():
-    from enriched_report.section_chunking import merge_remediation_playbook_partials
+def test_merge_section_partials_with_ai_executive_summary():
+    class MergeClient:
+        report_max_output_tokens = 2048
 
-    merged = merge_remediation_playbook_partials([
-        {
-            'summary': 'Chunk one.',
-            'actions': [{
-                'priority': 'High',
-                'action': 'Upgrade Acme Widget to version 2.0.',
-                'cve_ids': ['CVE-2026-7000'],
-            }],
-        },
-        {
-            'summary': 'Chunk two.',
-            'actions': [
-                {
-                    'priority': 'Critical',
-                    'action': 'Patch CVE-2026-7001 immediately.',
-                    'cve_ids': ['CVE-2026-7001'],
-                },
-                {
+        def __init__(self):
+            self.payload = None
+
+        def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+            self.payload = json.loads(user_prompt)
+            return json.dumps({
+                'summary': 'Merged executive summary.',
+                'key_findings': ['Patch Acme first.'],
+            }), {}
+
+    from enriched_report.report_generator import _merge_section_partials_with_ai
+
+    client = MergeClient()
+    merged = _merge_section_partials_with_ai(
+        'executive_summary',
+        [
+            {'summary': 'Chunk one.', 'key_findings': ['Patch Acme.']},
+            {'summary': 'Chunk two.', 'key_findings': ['Validate exposure.']},
+        ],
+        [_card('CVE-2026-7000')],
+        {'total_vulnerabilities': 1},
+        [],
+        client,
+        'en',
+        {},
+    )
+
+    assert client.payload['section_name'] == 'executive_summary'
+    assert client.payload['partial_sections'][1]['summary'] == 'Chunk two.'
+    assert set(client.payload) == {
+        'section_name',
+        'language',
+        'instructions',
+        'partial_sections',
+    }
+    assert merged['summary'] == 'Merged executive summary.'
+    assert merged['key_findings'] == ['Patch Acme first.']
+
+
+def _table_rows(cards):
+    return build_vulnerability_detail_table(cards)['rows']
+
+
+def test_remediation_playbook_section_prompt_uses_table_rows_only():
+    from enriched_report.report_generator import _section_prompt
+
+    row = _table_rows([_card('CVE-2026-7000')])[0]
+
+    payload = json.loads(_section_prompt(
+        'remediation_playbook',
+        [row],
+        {},
+        [],
+        'en',
+        {},
+    ))
+
+    assert set(payload.keys()) == {
+        'section_name',
+        'language',
+        'instructions',
+        'vulnerability_rows',
+    }
+    slim_row = payload['vulnerability_rows'][0]
+    assert slim_row['cve_id'] == 'CVE-2026-7000'
+    assert slim_row['how_to_respond'] == 'Patch CVE-2026-7000.'
+    assert 'what_happened' not in slim_row
+    assert 'why_matters' not in slim_row
+    assert 'vulnerability_cards' not in payload
+    assert 'top_remediation_items' not in payload
+    assert 'report_metrics' not in payload
+    assert 'evidence_references' not in payload
+
+
+def test_merge_remediation_playbook_payload_is_partials_only():
+    class MergeClient:
+        report_max_output_tokens = 2048
+
+        def __init__(self):
+            self.payload = None
+
+        def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+            self.payload = json.loads(user_prompt)
+            return json.dumps({
+                'summary': 'Merged remediation summary.',
+                'actions': [
+                    {
+                        'priority': 'High',
+                        'action': 'Patch CVE-2026-7000.',
+                        'cve_ids': ['CVE-2026-7000'],
+                    },
+                ],
+            }), {}
+
+    from enriched_report.report_generator import _merge_section_partials_with_ai
+
+    client = MergeClient()
+    merged = _merge_section_partials_with_ai(
+        'remediation_playbook',
+        [
+            {
+                'summary': 'Chunk one.',
+                'actions': [{
                     'priority': 'High',
-                    'action': 'Upgrade Acme Widget to version 2.0.',
+                    'action': 'Patch CVE-2026-7000.',
                     'cve_ids': ['CVE-2026-7000'],
-                },
-            ],
-        },
-    ])
+                }],
+            },
+            {
+                'summary': 'Chunk two.',
+                'actions': [{
+                    'priority': 'Medium',
+                    'action': 'Patch CVE-2026-7001.',
+                    'cve_ids': ['CVE-2026-7001'],
+                }],
+            },
+        ],
+        [_card('CVE-2026-7000'), _card('CVE-2026-7001')],
+        {'total_vulnerabilities': 2},
+        [{
+            'cve_id': 'CVE-2026-7000',
+            'task_type': 'what_happened',
+            'source_url': 'https://acme.example/CVE-2026-7000',
+            'confidence': 'high',
+        }],
+        client,
+        'en',
+        {},
+    )
 
-    assert len(merged['actions']) == 2
-    assert merged['actions'][0]['priority'] == 'Critical'
-    assert merged['actions'][1]['cve_ids'] == ['CVE-2026-7000']
-    assert '2 items' in merged['summary']
+    assert set(client.payload.keys()) == {
+        'section_name',
+        'language',
+        'instructions',
+        'partial_sections',
+    }
+    assert 'vulnerability_cards' not in client.payload
+    assert 'report_metrics' not in client.payload
+    assert 'evidence_references' not in client.payload
+    assert merged['summary'] == 'Merged remediation summary.'
+    assert merged['actions'][0]['cve_ids'] == ['CVE-2026-7000']
 
 
 def test_generate_text_section_chunks_remediation_playbook_when_prompt_is_large():
     cards = [_card(f'CVE-2026-{index:04d}') for index in range(6)]
-    evidence_cards = [
-        {
-            'cve_id': card['cve_id'],
-            'task_type': 'what_happened',
-            'source_url': card['source_references'][0],
-            'confidence': 'high',
-        }
-        for card in cards
-    ]
+    rows = _table_rows(cards)
 
     class ChunkClient:
         report_max_output_tokens = 2048
 
         def __init__(self):
             self.calls = 0
-            self.chunk_card_counts = []
+            self.chunk_row_counts = []
+            self.chunk_payloads = []
 
         def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
             self.calls += 1
-            payload = __import__('json').loads(user_prompt)
-            self.chunk_card_counts.append(len(payload['vulnerability_cards']))
-            cve_ids = [card['cve_id'] for card in payload['vulnerability_cards']]
+            payload = json.loads(user_prompt)
+            if 'partial_sections' in payload:
+                return json.dumps({
+                    'summary': 'Merged summary.',
+                    'actions': [
+                        action
+                        for partial in payload['partial_sections']
+                        for action in partial.get('actions', [])
+                    ],
+                }), {}
+            self.chunk_payloads.append(payload)
+            self.chunk_row_counts.append(len(payload['vulnerability_rows']))
+            cve_ids = [row['cve_id'] for row in payload['vulnerability_rows']]
             return (
-                __import__('json').dumps({
+                json.dumps({
                     'summary': 'Chunk summary.',
                     'actions': [{
                         'priority': 'High',
@@ -274,9 +391,9 @@ def test_generate_text_section_chunks_remediation_playbook_when_prompt_is_large(
     client = ChunkClient()
     section = _generate_text_section(
         'remediation_playbook',
-        cards,
-        {'total_vulnerabilities': len(cards)},
-        evidence_cards,
+        rows,
+        {},
+        [],
         client,
         'en',
         {
@@ -285,10 +402,141 @@ def test_generate_text_section_chunks_remediation_playbook_when_prompt_is_large(
         },
     )
 
-    assert client.calls == 3
-    assert client.chunk_card_counts == [2, 2, 2]
+    assert client.calls == 4
+    assert client.chunk_row_counts == [2, 2, 2]
+    assert len(client.chunk_payloads) == 3
+    for payload in client.chunk_payloads:
+        assert 'vulnerability_rows' in payload
+        assert 'what_happened' not in payload['vulnerability_rows'][0]
+        assert 'why_matters' not in payload['vulnerability_rows'][0]
+        assert 'how_to_respond' in payload['vulnerability_rows'][0]
+        assert 'vulnerability_cards' not in payload
+        assert 'top_remediation_items' not in payload
+        assert 'report_metrics' not in payload
+        assert 'evidence_references' not in payload
     assert len(section['actions']) == 3
     assert section['actions'][0]['cve_ids'] == ['CVE-2026-0000']
+
+
+def test_chunked_executive_summary_calls_merge_when_multiple_chunks():
+    cards = [_card(f'CVE-2026-{index:04d}') for index in range(3)]
+
+    class ChunkClient:
+        report_max_output_tokens = 2048
+
+        def __init__(self):
+            self.merge_calls = 0
+            self.chunk_payloads = []
+
+        def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+            payload = json.loads(user_prompt)
+            if 'partial_sections' in payload:
+                self.merge_calls += 1
+                return json.dumps({
+                    'summary': 'Merged executive summary.',
+                    'key_findings': ['Three issues need review.'],
+                }), {}
+            self.chunk_payloads.append(payload)
+            cve_id = payload['vulnerability_rows'][0]['cve_id']
+            return json.dumps({
+                'summary': f'Chunk {cve_id}.',
+                'key_findings': [f'Review {cve_id}.'],
+            }), {}
+
+    from enriched_report.report_generator import _generate_text_section
+
+    client = ChunkClient()
+    section = _generate_text_section(
+        'executive_summary',
+        cards,
+        {},
+        [],
+        client,
+        'en',
+        {
+            'REPORT_SECTION_CHUNK_PROMPT_CHARS': 100000,
+            'REPORT_SECTION_CHUNK_CARD_COUNT': 2,
+        },
+    )
+
+    assert client.merge_calls == 1
+    assert 'why_matters' not in client.chunk_payloads[0]['vulnerability_rows'][0]
+    assert 'how_to_respond' not in client.chunk_payloads[0]['vulnerability_rows'][0]
+    assert 'priority_score' in client.chunk_payloads[0]['vulnerability_rows'][0]
+    assert section['summary'] == 'Merged executive summary.'
+
+
+def test_weekly_risk_trend_uses_filtered_table_rows():
+    class RowClient:
+        report_max_output_tokens = 2048
+
+        def __init__(self):
+            self.payload = None
+
+        def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+            self.payload = json.loads(user_prompt)
+            return json.dumps({
+                'summary': 'Weekly trend.',
+                'trend_points': ['Risk impact is clustered.'],
+            }), {}
+
+    from enriched_report.report_generator import _generate_text_section
+
+    client = RowClient()
+    section = _generate_text_section(
+        'weekly_risk_trend',
+        [_card('CVE-2026-7000')],
+        {},
+        [],
+        client,
+        'en',
+        {'REPORT_SECTION_CHUNK_PROMPT_CHARS': 100000},
+    )
+
+    row = client.payload['vulnerability_rows'][0]
+    assert 'why_matters' in row
+    assert 'what_happened' not in row
+    assert 'how_to_respond' not in row
+    assert 'priority_score' not in row
+    assert 'patch_priority' not in row
+    assert section['summary'] == 'Weekly trend.'
+
+
+def test_single_chunk_skips_merge_llm_call():
+    class ChunkClient:
+        report_max_output_tokens = 2048
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+            self.calls += 1
+            payload = json.loads(user_prompt)
+            assert 'partial_sections' not in payload
+            assert 'vulnerability_rows' in payload
+            return json.dumps({
+                'summary': 'One chunk summary.',
+                'key_findings': ['One finding.'],
+            }), {}
+
+    from enriched_report.report_generator import _generate_text_section
+
+    client = ChunkClient()
+    section = _generate_text_section(
+        'executive_summary',
+        [_card('CVE-2026-7000')],
+        {},
+        [],
+        client,
+        'en',
+        {
+            'REPORT_SECTION_CHUNK_PROMPT_CHARS': 1,
+            'REPORT_SECTION_CHUNK_CARD_COUNT': 10,
+        },
+    )
+
+    assert client.calls == 1
+    assert section['summary'] == 'One chunk summary.'
 
 
 def test_generate_text_section_uses_single_call_when_prompt_is_small():
@@ -312,7 +560,7 @@ def test_generate_text_section_uses_single_call_when_prompt_is_small():
     SingleClient.calls = 0
     section = _generate_text_section(
         'remediation_playbook',
-        [_card('CVE-2026-7000')],
+        _table_rows([_card('CVE-2026-7000')]),
         {},
         [],
         SingleClient(),
@@ -325,7 +573,7 @@ def test_generate_text_section_uses_single_call_when_prompt_is_small():
 
 
 def test_generate_text_section_chunk_retry_recovers_from_invalid_chunk_json():
-    cards = [_card(f'CVE-2026-{index:04d}') for index in range(4)]
+    rows = _table_rows([_card(f'CVE-2026-{index:04d}') for index in range(4)])
 
     class RetryChunkClient:
         report_max_output_tokens = 2048
@@ -338,7 +586,7 @@ def test_generate_text_section_chunk_retry_recovers_from_invalid_chunk_json():
             if self.calls == 1:
                 return '<think>\nStill planning.\n', {}
             try:
-                payload = __import__('json').loads(user_prompt)
+                payload = json.loads(user_prompt)
             except ValueError:
                 return (
                     '{"summary": "Recovered chunk.", "actions": [{'
@@ -348,9 +596,18 @@ def test_generate_text_section_chunk_retry_recovers_from_invalid_chunk_json():
                     '}]}',
                     {},
                 )
-            cve_id = payload['vulnerability_cards'][0]['cve_id']
+            if 'partial_sections' in payload:
+                return json.dumps({
+                    'summary': 'Merged summary.',
+                    'actions': [
+                        action
+                        for partial in payload['partial_sections']
+                        for action in partial.get('actions', [])
+                    ],
+                }), {}
+            cve_id = payload['vulnerability_rows'][0]['cve_id']
             return (
-                __import__('json').dumps({
+                json.dumps({
                     'summary': 'Chunk summary.',
                     'actions': [{
                         'priority': 'High',
@@ -366,7 +623,7 @@ def test_generate_text_section_chunk_retry_recovers_from_invalid_chunk_json():
     client = RetryChunkClient()
     section = _generate_text_section(
         'remediation_playbook',
-        cards,
+        rows,
         {},
         [],
         client,
@@ -378,6 +635,5 @@ def test_generate_text_section_chunk_retry_recovers_from_invalid_chunk_json():
         },
     )
 
-    assert client.calls == 3
+    assert client.calls == 4
     assert len(section['actions']) == 2
-

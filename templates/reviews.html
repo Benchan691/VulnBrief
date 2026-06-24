@@ -398,30 +398,51 @@
         return '';
     }
 
-    function buildFilterParams() {
-        const params = new URLSearchParams();
-        params.set('mode', 'cve');
+    function buildFilterPayload() {
+        const payload = { mode: 'cve' };
         const search = document.getElementById('filter-search').value.trim();
         const statuses = Array.from(document.querySelectorAll('input[name="status"]:checked'))
             .map(function (input) { return input.value.trim(); })
             .filter(Boolean);
         const windowValue = timeWindow.value;
-        if (search) params.set('search', search);
-        statuses.forEach(function (status) {
-            params.append('status', status);
-        });
+        if (search) {
+            payload.search = search;
+        }
+        if (statuses.length) {
+            payload.status = statuses;
+        }
         if (document.getElementById('filter-include-unknown').checked) {
-            params.set('include_unknown', 'true');
+            payload.include_unknown = true;
         }
         if (windowValue && windowValue !== 'all') {
-            params.set('time_window', windowValue);
+            payload.time_window = windowValue;
             if (windowValue === 'custom') {
                 const start = document.getElementById('filter-start').value.trim();
                 const end = document.getElementById('filter-end').value.trim();
-                if (start) params.set('start', start);
-                if (end) params.set('end', end);
+                if (start) payload.start = start;
+                if (end) payload.end = end;
             }
         }
+        return payload;
+    }
+
+    function buildFilterParams() {
+        const payload = buildFilterPayload();
+        const params = new URLSearchParams();
+        Object.keys(payload).forEach(function (key) {
+            const value = payload[key];
+            if (key === 'status' && Array.isArray(value)) {
+                value.forEach(function (status) {
+                    params.append('status', status);
+                });
+                return;
+            }
+            if (key === 'include_unknown' && value === true) {
+                params.set('include_unknown', 'true');
+                return;
+            }
+            params.set(key, value);
+        });
         return params;
     }
 
@@ -773,15 +794,9 @@
     });
 
     function buildAutoSelectPayload() {
-        const payload = {};
-        activeFilters.forEach(function (value, key) {
-            payload[key] = value;
-        });
+        const payload = buildFilterPayload();
         const count = parseInt(autoSelectCount.value, 10);
         payload.count = Number.isFinite(count) ? count : 0;
-        if (payload.include_unknown === 'true') {
-            payload.include_unknown = true;
-        }
         return payload;
     }
 
@@ -819,6 +834,8 @@
                     return {
                         collection: item.collection,
                         selection_id: item.selection_id,
+                        selection_score: item.selection_score,
+                        patch_priority: item.patch_priority,
                     };
                 });
                 setSelections(selections);

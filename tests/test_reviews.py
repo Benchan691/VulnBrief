@@ -79,7 +79,8 @@ def patch_iter_collection_documents(monkeypatch, views, documents=None, on_query
             reverse=True,
         )
         for document in sorted_documents:
-            yield dict(document)
+            if _document_matches_mongo_filter(document, mongo_filter):
+                yield dict(document)
 
     monkeypatch.setattr('routes.review._iter_collection_documents', iter_collection_documents)
 
@@ -279,6 +280,64 @@ def test_auto_select_returns_top_records_by_score(client, monkeypatch):
     assert body['summary']['Critical'] == 1
 
 
+def test_auto_select_respects_severity_filters_and_sorts_by_score(client, monkeypatch):
+    authenticate(client)
+    views = {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+    }
+    documents = {
+        'cve_review': [
+            {
+                '_id': 'low:1',
+                'code': 'CVE-2026-0001',
+                'severity': 'Low',
+                'summary': 'Minor issue.',
+                'scraped_at': '2026-06-01T00:00:00+00:00',
+            },
+            {
+                '_id': 'high:1',
+                'code': 'CVE-2026-0002',
+                'severity': 'Critical',
+                'cisa_kev': True,
+                'summary': 'Remote code execution exploited in the wild.',
+                'scraped_at': '2026-06-20T00:00:00+00:00',
+                'containers': {
+                    'cna': {
+                        'metrics': [{'cvssV3_1': {'baseSeverity': 'CRITICAL', 'baseScore': 9.8}}],
+                    },
+                },
+            },
+            {
+                '_id': 'medium:1',
+                'code': 'CVE-2026-0003',
+                'severity': 'Medium',
+                'summary': 'Privilege escalation proof of concept available.',
+                'scraped_at': '2026-06-15T00:00:00+00:00',
+            },
+        ],
+    }
+
+    class FakeDatabase:
+        def __getitem__(self, name):
+            return None
+
+    monkeypatch.setattr('routes.review.get_vulnerabilities_database', FakeDatabase)
+    monkeypatch.setattr('routes.review._review_views', lambda database: views)
+    patch_iter_collection_documents(monkeypatch, views, documents)
+
+    response = client.post('/api/reviews/auto-select', json={
+        'count': 2,
+        'mode': 'cve',
+        'status': ['Critical', 'Medium'],
+    })
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['matched'] == 2
+    assert body['selected'] == 2
+    assert [item['selection_id'] for item in body['selections']] == ['high:1', 'medium:1']
+    assert body['selections'][0]['selection_score'] >= body['selections'][1]['selection_score']
+
+
 @pytest.mark.parametrize('count, status', [
     (0, 400),
     (501, 400),
@@ -385,14 +444,14 @@ def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
     monkeypatch.setattr('routes.review._review_views', lambda database: views)
     patch_iter_collection_documents(monkeypatch, views, documents)
 
-    response = client.get('/api/reviews/search?title=test&page=1&page_size=3')
+    response = client.get('/api/reviews/search?mode=cve&page=1&page_size=3')
     assert response.status_code == 200
     body = response.get_json()
     assert body['total'] == 6
     assert body['pages'] == 2
     assert [item['selection_id'] for item in body['data']] == ['b:1', 'low:1', 'a:2']
 
-    response = client.get('/api/reviews/search?title=test&page=2&page_size=3')
+    response = client.get('/api/reviews/search?mode=cve&page=2&page_size=3')
     assert response.status_code == 200
     body = response.get_json()
     assert [item['selection_id'] for item in body['data']] == ['b:2', 'high:1', 'a:1']

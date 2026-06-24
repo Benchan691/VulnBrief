@@ -101,9 +101,8 @@ VULNERABILITY_DETAIL_ROW_SCHEMA = {
 ENRICHED_REPORT_SCHEMA = {
     'type': 'object',
     'required': [
-        'title', 'executive_summary', 'research_scope', 'weekly_risk_trend',
-        'vulnerability_detail_table', 'remediation_playbook',
-        'management_brief', 'appendix',
+        'title', 'executive_summary', 'weekly_risk_trend',
+        'vulnerability_detail_table', 'remediation_playbook', 'appendix',
     ],
     'properties': {
         'title': {'type': 'string'},
@@ -113,14 +112,6 @@ ENRICHED_REPORT_SCHEMA = {
             'properties': {
                 'summary': {'type': 'string'},
                 'key_findings': STRING_ARRAY,
-            },
-        },
-        'research_scope': {
-            'type': 'object',
-            'required': ['summary', 'criteria'],
-            'properties': {
-                'summary': {'type': 'string'},
-                'criteria': STRING_ARRAY,
             },
         },
         'weekly_risk_trend': {
@@ -155,15 +146,6 @@ ENRICHED_REPORT_SCHEMA = {
                         },
                     },
                 },
-            },
-        },
-        'management_brief': {
-            'type': 'object',
-            'required': ['summary', 'business_impact', 'decisions_needed'],
-            'properties': {
-                'summary': {'type': 'string'},
-                'business_impact': {'type': 'string'},
-                'decisions_needed': STRING_ARRAY,
             },
         },
         'appendix': {
@@ -201,4 +183,3 @@ def validate_vulnerability_card(card):
 def validate_enriched_report(report):
     validate(instance=report, schema=ENRICHED_REPORT_SCHEMA)
     return report
-

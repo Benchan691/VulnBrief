@@ -26,6 +26,9 @@ class FakeLlamaClient:
     evidence_max_output_tokens = 1024
     report_max_output_tokens = 4096
 
+    def __init__(self):
+        self.merge_sections = []
+
     def complete_text(self, system_prompt, user_prompt, **kwargs):
         payload = json.loads(user_prompt)
         task_type = payload.get('task_type')
@@ -36,9 +39,20 @@ class FakeLlamaClient:
         if task_type == 'how_to_respond':
             return 'Upgrade to version 2.0.', {}
         section_name = payload.get('section_name')
+        if 'partial_sections' in payload:
+            self.merge_sections.append(section_name)
+            if section_name == 'remediation_playbook':
+                return json.dumps({
+                    'summary': 'Merged remediation summary.',
+                    'actions': [
+                        action
+                        for partial in payload['partial_sections']
+                        for action in partial.get('actions', [])
+                    ],
+                }), {}
         if section_name == 'remediation_playbook':
-            cards = payload.get('vulnerability_cards') or []
-            cve_ids = [card['cve_id'] for card in cards if card.get('cve_id')]
+            rows = payload.get('vulnerability_rows') or []
+            cve_ids = [row['cve_id'] for row in rows if row.get('cve_id')]
             return json.dumps({
                 'summary': 'Chunk summary.',
                 'actions': [{
@@ -52,21 +66,10 @@ class FakeLlamaClient:
                 'summary': 'Risk is concentrated in one critical CVE.',
                 'trend_points': ['One critical Acme issue.'],
             }), {}
-        if section_name == 'research_scope':
-            return json.dumps({
-                'summary': 'CVE-only Mongo discovery with Tavily enrichment.',
-                'criteria': ['cve_review only'],
-            }), {}
         if section_name == 'executive_summary':
             return json.dumps({
                 'summary': 'One Acme Widget CVE requires patching.',
                 'key_findings': ['Upgrade to 2.0.'],
-            }), {}
-        if section_name == 'management_brief':
-            return json.dumps({
-                'summary': 'Prioritize remediation for Acme Widget.',
-                'business_impact': 'Potential service compromise.',
-                'decisions_needed': ['Approve emergency patching.'],
             }), {}
         raise AssertionError(payload)
 
@@ -107,6 +110,8 @@ def test_run_enriched_pipeline_completes_with_mocked_tavily_and_llm(monkeypatch)
             assert row['what_happened'] == 'Acme Widget has a remote code execution vulnerability.'
             assert row['source_urls'] == ['https://acme.example/advisory']
             assert job['report']['executive_summary']['summary'] == 'One Acme Widget CVE requires patching.'
+            assert 'research_scope' not in job['report']
+            assert 'management_brief' not in job['report']
             assert web['candidate_vulnerability_items'].count_documents({'run_id': job_id}) == 1
         finally:
             purge_run_artifacts(web, job_id)
@@ -145,16 +150,17 @@ def test_run_enriched_pipeline_chunks_remediation_playbook_for_large_reports(mon
             for index in range(4)
         ], 'review_selections', 'enriched_weekly')
         try:
-            run_enriched_pipeline(app, job_id, FakeTavilyClient(), FakeLlamaClient())
+            llama = FakeLlamaClient()
+            run_enriched_pipeline(app, job_id, FakeTavilyClient(), llama)
 
             job = web['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
             actions = job['report']['remediation_playbook']['actions']
             assert len(actions) == 4
             assert {action['cve_ids'][0] for action in actions} == set(cve_ids)
+            assert 'remediation_playbook' in llama.merge_sections
         finally:
             purge_run_artifacts(web, job_id)
             web['report_jobs'].delete_many({'_id': ObjectId(job_id)})
             web['report_job_inputs'].delete_many({'job_id': ObjectId(job_id)})
             vulnerabilities['cve'].delete_many({'_id': {'$in': [f'cve:orchestrator-{index}' for index in range(4)]}})
-

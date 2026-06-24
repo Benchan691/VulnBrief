@@ -96,7 +96,6 @@ def test_translate_enriched_report_translates_each_row_and_preserves_identifiers
     report = {
         'title': 'English Report',
         'executive_summary': {'summary': 'English summary', 'key_findings': ['Patch now']},
-        'research_scope': {'summary': 'English scope', 'criteria': ['English criterion']},
         'weekly_risk_trend': {'summary': 'English trend', 'trend_points': ['English point']},
         'vulnerability_detail_table': {
             'rows': [{
@@ -117,11 +116,6 @@ def test_translate_enriched_report_translates_each_row_and_preserves_identifiers
             'summary': 'Patch systems',
             'actions': [{'priority': 'High', 'action': 'Patch now', 'cve_ids': ['CVE-2026-0001']}],
         },
-        'management_brief': {
-            'summary': 'English brief',
-            'business_impact': 'English impact',
-            'decisions_needed': ['Patch window'],
-        },
         'appendix': {
             'source_references': [{'cve_id': 'CVE-2026-0001', 'urls': ['https://example.com/source']}],
             'metrics': {'total_vulnerabilities': 1},
@@ -130,7 +124,7 @@ def test_translate_enriched_report_translates_each_row_and_preserves_identifiers
 
     translated = translate_report(report, 'enriched_weekly', 'ch', {}, client=client)
 
-    assert len(client.calls) == 7
+    assert len(client.calls) == 5
     assert translated['title'] == '中文 Report'
     assert translated['vulnerability_detail_table']['rows'][0]['cve_id'] == 'CVE-2026-0001'
     assert translated['vulnerability_detail_table']['rows'][0]['source_urls'] == ['https://example.com/source']

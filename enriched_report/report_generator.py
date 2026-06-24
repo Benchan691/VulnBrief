@@ -18,7 +18,6 @@ from .section_chunking import (
     chunk_card_count,
     chunk_cards,
     evidence_for_cve_ids,
-    merge_remediation_playbook_partials,
     should_chunk_section,
 )
 
@@ -30,30 +29,30 @@ SECTION_SCHEMAS = {
     'remediation_playbook': ENRICHED_REPORT_SCHEMA['properties']['remediation_playbook'],
     'appendix': ENRICHED_REPORT_SCHEMA['properties']['appendix'],
     'weekly_risk_trend': ENRICHED_REPORT_SCHEMA['properties']['weekly_risk_trend'],
-    'research_scope': ENRICHED_REPORT_SCHEMA['properties']['research_scope'],
     'executive_summary': ENRICHED_REPORT_SCHEMA['properties']['executive_summary'],
-    'management_brief': ENRICHED_REPORT_SCHEMA['properties']['management_brief'],
 }
 
 DETERMINISTIC_SECTIONS = frozenset({'vulnerability_detail_table', 'appendix'})
+TABLE_DERIVED_SECTIONS = frozenset({
+    'executive_summary',
+    'weekly_risk_trend',
+    'remediation_playbook',
+})
+REMEDIATION_PLAYBOOK_SECTION = 'remediation_playbook'
+PARTIALS_ONLY_MERGE_SECTIONS = frozenset({
+    'executive_summary',
+    'weekly_risk_trend',
+    'remediation_playbook',
+})
 
 SECTION_JSON_EXAMPLES = {
     'executive_summary': {
         'summary': '<paragraph>',
         'key_findings': ['<finding>'],
     },
-    'research_scope': {
-        'summary': '<paragraph>',
-        'criteria': ['<criterion>'],
-    },
     'weekly_risk_trend': {
         'summary': '<paragraph>',
         'trend_points': ['<trend point>'],
-    },
-    'management_brief': {
-        'summary': '<paragraph>',
-        'business_impact': '<paragraph>',
-        'decisions_needed': ['<decision>'],
     },
     'remediation_playbook': {
         'summary': '<paragraph>',
@@ -87,6 +86,22 @@ def _card_payload(cards):
     ]
 
 
+def _row_payload(section_name, rows):
+    if section_name == 'executive_summary':
+        keys = (
+            'cve_id', 'title', 'vendor', 'product', 'severity',
+            'priority_score', 'patch_priority', 'what_happened',
+        )
+    elif section_name == 'remediation_playbook':
+        keys = (
+            'cve_id', 'title', 'vendor', 'product', 'severity',
+            'priority_score', 'patch_priority', 'how_to_respond',
+        )
+    else:
+        keys = ('cve_id', 'title', 'vendor', 'product', 'severity', 'why_matters')
+    return [{key: row.get(key) for key in keys} for row in rows]
+
+
 def _evidence_payload(evidence_cards):
     return [
         {
@@ -99,15 +114,23 @@ def _evidence_payload(evidence_cards):
     ]
 
 
+def _section_user_instructions(section_name, config):
+    if section_name == REMEDIATION_PLAYBOOK_SECTION:
+        return resolve_prompt(config, 'report_section_user_instructions_remediation_playbook')
+    return resolve_prompt(config, 'report_section_user_instructions')
+
+
 def _section_prompt(section_name, cards, metrics, evidence_cards, language, config):
-    return json.dumps({
+    payload = {
         'section_name': section_name,
         'language': language,
-        'instructions': resolve_prompt(config, 'report_section_user_instructions'),
-        'vulnerability_cards': _card_payload(cards),
-        'report_metrics': metrics,
-        'evidence_references': _evidence_payload(evidence_cards),
-    }, ensure_ascii=False, default=str)
+        'instructions': _section_user_instructions(section_name, config),
+    }
+    if section_name in TABLE_DERIVED_SECTIONS:
+        payload['vulnerability_rows'] = _row_payload(section_name, cards)
+    else:
+        raise ValueError(f'Unsupported LLM section prompt: {section_name}')
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _build_deterministic_section(section_name, cards, metrics, evidence_cards):
@@ -135,6 +158,38 @@ def _section_system_prompt(section_name, config):
     )
 
 
+def _merge_system_prompt(section_name, config):
+    prompt_name = (
+        'report_section_merge_system_remediation_playbook'
+        if section_name == 'remediation_playbook'
+        else 'report_section_merge_system'
+    )
+    return resolve_prompt(
+        config,
+        prompt_name,
+        section_example=_section_json_example(section_name),
+    )
+
+
+def _merge_user_prompt(section_name, partials, cards, metrics, evidence_cards, language, config):
+    instructions_name = (
+        'report_section_merge_user_remediation_playbook'
+        if section_name == 'remediation_playbook'
+        else 'report_section_merge_user'
+    )
+    payload = {
+        'section_name': section_name,
+        'language': language,
+        'instructions': resolve_prompt(config, instructions_name),
+        'partial_sections': partials,
+    }
+    if section_name not in PARTIALS_ONLY_MERGE_SECTIONS:
+        payload['vulnerability_cards'] = _card_payload(cards)
+        payload['report_metrics'] = metrics
+        payload['evidence_references'] = _evidence_payload(evidence_cards)
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def _parse_and_validate_json_section(section_name, text, schema):
     section = extract_json(text)
     validate(instance=section, schema=schema)
@@ -153,8 +208,8 @@ def _json_repair_prompt(config, text, error):
     return text + '\n\n' + Template(template).safe_substitute(error=str(error))
 
 
-def _complete_json_section_with_retries(section_name, system, text, schema, client, config):
-    retries = max(0, int(config.get('REPORT_ITEM_JSON_RETRIES', 0)))
+def _complete_json_section_with_retries(section_name, system, text, schema, client, config, retry_key='REPORT_ITEM_JSON_RETRIES'):
+    retries = max(0, int(config.get(retry_key, 0)))
     for attempt in range(retries + 1):
         try:
             return _parse_and_validate_json_section(section_name, text, schema)
@@ -199,8 +254,42 @@ def _complete_json_section_with_retries(section_name, system, text, schema, clie
             # #endregion
 
 
-def _generate_remediation_playbook_chunked(
+def _merge_section_partials_with_ai(
+    section_name, partials, cards, metrics, evidence_cards, client, language, config,
+    progress_callback=None, progress_current=None, progress_total=None,
+):
+    schema = SECTION_SCHEMAS[section_name]
+    system = _merge_system_prompt(section_name, config)
+    user_prompt = _merge_user_prompt(
+        section_name, partials, cards, metrics, evidence_cards, language, config,
+    )
+    logger.info(
+        'enriched llm report section merge section=%s chunks=%d',
+        section_name,
+        len(partials),
+    )
+    text, _ = client.complete_text(
+        system,
+        user_prompt,
+        max_output_tokens=client.report_max_output_tokens,
+    )
+    merged = _complete_json_section_with_retries(
+        section_name,
+        system,
+        text,
+        schema,
+        client,
+        config,
+        retry_key='REPORT_FINAL_JSON_RETRIES',
+    )
+    if progress_callback is not None:
+        progress_callback(progress_current, progress_total, f'Merged report section {section_name}')
+    return merged
+
+
+def _generate_text_section_chunked(
     section_name, cards, metrics, evidence_cards, client, language, config,
+    progress_callback=None, progress_current=None, progress_total=None,
 ):
     schema = SECTION_SCHEMAS[section_name]
     system = _section_system_prompt(section_name, config)
@@ -216,13 +305,16 @@ def _generate_remediation_playbook_chunked(
     )
 
     for chunk_index, card_batch in enumerate(card_batches, start=1):
-        chunk_cve_ids = {card.get('cve_id') for card in card_batch if card.get('cve_id')}
-        chunk_evidence = evidence_for_cve_ids(evidence_cards, chunk_cve_ids)
+        chunk_evidence_count = 0
+        if section_name != REMEDIATION_PLAYBOOK_SECTION:
+            chunk_cve_ids = {card.get('cve_id') for card in card_batch if card.get('cve_id')}
+            chunk_evidence = evidence_for_cve_ids(evidence_cards, chunk_cve_ids)
+            chunk_evidence_count = len(chunk_evidence)
         user_prompt = _section_prompt(
             section_name,
             card_batch,
             metrics,
-            chunk_evidence,
+            evidence_cards if section_name != REMEDIATION_PLAYBOOK_SECTION else [],
             language,
             config,
         )
@@ -232,7 +324,7 @@ def _generate_remediation_playbook_chunked(
             total_chunks,
             section_name,
             len(card_batch),
-            len(chunk_evidence),
+            chunk_evidence_count,
             len(user_prompt),
         )
         text, _ = client.complete_text(
@@ -251,26 +343,26 @@ def _generate_remediation_playbook_chunked(
             ),
         )
 
-    merged = merge_remediation_playbook_partials(partials)
-    logger.info(
-        'enriched llm report section merged section=%s chunks=%d actions=%d',
-        section_name,
-        total_chunks,
-        len(merged.get('actions') or []),
+    if len(partials) == 1:
+        return partials[0]
+    return _merge_section_partials_with_ai(
+        section_name, partials, cards, metrics, evidence_cards, client, language, config,
+        progress_callback, progress_current, progress_total,
     )
-    validate(instance=merged, schema=schema)
-    return merged
 
 
-def _generate_text_section(section_name, cards, metrics, evidence_cards, client, language, config):
+def _generate_text_section(
+    section_name, cards, metrics, evidence_cards, client, language, config,
+    progress_callback=None, progress_current=None, progress_total=None,
+):
     schema = SECTION_SCHEMAS[section_name]
     system = _section_system_prompt(section_name, config)
     user_prompt = _section_prompt(section_name, cards, metrics, evidence_cards, language, config)
-    if should_chunk_section(section_name, len(user_prompt), config):
-        if section_name == 'remediation_playbook':
-            return _generate_remediation_playbook_chunked(
-                section_name, cards, metrics, evidence_cards, client, language, config,
-            )
+    if should_chunk_section(section_name, len(user_prompt), len(cards), config):
+        return _generate_text_section_chunked(
+            section_name, cards, metrics, evidence_cards, client, language, config,
+            progress_callback, progress_current, progress_total,
+        )
     # #region agent log
     debug_log(
         'enriched_report/report_generator.py:_generate_text_section',
@@ -315,13 +407,19 @@ def _generate_text_section(section_name, cards, metrics, evidence_cards, client,
     )
 
 
-def _generate_section(section_name, cards, metrics, evidence_cards, client, language, config):
+def _generate_section(
+    section_name, cards, metrics, evidence_cards, client, language, config,
+    progress_callback=None, progress_current=None, progress_total=None,
+):
     schema = SECTION_SCHEMAS[section_name]
     if section_name in DETERMINISTIC_SECTIONS:
         section = _build_deterministic_section(section_name, cards, metrics, evidence_cards)
         validate(instance=section, schema=schema)
         return section
-    return _generate_text_section(section_name, cards, metrics, evidence_cards, client, language, config)
+    return _generate_text_section(
+        section_name, cards, metrics, evidence_cards, client, language, config,
+        progress_callback, progress_current, progress_total,
+    )
 
 
 def generate_enriched_report(
@@ -338,12 +436,10 @@ def generate_enriched_report(
     sections = {}
     section_names = (
         'vulnerability_detail_table',
+        'executive_summary',
+        'weekly_risk_trend',
         'remediation_playbook',
         'appendix',
-        'weekly_risk_trend',
-        'research_scope',
-        'executive_summary',
-        'management_brief',
     )
     total_sections = len(section_names)
 
@@ -354,8 +450,14 @@ def generate_enriched_report(
             total_sections,
             section_name,
         )
+        section_cards = (
+            sections['vulnerability_detail_table']['rows']
+            if section_name in TABLE_DERIVED_SECTIONS
+            else cards
+        )
         sections[section_name] = _generate_section(
-            section_name, cards, report_metrics, evidence_cards, client, report_language, config,
+            section_name, section_cards, report_metrics, evidence_cards, client, report_language, config,
+            progress_callback, index, total_sections,
         )
         if progress_callback is not None:
             progress_callback(
@@ -366,6 +468,10 @@ def generate_enriched_report(
 
     report = {
         'title': 'Weekly Cybersecurity Intelligence Report',
-        **sections,
+        'executive_summary': sections['executive_summary'],
+        'weekly_risk_trend': sections['weekly_risk_trend'],
+        'vulnerability_detail_table': sections['vulnerability_detail_table'],
+        'remediation_playbook': sections['remediation_playbook'],
+        'appendix': sections['appendix'],
     }
     return validate_enriched_report(report)

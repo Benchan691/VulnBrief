@@ -79,6 +79,28 @@ def _regex(value):
     return {'$regex': re.escape(value), '$options': 'i'}
 
 
+class _MappingFilterArgs:
+    def __init__(self, data):
+        self._data = data if isinstance(data, dict) else {}
+
+    def get(self, key, default=''):
+        value = self._data.get(key, default)
+        if value is None:
+            return default
+        return value
+
+    def getlist(self, key):
+        value = self._data.get(key, [])
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        if value not in (None, ''):
+            return [str(value)]
+        return []
+
+    def __contains__(self, key):
+        return key in self._data
+
+
 def _build_filter(args):
     clauses = []
     search = args.get('search', '').strip()
@@ -404,10 +426,9 @@ def _merged_review_rows(database, views, view_names, mongo_filter, search=''):
 
 
 def _collect_scored_review_rows(database, views, view_names, mongo_filter, search=''):
+    combined_filter = _combined_mongo_filter(mongo_filter, search)
     rows = []
-    for name, document in _iter_merged_documents(database, views, view_names, mongo_filter):
-        if not _document_matches_search(document, search):
-            continue
+    for name, document in _iter_merged_documents(database, views, view_names, combined_filter):
         prepared = _prepare_review_document(name, document, views[name])
         scored = score_review_document(prepared)
         rows.append({
@@ -421,20 +442,6 @@ def _collect_scored_review_rows(database, views, view_names, mongo_filter, searc
             'scraped_at': scored['scraped_at'],
         })
     return rows
-
-
-def _auto_select_filter_args(data):
-    if not isinstance(data, dict):
-        return {}
-    return {
-        parameter: str(data.get(parameter, '') or '')
-        for parameter in (
-            'search', 'status', 'time_window', 'start', 'end',
-            *FILTER_FIELDS,
-        )
-    } | {
-        'include_unknown': data.get('include_unknown', False),
-    }
 
 
 def _paginated_merged_rows(database, views, view_names, mongo_filter, search, skip, limit):
@@ -769,16 +776,17 @@ def auto_select_review_documents():
             'error': f'Select between 1 and {MAX_EXPORT_SELECTIONS} vulnerability records.',
         }), 400
 
+    filter_args = _MappingFilterArgs(data)
     try:
-        mongo_filter = _build_filter(_auto_select_filter_args(data))
+        mongo_filter = _build_filter(filter_args)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
     try:
         database = get_vulnerabilities_database()
         views = _review_views(database)
-        view_names = _selected_review_collections({'mode': 'cve'}, views)
-        search = str(data.get('search', '') or '').strip()
+        view_names = _selected_review_collections(filter_args, views)
+        search = str(filter_args.get('search', '') or '').strip()
         rows = _collect_scored_review_rows(
             database,
             views,
