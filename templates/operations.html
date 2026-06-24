@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Operations{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h3 mb-0">Operations</h1>
+        <button class="btn btn-outline-secondary btn-sm" id="refresh-btn"><i class="bi bi-arrow-clockwise"></i></button>
+    </div>
+
+    <ul class="nav nav-tabs mb-3" role="tablist">
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#config-tab" type="button">Config</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#run-tab" type="button">Run</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#history-tab" type="button">History</button></li>
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="config-tab">
+            <form id="config-form" class="row g-3">
+                <div class="col-md-6"><label class="form-label">AVD root</label><input class="form-control" name="avd_root"></div>
+                <div class="col-md-6"><label class="form-label">Python path</label><input class="form-control" name="python_path"></div>
+                <div class="col-md-6"><label class="form-label">vuln-scrape module</label><input class="form-control" name="vuln_scrape_module"></div>
+                <div class="col-md-6"><label class="form-label">classifier_daemon.py</label><input class="form-control" name="classifier_daemon_path"></div>
+                <div class="col-md-4"><label class="form-label">Database</label><input class="form-control" name="database"></div>
+                <div class="col-md-2"><label class="form-label">Catch-up limit</label><input class="form-control" name="catch_up.limit" type="number" min="1"></div>
+                <div class="col-md-2"><label class="form-label">Batch size</label><input class="form-control" name="catch_up.batch_size" type="number" min="1"></div>
+                <div class="col-md-2"><label class="form-label">Max runs</label><input class="form-control" name="catch_up.max_runs_per_provider" type="number" min="1"></div>
+                <div class="col-md-2"><label class="form-label">Interval hours</label><input class="form-control" name="catch_up.interval_hours" type="number" min="1"></div>
+                <div class="col-md-4"><label class="form-label">Review providers</label><input class="form-control" name="review.providers" placeholder="blank = all"></div>
+                <div class="col-md-2"><label class="form-label">Reclassify limit</label><input class="form-control" name="reclassify_cve.limit"></div>
+                <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" name="reclassify_cve.zero_shot" type="checkbox"><label class="form-check-label">Zero-shot</label></div></div>
+                <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" name="catch_up.periodic_enabled" type="checkbox"><label class="form-check-label">Periodic catch-up</label></div></div>
+                <div class="col-12"><button class="btn btn-primary" type="submit"><i class="bi bi-save me-1"></i>Save</button></div>
+            </form>
+        </div>
+
+        <div class="tab-pane fade" id="run-tab">
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary op-run" data-op="catch_up"><i class="bi bi-play-fill me-1"></i>Catch-up</button>
+                <button class="btn btn-primary op-run" data-op="review"><i class="bi bi-play-fill me-1"></i>Review</button>
+                <button class="btn btn-primary op-run" data-op="classifier_daemon"><i class="bi bi-play-fill me-1"></i>Classifier daemon</button>
+                <button class="btn btn-primary op-run" data-op="reclassify_cve"><i class="bi bi-play-fill me-1"></i>Reclassify CVE</button>
+            </div>
+            <div class="alert alert-info py-2" id="message" style="display:none"></div>
+        </div>
+
+        <div class="tab-pane fade" id="history-tab">
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead><tr><th>Operation</th><th>Status</th><th>Started</th><th>Command</th><th></th></tr></thead>
+                    <tbody id="runs-body"></tbody>
+                </table>
+            </div>
+            <pre class="bg-dark text-light p-3 small" id="log-box" style="min-height:220px;white-space:pre-wrap"></pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block script %}
+<script>
+const fields = [
+  'avd_root','python_path','vuln_scrape_module','classifier_daemon_path','database',
+  'catch_up.limit','catch_up.batch_size','catch_up.max_runs_per_provider','catch_up.interval_hours',
+  'catch_up.periodic_enabled','review.providers','reclassify_cve.limit','reclassify_cve.zero_shot'
+];
+
+function get(obj, path) {
+  return path.split('.').reduce((node, part) => node && node[part], obj);
+}
+function set(obj, path, value) {
+  const parts = path.split('.');
+  const last = parts.pop();
+  const target = parts.reduce((node, part) => node[part] ||= {}, obj);
+  target[last] = value;
+}
+function formConfig() {
+  const data = {};
+  for (const name of fields) {
+    const input = document.querySelector(`[name="${name}"]`);
+    if (!input) continue;
+    set(data, name, input.type === 'checkbox' ? input.checked : input.value);
+  }
+  return data;
+}
+function fillForm(config) {
+  for (const name of fields) {
+    const input = document.querySelector(`[name="${name}"]`);
+    if (!input) continue;
+    const value = get(config, name);
+    if (input.type === 'checkbox') input.checked = Boolean(value);
+    else input.value = value ?? '';
+  }
+}
+function show(text) {
+  const box = document.getElementById('message');
+  box.textContent = text;
+  box.style.display = text ? '' : 'none';
+}
+async function loadConfig() {
+  const response = await fetch('/api/operations/config');
+  fillForm(await response.json());
+}
+async function loadRuns() {
+  const response = await fetch('/api/operations/runs');
+  const rows = (await response.json()).data || [];
+  const body = document.getElementById('runs-body');
+  body.replaceChildren();
+  for (const run of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${run.operation}</td><td>${run.status}</td><td>${run.started_at || ''}</td><td><code>${(run.command || []).join(' ')}</code></td><td class="text-end"></td>`;
+    const actions = tr.lastElementChild;
+    const logs = document.createElement('button');
+    logs.className = 'btn btn-outline-secondary btn-sm me-1';
+    logs.innerHTML = '<i class="bi bi-file-text"></i>';
+    logs.onclick = () => loadLogs(run.id);
+    actions.append(logs);
+    if (run.status === 'running') {
+      const stop = document.createElement('button');
+      stop.className = 'btn btn-outline-danger btn-sm';
+      stop.innerHTML = '<i class="bi bi-stop-fill"></i>';
+      stop.onclick = async () => { await fetch(`/api/operations/stop/${run.id}`, {method:'POST'}); await loadRuns(); };
+      actions.append(stop);
+    }
+    body.append(tr);
+  }
+}
+async function loadLogs(id) {
+  const response = await fetch(`/api/operations/runs/${id}/logs`);
+  document.getElementById('log-box').textContent = (await response.json()).log || '';
+}
+document.getElementById('config-form').onsubmit = async event => {
+  event.preventDefault();
+  const response = await fetch('/api/operations/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(formConfig())});
+  const body = await response.json();
+  if (!response.ok) return show(body.error || 'Save failed');
+  fillForm(body); show('Saved');
+};
+document.querySelectorAll('.op-run').forEach(button => {
+  button.onclick = async () => {
+    const response = await fetch(`/api/operations/run/${button.dataset.op}`, {method:'POST'});
+    const body = await response.json();
+    show(response.ok ? 'Started' : (body.error || 'Start failed'));
+    await loadRuns();
+  };
+});
+document.getElementById('refresh-btn').onclick = async () => { await loadConfig(); await loadRuns(); };
+loadConfig(); loadRuns(); setInterval(loadRuns, 5000);
+</script>
+{% endblock %}

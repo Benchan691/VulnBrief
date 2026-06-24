@@ -8,3 +8,4 @@ __pycache__/
 .venv/
 cert.pem
 key.pem
+config/config.json

@@ -8,6 +8,7 @@ subscription_blueprint = Blueprint('subscription', __name__)
 auth_blueprint = Blueprint('auth', __name__)
 review_blueprint = Blueprint('review', __name__)
 report_blueprint = Blueprint('report', __name__)
+operations_blueprint = Blueprint('operations', __name__)
 
 # Import the views
-from . import auth, newsletter, report, review, subscription
+from . import auth, newsletter, operations, report, review, subscription

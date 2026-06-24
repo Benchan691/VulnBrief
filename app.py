@@ -5,7 +5,10 @@ from routes.subscription import subscription_blueprint
 from routes.auth import auth_blueprint
 from routes.review import review_blueprint
 from routes.report import report_blueprint
+from routes.operations import operations_blueprint
 from bootstrap import BASE_DIR, configure_application
+from mongo import get_web_database
+from operations_runner import start_scheduler
 
 
 def create_app():
@@ -32,6 +35,8 @@ def create_app():
     application.register_blueprint(auth_blueprint)
     application.register_blueprint(review_blueprint)
     application.register_blueprint(report_blueprint)
+    application.register_blueprint(operations_blueprint)
+    start_scheduler(application, get_web_database)
     return application
 
 
