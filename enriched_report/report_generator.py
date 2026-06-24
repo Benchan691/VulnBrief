@@ -287,6 +287,55 @@ def _merge_section_partials_with_ai(
     return merged
 
 
+def _reduce_section_partials_with_ai(
+    section_name, partials, cards, metrics, evidence_cards, client, language, config,
+    progress_callback=None, progress_current=None, progress_total=None,
+):
+    fan_in = chunk_card_count(config)
+    level = 0
+    while len(partials) > 1:
+        level += 1
+        groups = list(chunk_cards(partials, fan_in))
+        logger.info(
+            'enriched llm report section reduce section=%s level=%d groups=%d partials=%d fan_in=%d',
+            section_name,
+            level,
+            len(groups),
+            len(partials),
+            fan_in,
+        )
+        reduced = []
+        for group_index, group in enumerate(groups, start=1):
+            if len(group) == 1:
+                reduced.append(group[0])
+                continue
+            logger.info(
+                'enriched llm report section reduce group %d/%d section=%s level=%d partials=%d',
+                group_index,
+                len(groups),
+                section_name,
+                level,
+                len(group),
+            )
+            reduced.append(
+                _merge_section_partials_with_ai(
+                    section_name,
+                    group,
+                    cards,
+                    metrics,
+                    evidence_cards,
+                    client,
+                    language,
+                    config,
+                    progress_callback,
+                    progress_current,
+                    progress_total,
+                ),
+            )
+        partials = reduced
+    return partials[0]
+
+
 def _generate_text_section_chunked(
     section_name, cards, metrics, evidence_cards, client, language, config,
     progress_callback=None, progress_current=None, progress_total=None,
@@ -345,7 +394,7 @@ def _generate_text_section_chunked(
 
     if len(partials) == 1:
         return partials[0]
-    return _merge_section_partials_with_ai(
+    return _reduce_section_partials_with_ai(
         section_name, partials, cards, metrics, evidence_cards, client, language, config,
         progress_callback, progress_current, progress_total,
     )

@@ -358,11 +358,13 @@ def test_generate_text_section_chunks_remediation_playbook_when_prompt_is_large(
             self.calls = 0
             self.chunk_row_counts = []
             self.chunk_payloads = []
+            self.merge_payloads = []
 
         def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
             self.calls += 1
             payload = json.loads(user_prompt)
             if 'partial_sections' in payload:
+                self.merge_payloads.append(payload)
                 return json.dumps({
                     'summary': 'Merged summary.',
                     'actions': [
@@ -402,8 +404,15 @@ def test_generate_text_section_chunks_remediation_playbook_when_prompt_is_large(
         },
     )
 
-    assert client.calls == 4
+    assert client.calls == 5
     assert client.chunk_row_counts == [2, 2, 2]
+    assert [len(payload['partial_sections']) for payload in client.merge_payloads] == [2, 2]
+    assert all(set(payload) == {
+        'section_name',
+        'language',
+        'instructions',
+        'partial_sections',
+    } for payload in client.merge_payloads)
     assert len(client.chunk_payloads) == 3
     for payload in client.chunk_payloads:
         assert 'vulnerability_rows' in payload
@@ -466,6 +475,57 @@ def test_chunked_executive_summary_calls_merge_when_multiple_chunks():
     assert section['summary'] == 'Merged executive summary.'
 
 
+def test_chunked_executive_summary_merges_recursively():
+    rows = _table_rows([_card(f'CVE-2026-{index:04d}') for index in range(10)])
+
+    class ChunkClient:
+        report_max_output_tokens = 2048
+
+        def __init__(self):
+            self.calls = 0
+            self.merge_sizes = []
+
+        def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+            self.calls += 1
+            payload = json.loads(user_prompt)
+            if 'partial_sections' in payload:
+                self.merge_sizes.append(len(payload['partial_sections']))
+                findings = [
+                    finding
+                    for partial in payload['partial_sections']
+                    for finding in partial.get('key_findings', [])
+                ]
+                return json.dumps({
+                    'summary': 'Merged executive summary.',
+                    'key_findings': findings or ['Merged.'],
+                }), {}
+            cve_id = payload['vulnerability_rows'][0]['cve_id']
+            return json.dumps({
+                'summary': f'Chunk {cve_id}.',
+                'key_findings': [f'Review {cve_id}.'],
+            }), {}
+
+    from enriched_report.report_generator import _generate_text_section
+
+    client = ChunkClient()
+    section = _generate_text_section(
+        'executive_summary',
+        rows,
+        {},
+        [],
+        client,
+        'en',
+        {
+            'REPORT_SECTION_CHUNK_PROMPT_CHARS': 100000,
+            'REPORT_SECTION_CHUNK_CARD_COUNT': 2,
+        },
+    )
+
+    assert client.calls == 9
+    assert client.merge_sizes == [2, 2, 2, 2]
+    assert section['summary'] == 'Merged executive summary.'
+
+
 def test_weekly_risk_trend_uses_filtered_table_rows():
     class RowClient:
         report_max_output_tokens = 2048
@@ -500,6 +560,53 @@ def test_weekly_risk_trend_uses_filtered_table_rows():
     assert 'priority_score' not in row
     assert 'patch_priority' not in row
     assert section['summary'] == 'Weekly trend.'
+
+
+def test_chunked_weekly_risk_trend_merges_recursively():
+    rows = _table_rows([_card(f'CVE-2026-{index:04d}') for index in range(6)])
+
+    class ChunkClient:
+        report_max_output_tokens = 2048
+
+        def __init__(self):
+            self.merge_sizes = []
+
+        def complete_text(self, system_prompt, user_prompt, max_output_tokens=None):
+            payload = json.loads(user_prompt)
+            if 'partial_sections' in payload:
+                self.merge_sizes.append(len(payload['partial_sections']))
+                return json.dumps({
+                    'summary': 'Merged trend.',
+                    'trend_points': [
+                        point
+                        for partial in payload['partial_sections']
+                        for point in partial.get('trend_points', [])
+                    ] or ['Merged point.'],
+                }), {}
+            cve_id = payload['vulnerability_rows'][0]['cve_id']
+            return json.dumps({
+                'summary': f'Chunk {cve_id}.',
+                'trend_points': [f'Trend {cve_id}.'],
+            }), {}
+
+    from enriched_report.report_generator import _generate_text_section
+
+    client = ChunkClient()
+    section = _generate_text_section(
+        'weekly_risk_trend',
+        rows,
+        {},
+        [],
+        client,
+        'en',
+        {
+            'REPORT_SECTION_CHUNK_PROMPT_CHARS': 100000,
+            'REPORT_SECTION_CHUNK_CARD_COUNT': 2,
+        },
+    )
+
+    assert client.merge_sizes == [2, 2]
+    assert section['summary'] == 'Merged trend.'
 
 
 def test_single_chunk_skips_merge_llm_call():
