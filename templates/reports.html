@@ -295,7 +295,9 @@
         if (job.status === 'failed' && job.error) {
             const error = document.createElement('div');
             error.className = 'text-danger small';
-            error.textContent = truncateText(job.error, 120);
+            error.style.whiteSpace = 'pre-wrap';
+            error.title = job.error;
+            error.textContent = job.error;
             cell.append(error);
         }
         if (job.status === 'queued' || job.status === 'running' || job.status === 'failed') {
@@ -424,6 +426,8 @@
             } else if (job.status === 'failed') {
                 const error = document.createElement('span');
                 error.className = 'text-danger small me-1';
+                error.style.whiteSpace = 'pre-wrap';
+                error.title = job.error || 'Generation failed.';
                 error.textContent = job.error || 'Generation failed.';
                 action.append(error);
                 appendViewLogButton(action, job);

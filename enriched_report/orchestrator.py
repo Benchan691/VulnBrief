@@ -320,6 +320,7 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                     'status': 'failed',
                     'updated_at': _now(),
                     'error': str(exc),
+                    'status_message': str(exc),
                 }},
             )
         finally:

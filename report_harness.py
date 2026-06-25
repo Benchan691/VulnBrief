@@ -1074,6 +1074,7 @@ def run_report_translation(app, translation_job_id, client=None):
                 {'$set': {
                     'status': 'failed',
                     'error': str(exc),
+                    'status_message': str(exc),
                     'progress_label': 'Translation failed',
                     'updated_at': datetime.now(timezone.utc),
                 }},
@@ -1161,6 +1162,7 @@ def run_template_job(app, job_id):
                     'status': 'failed',
                     'updated_at': datetime.now(timezone.utc),
                     'error': str(exc),
+                    'status_message': str(exc),
                 }},
             )
         finally:
@@ -1191,6 +1193,7 @@ def run_job(app, job_id):
                 'status': 'failed',
                 'updated_at': datetime.now(timezone.utc),
                 'error': f'Unsupported generation mode: {raw_mode}',
+                'status_message': f'Unsupported generation mode: {raw_mode}',
             }},
         )
 

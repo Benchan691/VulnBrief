@@ -788,6 +788,7 @@ def test_template_report_job_records_failure(monkeypatch):
         job = get_web_database()['report_jobs'].find_one({'_id': ObjectId(job_id)})
         assert job['status'] == 'failed'
         assert job['error'] == 'Template generation failed.'
+        assert job['status_message'] == 'Template generation failed.'
         assert get_web_database()['report_job_inputs'].count_documents({
             'job_id': ObjectId(job_id),
         }) == 0
