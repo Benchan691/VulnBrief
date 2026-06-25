@@ -29,5 +29,4 @@ services:
       - searxng
     volumes:
       - ./newsletters:/app/newsletters
-      - ./.cursor:/app/.cursor
       - ${AVD_ROOT:-/home/cpcnet/cyberclawer}:/cyberclawer
