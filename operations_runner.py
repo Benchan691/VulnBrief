@@ -44,7 +44,7 @@ def _resolve_python_path(config):
 
 
 def default_config():
-    avd_root = '/Users/chankokpan/Documents/avd'
+    avd_root = '/cyberclawer'
     python_path = os.path.join(avd_root, '.venv', 'bin', 'python')
     if not os.path.exists(python_path):
         python_path = sys.executable or 'python'
