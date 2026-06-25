@@ -13,6 +13,7 @@ CONFIG_ID = 'operations'
 RUN_LIMIT = 100
 LOG_LIMIT = 20000
 CHECK_SECONDS = 60
+_PERSISTED_CONFIG_KEYS = ('catch_up', 'review', 'reclassify_cve')
 _processes = {}
 _lock = threading.Lock()
 _scheduler_started = False
@@ -89,19 +90,57 @@ def _app_config():
         return {}
 
 
+def _persisted_overlay(source):
+    if not source:
+        return {}
+    return {
+        key: source[key]
+        for key in _PERSISTED_CONFIG_KEYS
+        if key in source and isinstance(source.get(key), dict)
+    }
+
+
 def load_config(database):
     stored = database['operation_config'].find_one({'_id': CONFIG_ID}) or {}
-    return _resolve_python_path(_merge(default_config(), {k: v for k, v in stored.items() if k != '_id'}))
+    config = _merge(default_config(), _persisted_overlay(stored))
+    return _resolve_python_path(config)
 
 
 def save_config(database, data):
-    config = _merge(default_config(), data or {})
+    config = _merge(default_config(), _persisted_overlay(data))
     config['catch_up']['limit'] = max(1, int(config['catch_up'].get('limit') or 1000))
     config['catch_up']['batch_size'] = max(1, int(config['catch_up'].get('batch_size') or 5))
     config['catch_up']['max_runs_per_provider'] = max(1, int(config['catch_up'].get('max_runs_per_provider') or 100))
     config['catch_up']['interval_hours'] = max(1, int(config['catch_up'].get('interval_hours') or 24))
-    database['operation_config'].update_one({'_id': CONFIG_ID}, {'$set': config}, upsert=True)
+    persisted = {'_id': CONFIG_ID, **{key: config[key] for key in _PERSISTED_CONFIG_KEYS}}
+    database['operation_config'].replace_one({'_id': CONFIG_ID}, persisted, upsert=True)
     return config
+
+
+def reset_config(database):
+    database['operation_config'].delete_one({'_id': CONFIG_ID})
+    return load_config(database)
+
+
+def start_catch_up_schedule(database):
+    database['operation_config'].update_one(
+        {'_id': CONFIG_ID},
+        {'$set': {
+            'catch_up.periodic_enabled': True,
+            'catch_up.next_run_at': '',
+        }},
+        upsert=True,
+    )
+    return load_config(database)
+
+
+def stop_catch_up_schedule(database):
+    database['operation_config'].update_one(
+        {'_id': CONFIG_ID},
+        {'$set': {'catch_up.periodic_enabled': False}},
+        upsert=True,
+    )
+    return load_config(database)
 
 
 def _merge(base, override):
@@ -318,7 +357,10 @@ def start_scheduler(app, database_factory):
         while True:
             time.sleep(CHECK_SECONDS)
             with app.app_context():
-                tick_scheduler(database_factory())
+                try:
+                    tick_scheduler(database_factory())
+                except Exception:
+                    pass
 
     threading.Thread(target=loop, daemon=True).start()
 

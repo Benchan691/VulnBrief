@@ -15,12 +15,8 @@
 
     <div class="tab-content">
         <div class="tab-pane fade show active" id="config-tab">
+            <p class="text-muted small mb-3">AVD paths and database are read from <code>config/config.json</code>.</p>
             <form id="config-form" class="row g-3">
-                <div class="col-md-6"><label class="form-label">AVD root</label><input class="form-control" name="avd_root"></div>
-                <div class="col-md-6"><label class="form-label">Python path</label><input class="form-control" name="python_path"></div>
-                <div class="col-md-6"><label class="form-label">vuln-scrape module</label><input class="form-control" name="vuln_scrape_module"></div>
-                <div class="col-md-6"><label class="form-label">classifier_daemon.py</label><input class="form-control" name="classifier_daemon_path"></div>
-                <div class="col-md-4"><label class="form-label">Database</label><input class="form-control" name="database"></div>
                 <div class="col-md-2"><label class="form-label">Catch-up limit</label><input class="form-control" name="catch_up.limit" type="number" min="1"></div>
                 <div class="col-md-2"><label class="form-label">Batch size</label><input class="form-control" name="catch_up.batch_size" type="number" min="1"></div>
                 <div class="col-md-2"><label class="form-label">Max runs</label><input class="form-control" name="catch_up.max_runs_per_provider" type="number" min="1"></div>
@@ -29,13 +25,18 @@
                 <div class="col-md-2"><label class="form-label">Reclassify limit</label><input class="form-control" name="reclassify_cve.limit"></div>
                 <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" name="reclassify_cve.zero_shot" type="checkbox"><label class="form-check-label">Zero-shot</label></div></div>
                 <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" name="catch_up.periodic_enabled" type="checkbox"><label class="form-check-label">Periodic catch-up</label></div></div>
-                <div class="col-12"><button class="btn btn-primary" type="submit"><i class="bi bi-save me-1"></i>Save</button></div>
+                <div class="col-12 d-flex flex-wrap gap-2">
+                    <button class="btn btn-primary" type="submit"><i class="bi bi-save me-1"></i>Save</button>
+                    <button class="btn btn-outline-secondary" type="button" id="reset-config-btn">Reset to defaults</button>
+                </div>
             </form>
         </div>
 
         <div class="tab-pane fade" id="run-tab">
             <div class="d-flex flex-wrap gap-2 mb-3">
                 <button class="btn btn-primary op-run" data-op="catch_up"><i class="bi bi-play-fill me-1"></i>Catch-up</button>
+                <button class="btn btn-outline-success" id="start-schedule-btn" type="button"><i class="bi bi-calendar-check me-1"></i>Start schedule</button>
+                <button class="btn btn-outline-warning" id="stop-schedule-btn" type="button"><i class="bi bi-calendar-x me-1"></i>Stop schedule</button>
                 <button class="btn btn-primary op-run" data-op="review"><i class="bi bi-play-fill me-1"></i>Review</button>
                 <button class="btn btn-primary op-run" data-op="classifier_daemon"><i class="bi bi-play-fill me-1"></i>Classifier daemon</button>
                 <button class="btn btn-primary op-run" data-op="reclassify_cve"><i class="bi bi-play-fill me-1"></i>Reclassify CVE</button>
@@ -62,7 +63,6 @@
 {% block script %}
 <script>
 const fields = [
-  'avd_root','python_path','vuln_scrape_module','classifier_daemon_path','database',
   'catch_up.limit','catch_up.batch_size','catch_up.max_runs_per_provider','catch_up.interval_hours',
   'catch_up.periodic_enabled','review.providers','reclassify_cve.limit','reclassify_cve.zero_shot'
 ];
@@ -99,13 +99,22 @@ function fillForm(config) {
 }
 function updateSchedule() {
   const box = document.getElementById('schedule-status');
+  const startBtn = document.getElementById('start-schedule-btn');
+  const stopBtn = document.getElementById('stop-schedule-btn');
   const catchUp = currentConfig?.catch_up;
-  if (!catchUp?.periodic_enabled) {
-    box.textContent = '';
+  const enabled = Boolean(catchUp?.periodic_enabled);
+  if (startBtn) startBtn.classList.toggle('d-none', enabled);
+  if (stopBtn) stopBtn.classList.toggle('d-none', !enabled);
+  if (!enabled) {
+    box.textContent = 'Periodic catch-up is off';
     return;
   }
   const next = Date.parse(catchUp.next_run_at || '');
   const minutes = Number.isNaN(next) ? 0 : Math.max(0, Math.ceil((next - Date.now()) / 60000));
+  if (minutes === 0) {
+    box.textContent = 'Next catch-up scrape due soon (within ~1 minute)';
+    return;
+  }
   box.textContent = `Next catch-up scrape in ${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 function show(text) {
@@ -153,6 +162,14 @@ document.getElementById('config-form').onsubmit = async event => {
   if (!response.ok) return show(body.error || 'Save failed');
   fillForm(body); show('Saved');
 };
+document.getElementById('reset-config-btn').onclick = async () => {
+  if (!confirm('Reset catch-up, review, and reclassify settings to defaults?')) return;
+  const response = await fetch('/api/operations/config', {method:'DELETE'});
+  const body = await response.json();
+  if (!response.ok) return show(body.error || 'Reset failed');
+  fillForm(body);
+  show('Reset to defaults');
+};
 document.querySelectorAll('.op-run').forEach(button => {
   button.onclick = async () => {
     const response = await fetch(`/api/operations/run/${button.dataset.op}`, {method:'POST'});
@@ -161,6 +178,20 @@ document.querySelectorAll('.op-run').forEach(button => {
     await loadRuns();
   };
 });
+document.getElementById('start-schedule-btn').onclick = async () => {
+  const response = await fetch('/api/operations/schedule/catch_up/start', {method:'POST'});
+  const body = await response.json();
+  if (!response.ok) return show(body.error || 'Unable to start schedule');
+  fillForm(body);
+  show('Catch-up schedule started');
+};
+document.getElementById('stop-schedule-btn').onclick = async () => {
+  const response = await fetch('/api/operations/schedule/catch_up/stop', {method:'POST'});
+  const body = await response.json();
+  if (!response.ok) return show(body.error || 'Unable to stop schedule');
+  fillForm(body);
+  show('Catch-up schedule stopped');
+};
 document.getElementById('refresh-btn').onclick = async () => { await loadConfig(); await loadRuns(); };
 document.getElementById('clear-history-btn').onclick = async () => {
   if (!confirm('Clear finished operation history?')) return;

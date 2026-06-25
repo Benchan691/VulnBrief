@@ -6,9 +6,12 @@ from operations_runner import (
     clear_runs,
     list_runs,
     load_config,
+    reset_config,
     run_logs,
     save_config,
+    start_catch_up_schedule,
     start_operation,
+    stop_catch_up_schedule,
     stop_run,
 )
 from . import operations_blueprint
@@ -41,6 +44,15 @@ def update_operations_config():
         return jsonify({'error': 'Unable to save operations config.'}), 503
 
 
+@operations_blueprint.route('/api/operations/config', methods=['DELETE'])
+@login_required
+def reset_operations_config():
+    try:
+        return jsonify(reset_config(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to reset operations config.'}), 503
+
+
 @operations_blueprint.route('/api/operations/runs')
 @login_required
 def get_operations_runs():
@@ -68,6 +80,24 @@ def run_operation(operation):
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': 'Unable to start operation.'}), 503
+
+
+@operations_blueprint.route('/api/operations/schedule/catch_up/start', methods=['POST'])
+@login_required
+def start_catch_up_schedule_route():
+    try:
+        return jsonify(start_catch_up_schedule(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to start catch-up schedule.'}), 503
+
+
+@operations_blueprint.route('/api/operations/schedule/catch_up/stop', methods=['POST'])
+@login_required
+def stop_catch_up_schedule_route():
+    try:
+        return jsonify(stop_catch_up_schedule(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to stop catch-up schedule.'}), 503
 
 
 @operations_blueprint.route('/api/operations/stop/<run_id>', methods=['POST'])
