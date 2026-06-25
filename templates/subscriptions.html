@@ -587,17 +587,21 @@
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
             if (item.newsletter_profile.enabled) actions.innerHTML += '<a class="btn btn-outline-primary btn-sm" href="/subscriptions/' + encodeURIComponent(item.email) + '/newsletter-feed">View Feed</a>';
             if (item.report_profile.enabled) {
-                actions.innerHTML += '<button class="btn btn-success btn-sm send-email">Send Email</button>';
+                actions.innerHTML += '<button class="btn btn-success btn-sm send-email" type="button">Send Email</button>';
+            }
+            actions.innerHTML += '<button class="btn btn-outline-success btn-sm verify-email" type="button">Verify Email</button><button class="btn btn-outline-primary btn-sm edit" type="button">Edit</button><button class="btn btn-outline-danger btn-sm remove" type="button">Delete</button>';
+            if (item.report_profile.enabled) {
                 actions.querySelector('.send-email').onclick = function () {
                     requestJson(apiUrl(item.email, '/send-email'), {method:'POST'})
                         .then(function(body){
                             showMessage((body.message || 'Report email started.') + ' Job ' + body.job_id + '.', 'info');
                             openSendEmailProgress(body.job_id);
                         })
-                        .catch(function(e){showMessage(e.message,'danger');});
+                        .catch(function(e){
+                            showMessage(e.message,'danger');
+                        });
                 };
             }
-            actions.innerHTML += '<button class="btn btn-outline-success btn-sm verify-email">Verify Email</button><button class="btn btn-outline-primary btn-sm edit">Edit</button><button class="btn btn-outline-danger btn-sm remove">Delete</button>';
             actions.querySelector('.verify-email').onclick = function () {
                 requestJson(apiUrl(item.email, '/verify-email'), {method:'POST'})
                     .then(function(body){ showMessage(body.message || 'Verification email sent.', 'success'); })
