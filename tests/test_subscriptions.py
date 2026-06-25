@@ -149,6 +149,75 @@ def test_verify_subscription_email_returns_send_error(client, monkeypatch):
     assert response.get_json()['error'] == 'SMTP refused connection'
 
 
+def test_subscription_report_preview_returns_count_and_top_cves(client, monkeypatch):
+    authenticate(client)
+
+    monkeypatch.setattr(
+        'routes.subscription.query_profile_matches',
+        lambda database, profile, limit=None, include_documents=False: [
+            {
+                'collection': 'cve_review',
+                'source_collection': 'cve',
+                'selection_id': '1',
+                'document': {
+                    'code': 'CVE-2026-0001',
+                    'severity': 'Critical',
+                    'details': {'cve': {'description': 'Active exploitation with remote code execution'}},
+                },
+            },
+            {
+                'collection': 'cve_review',
+                'source_collection': 'cve',
+                'selection_id': '2',
+                'document': {
+                    'code': 'CVE-2026-0002',
+                    'severity': 'High',
+                    'details': {'cve': {'description': 'Proof of concept exploit'}},
+                },
+            },
+            {
+                'collection': 'cve_review',
+                'source_collection': 'cve',
+                'selection_id': '3',
+                'document': {
+                    'code': 'CVE-2026-0003',
+                    'severity': 'Medium',
+                    'details': {'cve': {'description': 'Moderate impact'}},
+                },
+            },
+        ],
+    )
+
+    response = client.post('/api/subscriptions/report-preview', json={
+        'report_profile': {
+            'enabled': True,
+            'generation_mode': 'enriched_weekly',
+            'report_language': 'en',
+            'filters': {},
+        },
+    })
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['count'] == 3
+    assert body['top_cves'][0] == 'CVE-2026-0001'
+    assert len(body['top_cves']) == 3
+
+
+def test_subscription_report_preview_rejects_invalid_profile(client):
+    authenticate(client)
+
+    response = client.post('/api/subscriptions/report-preview', json={
+        'report_profile': {
+            'enabled': True,
+            'filters': {'status': 'Urgent'},
+        },
+    })
+
+    assert response.status_code == 400
+    assert response.get_json()['error'].startswith('Severity/status must be')
+
+
 def test_subscriptions_run_daily_window_selects_matching_source_documents(client, monkeypatch):
     authenticate(client)
     assert client.post('/api/subscriptions', json={
@@ -235,6 +304,69 @@ def test_disabled_report_profile_cannot_run(client):
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/run', json={})
     assert response.status_code == 400
     assert response.get_json()['error'] == 'Report profile is disabled.'
+
+
+def test_send_subscription_report_generates_job_and_emails(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'enabled': True, 'filters': {}},
+    }).status_code == 201
+
+    monkeypatch.setattr(
+        'routes.subscription.generate_and_send_subscription_report',
+        lambda app, subscription, profile: {
+            'job_id': 'job-123',
+            'match_count': 4,
+            'job': {'status': 'completed'},
+        },
+    )
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/send-email')
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['job_id'] == 'job-123'
+    assert body['count'] == 4
+
+
+def test_send_subscription_report_returns_no_match_error(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'enabled': True, 'filters': {}},
+    }).status_code == 201
+
+    def fail_generate(*args, **kwargs):
+        raise ValueError('No records matched the report profile.')
+
+    monkeypatch.setattr('routes.subscription.generate_and_send_subscription_report', fail_generate)
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/send-email')
+
+    assert response.status_code == 400
+    assert response.get_json()['error'] == 'No records matched the report profile.'
+
+
+def test_send_subscription_report_surfaces_smtp_failure(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'enabled': True, 'filters': {}},
+    }).status_code == 201
+
+    def fail_generate(*args, **kwargs):
+        raise RuntimeError('SMTP refused connection')
+
+    monkeypatch.setattr('routes.subscription.generate_and_send_subscription_report', fail_generate)
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/send-email')
+
+    assert response.status_code == 502
+    assert response.get_json()['error'] == 'SMTP refused connection'
 
 
 def test_subscription_rejects_invalid_severity_choice(client):

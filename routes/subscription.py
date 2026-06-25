@@ -8,6 +8,7 @@ from bootstrap import BASE_DIR
 from cpe_store import search_cpe_pairs, search_cpe_products, search_cpe_vendors
 from mailer import send_html_email
 from mongo import get_vulnerabilities_database
+from selection_scorer import rank_scored_selections, score_review_document
 from newsletter_store import filter_newsletter_feed
 from subscription_data import (
     get_sub_account_collection,
@@ -17,7 +18,7 @@ from subscription_data import (
     validate_filters,
     validate_profile,
 )
-from subscription_scheduler import next_weekly_run
+from subscription_scheduler import generate_and_send_subscription_report, next_weekly_run
 from . import subscription_blueprint
 from .common import login_required
 
@@ -58,6 +59,25 @@ def _with_next_run(profile):
         profile = dict(profile)
         profile['next_run_at'] = next_weekly_run(profile)
     return profile
+
+
+def _report_preview(matches):
+    scored = []
+    for item in matches:
+        document = item.get('document') or {}
+        scored.append({
+            **item,
+            **score_review_document(document),
+        })
+    top_cves = [
+        item.get('cve_id') or item.get('selection_id')
+        for item in rank_scored_selections(scored, 3)
+        if item.get('cve_id') or item.get('selection_id')
+    ]
+    return {
+        'count': len(matches),
+        'top_cves': top_cves,
+    }
 
 
 @subscription_blueprint.route('/subscriptions')
@@ -234,6 +254,62 @@ def run_subscription(email):
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': 'Unable to run subscription.'}), 503
+
+
+@subscription_blueprint.route('/api/subscriptions/report-preview', methods=['POST'])
+@login_required
+def preview_subscription_report():
+    data = request.get_json(silent=True) or {}
+    try:
+        database = get_vulnerabilities_database()
+        profile = validate_profile(database, data.get('report_profile'), 'report')
+        profile = profile_with_window(profile, data)
+        matches = query_profile_matches(database, profile, include_documents=True)
+        return jsonify(_report_preview(matches))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to preview report profile.'}), 503
+
+
+@subscription_blueprint.route('/api/subscriptions/<path:email>/send-email', methods=['POST'])
+@login_required
+def send_subscription_report(email):
+    try:
+        database = get_vulnerabilities_database()
+        raw = get_collection().find_one({'email': email})
+        if raw is None:
+            return jsonify({'error': 'Subscription not found.'}), 404
+        subscription = normalize_subscription(database, raw)
+        if not subscription['report_profile']['enabled']:
+            return jsonify({'error': 'Report profile is disabled.'}), 400
+        result = generate_and_send_subscription_report(
+            current_app._get_current_object(),
+            subscription,
+            subscription['report_profile'],
+        )
+        get_collection().update_one(
+            {'_id': raw['_id']},
+            {'$set': {
+                'report_profile.last_run_at': datetime.now(timezone.utc),
+                'report_profile.last_match_count': result['match_count'],
+                'report_profile.last_job_id': result['job_id'],
+                'report_profile.last_error': '',
+                'updated_at': datetime.now(timezone.utc),
+            }},
+        )
+        return jsonify({
+            'success': True,
+            'message': 'Report generated and email sent.',
+            'job_id': result['job_id'],
+            'count': result['match_count'],
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to send report email.'}), 503
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
 
 
 @subscription_blueprint.route('/api/subscriptions/<path:email>/newsletters/query', methods=['POST'])

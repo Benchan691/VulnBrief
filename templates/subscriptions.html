@@ -57,6 +57,10 @@
                         <div class="card h-100"><div class="card-body">
                             <div class="form-check form-switch mb-3"><input id="report-enabled" class="form-check-input" type="checkbox" checked><label class="form-check-label fw-semibold" for="report-enabled">Report profile enabled</label></div>
                             <div id="report-fields"></div>
+                            <div id="report-preview" class="alert alert-light border small mt-3 mb-0">
+                                <div class="fw-semibold mb-1">Report Preview</div>
+                                <div id="report-preview-summary" class="text-muted">Adjust report filters to preview matches.</div>
+                            </div>
                             <hr>
                             <div class="row g-2">
                                 <div class="col-md-6"><label class="form-label small">Generation mode</label><select id="report-generation-mode" class="form-select"><option value="enriched_weekly">Enriched Weekly</option><option value="template">Fixed Template</option></select></div>
@@ -79,22 +83,18 @@
 <script>
 (function () {
     const subscriptionsUrl = {{ url_for('subscription.get_subscriptions')|tojson }};
+    const previewUrl = {{ url_for('subscription.preview_subscription_report')|tojson }};
     const cpesUrl = {{ url_for('subscription.get_cpes')|tojson }};
     const reviewsUrl = {{ url_for('review.get_review_collections')|tojson }};
-    const reviewsPageUrl = {{ url_for('review.reviews')|tojson }};
-    const selectionKey = 'vulnerabilityReviewSelections';
-    const reportModeKey = 'vulnerabilityReportGenerationMode';
-    const reportLanguageKey = 'vulnerabilityReportLanguage';
     const modal = new bootstrap.Modal(document.getElementById('subscription-modal'));
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
     let collections = [], subscriptions = [], editingEmail = null;
     let selectedCpes = [];
+    let previewTimer = null;
 
     const severityLevels = ['Critical', 'High', 'Medium', 'Low'];
     const newsletterTextFields = ['search', 'code', 'title', 'impact', 'affected', 'source'];
-    const reportTextFields = ['search'];
-
     function newsletterFilterMarkup() {
         return '<div class="row g-2">' +
         '<div class="col-md-6">' +
@@ -130,10 +130,6 @@
 
     function reportFilterMarkup() {
         return '<div class="row g-2">' +
-        reportTextFields.map(function (field) {
-            const labels = {search: 'Search all'};
-            return '<div class="col-md-6"><label class="form-label small">' + labels[field] + '</label><input id="report-' + field + '" class="form-control form-control-sm"></div>';
-        }).join('') +
         '<div class="col-12"><label class="form-label small">Severity / status</label><div class="d-flex flex-wrap gap-3">' +
         severityLevels.map(function (level) {
             return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + level + '</label></div>';
@@ -158,6 +154,12 @@
     function showMessage(text, kind) { message.textContent = text; message.className = 'alert alert-' + kind; }
     function requestJson(url, options) { return fetch(url, options).then(function (response) { return response.json().then(function (body) { if (!response.ok) throw new Error(body.error || 'Request failed.'); return body; }); }); }
     function apiUrl(email, suffix) { return subscriptionsUrl + '/' + encodeURIComponent(email) + (suffix || ''); }
+    function setReportPreview(summary, kind) {
+        const box = document.getElementById('report-preview');
+        const target = document.getElementById('report-preview-summary');
+        box.className = 'alert border small mt-3 mb-0 alert-' + kind;
+        target.textContent = summary;
+    }
     function getCollectionCheckboxes(prefix) {
         return Array.from(document.querySelectorAll('#' + prefix + '-collections-options .subscription-collection-checkbox'));
     }
@@ -208,6 +210,7 @@
             chip.onclick = function () { selectedCpes.splice(index, 1); renderSelectedCpes(); };
             box.append(chip);
         });
+        scheduleReportPreview();
     }
     function addCpe(pair) {
         if (!selectedCpes.some(function (item) { return cpeKey(item) === cpeKey(pair); })) {
@@ -371,7 +374,7 @@
             selectedCpes = (filters.cpe_pairs || []).map(function (pair) { return {vendor: pair.vendor, product: pair.product}; });
             renderSelectedCpes();
         }
-        const textFields = prefix === 'report' ? reportTextFields : newsletterTextFields;
+        const textFields = prefix === 'report' ? [] : newsletterTextFields;
         textFields.forEach(function (field) {
             document.getElementById(prefix + '-' + field).value = filters[field] || '';
         });
@@ -389,7 +392,7 @@
         } else if (isReportEnriched()) {
             filters.collections = ['cve_review'];
         }
-        const textFields = prefix === 'report' ? reportTextFields : newsletterTextFields;
+        const textFields = prefix === 'report' ? [] : newsletterTextFields;
         textFields.forEach(function (field) {
             filters[field] = document.getElementById(prefix + '-' + field).value;
         });
@@ -401,6 +404,40 @@
         filters.end = document.getElementById(prefix + '-end').value;
         if (filters.time_window !== 'custom') { filters.start = ''; filters.end = ''; }
         return filters;
+    }
+    function buildReportProfilePayload() {
+        return {
+            report_profile: {
+                enabled: document.getElementById('report-enabled').checked,
+                filters: readFilters('report'),
+                generation_mode: document.getElementById('report-generation-mode').value,
+                report_language: document.getElementById('report-language').value,
+                schedule_enabled: document.getElementById('report-schedule-enabled').checked,
+                schedule_weekday: document.getElementById('report-schedule-weekday').value,
+                schedule_time: document.getElementById('report-schedule-time').value
+            }
+        };
+    }
+    function refreshReportPreview() {
+        if (!document.getElementById('report-enabled').checked) {
+            setReportPreview('Report profile is disabled.', 'secondary');
+            return;
+        }
+        setReportPreview('Loading preview...', 'light');
+        requestJson(previewUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(buildReportProfilePayload())
+        }).then(function (body) {
+            const top = body.top_cves && body.top_cves.length ? body.top_cves.join(', ') : 'No example CVEs yet';
+            setReportPreview(body.count + ' matching CVE(s). Top examples: ' + top + '.', body.count ? 'info' : 'warning');
+        }).catch(function (e) {
+            setReportPreview(e.message, 'danger');
+        });
+    }
+    function scheduleReportPreview() {
+        if (previewTimer) window.clearTimeout(previewTimer);
+        previewTimer = window.setTimeout(refreshReportPreview, 250);
     }
     function openEditor(subscription) {
         editingEmail = subscription ? subscription.email : null;
@@ -416,6 +453,7 @@
         document.getElementById('report-schedule-enabled').checked = report.schedule_enabled === true;
         document.getElementById('report-schedule-weekday').value = report.schedule_weekday || 'mon';
         document.getElementById('report-schedule-time').value = report.schedule_time || '09:00';
+        refreshReportPreview();
         modal.show();
     }
     function renderRows() {
@@ -429,8 +467,12 @@
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
             if (item.newsletter_profile.enabled) actions.innerHTML += '<a class="btn btn-outline-primary btn-sm" href="/subscriptions/' + encodeURIComponent(item.email) + '/newsletter-feed">View Feed</a>';
             if (item.report_profile.enabled) {
-                actions.innerHTML += '<button class="btn btn-success btn-sm run">Run Report</button>';
-                actions.querySelector('.run').onclick = function () { requestJson(apiUrl(item.email, '/run'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(body){ if (!body.count) return showMessage('No records matched the report profile.', 'warning'); localStorage.setItem(selectionKey, JSON.stringify(body.selections)); localStorage.setItem(reportModeKey, item.report_profile.generation_mode || 'enriched_weekly'); localStorage.setItem(reportLanguageKey, item.report_profile.report_language || 'en'); window.location.href = reviewsPageUrl; }).catch(function(e){showMessage(e.message,'danger');}); };
+                actions.innerHTML += '<button class="btn btn-success btn-sm send-email">Send Email</button>';
+                actions.querySelector('.send-email').onclick = function () {
+                    requestJson(apiUrl(item.email, '/send-email'), {method:'POST'})
+                        .then(function(body){ showMessage((body.message || 'Report email sent.') + ' Job ' + body.job_id + '.', 'success'); })
+                        .catch(function(e){showMessage(e.message,'danger');});
+                };
             }
             actions.innerHTML += '<button class="btn btn-outline-success btn-sm verify-email">Verify Email</button><button class="btn btn-outline-primary btn-sm edit">Edit</button><button class="btn btn-outline-danger btn-sm remove">Delete</button>';
             actions.querySelector('.verify-email').onclick = function () {
@@ -450,20 +492,25 @@
     document.getElementById('report-cpe-vendor-search').addEventListener('input', searchCpeVendors);
     document.getElementById('report-cpe-product-search').addEventListener('input', searchCpeProducts);
     document.getElementById('report-cpe-clear').addEventListener('click', clearCpeSearch);
+    document.getElementById('report-enabled').addEventListener('change', refreshReportPreview);
+    document.getElementById('report-generation-mode').addEventListener('change', scheduleReportPreview);
+    document.getElementById('report-language').addEventListener('change', scheduleReportPreview);
+    document.getElementById('report-schedule-enabled').addEventListener('change', scheduleReportPreview);
+    document.getElementById('report-schedule-weekday').addEventListener('change', scheduleReportPreview);
+    document.getElementById('report-schedule-time').addEventListener('change', scheduleReportPreview);
+    document.getElementById('report-time-window').addEventListener('change', scheduleReportPreview);
+    document.getElementById('report-start').addEventListener('input', scheduleReportPreview);
+    document.getElementById('report-end').addEventListener('input', scheduleReportPreview);
+    document.querySelectorAll('#report-fields .report-status-checkbox').forEach(function (input) {
+        input.addEventListener('change', scheduleReportPreview);
+    });
+    document.getElementById('report-include-unknown').addEventListener('change', scheduleReportPreview);
     document.getElementById('add-btn').onclick = function () { openEditor(null); };
     document.getElementById('subscription-form').onsubmit = function (event) {
         event.preventDefault();
         const payload = { email:document.getElementById('email').value, team:document.getElementById('team').value,
             newsletter_profile:{enabled:document.getElementById('newsletter-enabled').checked,filters:readFilters('newsletter')},
-            report_profile:{
-                enabled:document.getElementById('report-enabled').checked,
-                filters:readFilters('report'),
-                generation_mode:document.getElementById('report-generation-mode').value,
-                report_language:document.getElementById('report-language').value,
-                schedule_enabled:document.getElementById('report-schedule-enabled').checked,
-                schedule_weekday:document.getElementById('report-schedule-weekday').value,
-                schedule_time:document.getElementById('report-schedule-time').value
-            } };
+            report_profile: buildReportProfilePayload().report_profile };
         requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage('Subscription saved.','success');return load();}).catch(function(e){showMessage(e.message,'danger');});
     };
     requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});

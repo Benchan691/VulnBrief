@@ -105,6 +105,44 @@ def _translate_if_needed(report, generation_mode, language, config):
     return translate_report(report, generation_mode, language, config)
 
 
+def generate_and_send_subscription_report(
+    app,
+    subscription,
+    profile,
+    *,
+    now=None,
+):
+    now = now or _now()
+    web_database = get_web_database()
+    vuln_database = get_vulnerabilities_database()
+    matches = query_profile_matches(vuln_database, profile)
+    if not matches:
+        raise ValueError('No records matched the report profile.')
+    job_id = create_job(matches, 'review_selections', profile['generation_mode'], profile['report_language'])
+    run_job(app, job_id)
+    job = web_database['report_jobs'].find_one({'_id': ObjectId(job_id)})
+    if not job or job.get('status') != 'completed':
+        raise ValueError((job or {}).get('error') or 'Subscription report job failed.')
+    email_report = _translate_if_needed(
+        job['report'],
+        profile['generation_mode'],
+        profile['report_language'],
+        app.config,
+    )
+    html = _render_job_html(job, email_report, report_language=profile['report_language'])
+    send_html_email(
+        app.config,
+        subscription['email'],
+        f"Scheduled vulnerability report: {now.astimezone(HONG_KONG):%Y-%m-%d}",
+        html,
+    )
+    return {
+        'job_id': job_id,
+        'job': job,
+        'match_count': len(matches),
+    }
+
+
 def run_scheduled_report(app, subscription_id):
     with app.app_context():
         web_database = get_web_database()
@@ -117,38 +155,22 @@ def run_scheduled_report(app, subscription_id):
         try:
             subscription = normalize_subscription(vuln_database, raw)
             profile = force_week_window(subscription['report_profile'])
-            matches = query_profile_matches(vuln_database, profile)
             update = {
                 'report_profile.last_run_at': now,
-                'report_profile.last_match_count': len(matches),
                 'report_profile.next_run_at': next_weekly_run(profile, now),
                 'report_profile.last_error': '',
                 'schedule_claim_until': None,
                 'schedule_claim_owner': '',
                 'updated_at': now,
             }
-            if not matches:
-                collection.update_one({'_id': raw['_id']}, {'$set': update})
-                return
-            job_id = create_job(matches, 'review_selections', profile['generation_mode'], profile['report_language'])
-            run_job(app, job_id)
-            job = web_database['report_jobs'].find_one({'_id': ObjectId(job_id)})
-            if not job or job.get('status') != 'completed':
-                raise ValueError((job or {}).get('error') or 'Scheduled report job failed.')
-            email_report = _translate_if_needed(
-                job['report'],
-                profile['generation_mode'],
-                profile['report_language'],
-                app.config,
+            result = generate_and_send_subscription_report(
+                app,
+                subscription,
+                profile,
+                now=now,
             )
-            html = _render_job_html(job, email_report, report_language=profile['report_language'])
-            send_html_email(
-                app.config,
-                subscription['email'],
-                f"Scheduled vulnerability report: {now.astimezone(HONG_KONG):%Y-%m-%d}",
-                html,
-            )
-            update['report_profile.last_job_id'] = job_id
+            update['report_profile.last_match_count'] = result['match_count']
+            update['report_profile.last_job_id'] = result['job_id']
             collection.update_one({'_id': raw['_id']}, {'$set': update})
         except Exception as exc:
             failed_profile = {
