@@ -538,7 +538,6 @@
         addHeader('Select');
         addHeader('CVE');
         addHeader('Severity');
-        addHeader('Priority');
         addHeader('Description');
         addHeader('Vendor');
         addHeader('Product');
@@ -689,12 +688,6 @@
                 firstValue(projectedDocument, ['severity', 'impacts', 'status']),
                 '',
                 true
-            );
-            addCell(
-                row,
-                item.patch_priority || '-',
-                '',
-                false
             );
             addCell(
                 row,
