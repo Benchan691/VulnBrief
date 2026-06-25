@@ -154,7 +154,7 @@ def test_subscription_report_preview_returns_count_and_top_cves(client, monkeypa
 
     monkeypatch.setattr(
         'routes.subscription.query_profile_matches',
-        lambda database, profile, limit=None, include_documents=False: [
+        lambda database, profile, limit=None, include_documents=False, allow_partial=False: [
             {
                 'collection': 'cve_review',
                 'source_collection': 'cve',
@@ -187,6 +187,7 @@ def test_subscription_report_preview_returns_count_and_top_cves(client, monkeypa
             },
         ],
     )
+    monkeypatch.setattr('routes.subscription.count_profile_matches', lambda database, profile: 3)
 
     response = client.post('/api/subscriptions/report-preview', json={
         'report_profile': {
@@ -216,6 +217,28 @@ def test_subscription_report_preview_rejects_invalid_profile(client):
 
     assert response.status_code == 400
     assert response.get_json()['error'].startswith('Severity/status must be')
+
+
+def test_subscription_report_preview_returns_json_for_unexpected_error(client, monkeypatch):
+    authenticate(client)
+    monkeypatch.setattr('routes.subscription.count_profile_matches', lambda database, profile: 1)
+
+    def fail_preview(*args, **kwargs):
+        raise RuntimeError('Preview exploded')
+
+    monkeypatch.setattr('routes.subscription.query_profile_matches', fail_preview)
+
+    response = client.post('/api/subscriptions/report-preview', json={
+        'report_profile': {
+            'enabled': True,
+            'generation_mode': 'enriched_weekly',
+            'report_language': 'en',
+            'filters': {},
+        },
+    })
+
+    assert response.status_code == 500
+    assert response.get_json()['error'] == 'Preview exploded'
 
 
 def test_subscriptions_run_daily_window_selects_matching_source_documents(client, monkeypatch):

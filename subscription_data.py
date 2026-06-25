@@ -501,12 +501,43 @@ def _projection_pipeline(view):
     return [first, *pipeline[1:]]
 
 
-def query_profile_matches(database, profile, limit=MAX_EXPORT_SELECTIONS, include_documents=False):
+def _profile_collection_names(database, profile):
     filters = profile['filters']
     views = review_views(database)
     collection_names = filters['collections'] or sorted(views)
     if profile.get('generation_mode') == 'enriched_weekly':
         collection_names = ['cve_review']
+    return filters, views, collection_names
+
+
+def count_profile_matches(database, profile):
+    filters, views, collection_names = _profile_collection_names(database, profile)
+    mongo_filter = build_match_filter(filters)
+    total = 0
+    for view_name in collection_names:
+        view = views[view_name]
+        pipeline = _projection_pipeline(view)
+        pipeline.extend([
+            {'$match': mongo_filter},
+            {'$count': 'count'},
+        ])
+        count = 0
+        for row in database[view['options']['viewOn']].aggregate(pipeline):
+            count = int(row.get('count') or 0)
+            break
+        total += count
+    return total
+
+
+def query_profile_matches(
+    database,
+    profile,
+    limit=MAX_EXPORT_SELECTIONS,
+    include_documents=False,
+    allow_partial=False,
+):
+    filters, views, collection_names = _profile_collection_names(database, profile)
+    if profile.get('generation_mode') == 'enriched_weekly':
         scope_limit = (filters.get('report_scope') or {}).get('max_count')
         if scope_limit:
             limit = min(limit, int(scope_limit)) if limit is not None else int(scope_limit)
@@ -532,5 +563,7 @@ def query_profile_matches(database, profile, limit=MAX_EXPORT_SELECTIONS, includ
                 item['document'] = document
             results.append(item)
             if limit is not None and len(results) > limit:
+                if allow_partial:
+                    return results[:limit]
                 raise ValueError(f'Filter result exceeds the {limit}-document limit.')
     return results

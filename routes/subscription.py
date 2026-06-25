@@ -12,6 +12,7 @@ from mongo import get_vulnerabilities_database
 from selection_scorer import rank_scored_selections, score_review_document
 from newsletter_store import filter_newsletter_feed
 from subscription_data import (
+    count_profile_matches,
     get_sub_account_collection,
     normalize_subscription,
     profile_with_window,
@@ -22,6 +23,8 @@ from subscription_data import (
 from subscription_scheduler import deliver_subscription_report_job, next_weekly_run, start_subscription_report_job
 from . import subscription_blueprint
 from .common import login_required
+
+REPORT_PREVIEW_SAMPLE_LIMIT = 25
 
 
 def get_collection():
@@ -62,7 +65,7 @@ def _with_next_run(profile):
     return profile
 
 
-def _report_preview(matches):
+def _report_preview(matches, count=None):
     scored = []
     for item in matches:
         document = item.get('document') or {}
@@ -76,7 +79,7 @@ def _report_preview(matches):
         if item.get('cve_id') or item.get('selection_id')
     ]
     return {
-        'count': len(matches),
+        'count': len(matches) if count is None else count,
         'top_cves': top_cves,
     }
 
@@ -298,12 +301,21 @@ def preview_subscription_report():
         database = get_vulnerabilities_database()
         profile = validate_profile(database, data.get('report_profile'), 'report')
         profile = profile_with_window(profile, data)
-        matches = query_profile_matches(database, profile, include_documents=True)
-        return jsonify(_report_preview(matches))
+        count = count_profile_matches(database, profile)
+        matches = query_profile_matches(
+            database,
+            profile,
+            limit=REPORT_PREVIEW_SAMPLE_LIMIT,
+            include_documents=True,
+            allow_partial=True,
+        )
+        return jsonify(_report_preview(matches, count=count))
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': 'Unable to preview report profile.'}), 503
+    except Exception as exc:
+        return jsonify({'error': str(exc) or 'Unable to preview report profile.'}), 500
 
 
 @subscription_blueprint.route('/api/subscriptions/<path:email>/send-email', methods=['POST'])

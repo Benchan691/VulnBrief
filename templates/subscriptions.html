@@ -110,6 +110,8 @@
     let collections = [], subscriptions = [], editingEmail = null;
     let selectedCpes = [];
     let previewTimer = null;
+    let previewAbortController = null;
+    let previewRequestId = 0;
     let sendEmailPollTimer = null;
 
     const severityLevels = ['Critical', 'High', 'Medium', 'Low'];
@@ -171,7 +173,20 @@
     document.getElementById('report-fields').innerHTML = reportFilterMarkup();
 
     function showMessage(text, kind) { message.textContent = text; message.className = 'alert alert-' + kind; }
-    function requestJson(url, options) { return fetch(url, options).then(function (response) { return response.json().then(function (body) { if (!response.ok) throw new Error(body.error || 'Request failed.'); return body; }); }); }
+    function requestJson(url, options) {
+        return fetch(url, options).then(function (response) {
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+            if (!contentType.includes('application/json')) {
+                return response.text().then(function () {
+                    throw new Error('Server returned HTML instead of JSON.');
+                });
+            }
+            return response.json().then(function (body) {
+                if (!response.ok) throw new Error(body.error || 'Request failed.');
+                return body;
+            });
+        });
+    }
     function apiUrl(email, suffix) { return subscriptionsUrl + '/' + encodeURIComponent(email) + (suffix || ''); }
     function setReportPreview(summary, kind) {
         const box = document.getElementById('report-preview');
@@ -539,21 +554,28 @@
             setReportPreview('Report profile is disabled.', 'secondary');
             return;
         }
+        if (previewAbortController) previewAbortController.abort();
+        previewAbortController = new AbortController();
+        const requestId = ++previewRequestId;
         setReportPreview('Loading preview...', 'light');
         requestJson(previewUrl, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(buildReportProfilePayload())
+            body: JSON.stringify(buildReportProfilePayload()),
+            signal: previewAbortController.signal
         }).then(function (body) {
+            if (requestId !== previewRequestId) return;
             const top = body.top_cves && body.top_cves.length ? body.top_cves.join(', ') : 'No example CVEs yet';
             setReportPreview(body.count + ' matching CVE(s). Top examples: ' + top + '.', body.count ? 'info' : 'warning');
         }).catch(function (e) {
+            if (e.name === 'AbortError') return;
+            if (requestId !== previewRequestId) return;
             setReportPreview(e.message, 'danger');
         });
     }
     function scheduleReportPreview() {
         if (previewTimer) window.clearTimeout(previewTimer);
-        previewTimer = window.setTimeout(refreshReportPreview, 250);
+        previewTimer = window.setTimeout(refreshReportPreview, 400);
     }
     function openEditor(subscription) {
         editingEmail = subscription ? subscription.email : null;
