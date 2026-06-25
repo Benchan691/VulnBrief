@@ -453,7 +453,7 @@ def test_report_profile_rejects_invalid_schedule_and_cpe(client):
     bad_cpe = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
-        'report_profile': {'filters': {'cpe_pairs': [{'vendor': 'Only Vendor'}]}},
+        'report_profile': {'filters': {'cpe_pairs': [{'product': 'Only Product'}]}},
     })
     assert bad_cpe.status_code == 400
 

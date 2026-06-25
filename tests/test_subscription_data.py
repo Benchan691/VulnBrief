@@ -161,9 +161,29 @@ def test_cpe_pairs_use_broad_keyboard_style_search_clauses():
     assert 'Linux' in clause_text
 
 
+def test_vendor_only_cpe_filter_uses_vendor_keyword_search():
+    filters = validate_filters(FakeDatabase(), {
+        'cpe_pairs': [{'vendor': 'Red Hat'}],
+    })
+    mongo_filter = build_match_filter({
+        **filters,
+        'time_window': 'all',
+    })
+
+    assert '$and' in mongo_filter
+    clause_text = str(mongo_filter['$and'])
+    assert 'classification.best_vendor' in clause_text
+    assert 'classification.best_product' in clause_text
+    assert 'Red' in clause_text
+    assert 'Hat' in clause_text
+    assert 'Enterprise' not in clause_text
+    assert 'Linux' not in clause_text
+
+
 def test_multiple_cpe_pairs_combine_with_or():
     mongo_filter = build_match_filter({
         'cpe_pairs': [
+            {'vendor': 'Red Hat'},
             {'vendor': 'Red Hat', 'product': 'Enterprise Linux'},
             {'vendor': 'Acme', 'product': 'Widget'},
         ],
@@ -173,7 +193,7 @@ def test_multiple_cpe_pairs_combine_with_or():
     assert '$and' in mongo_filter
     cpe_clause = mongo_filter['$and'][0]
     assert '$or' in cpe_clause
-    assert len(cpe_clause['$or']) == 2
+    assert len(cpe_clause['$or']) == 3
 
 
 def test_ensure_sub_account_collection_creates_empty_collection():

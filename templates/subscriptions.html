@@ -156,7 +156,7 @@
             return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + level + '</label></div>';
         }).join('') +
         '</div><div class="form-text">Leave all unchecked to match all known severities.</div></div>' +
-        '<div class="col-12"><label class="form-label small" for="report-cpe-vendor-search">Vendor search</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-cpe-vendor-search" type="search" class="form-control" placeholder="Search vendor..." autocomplete="off"><button id="report-cpe-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-cpe-vendor-options" class="cpe-options list-group mt-1"></div><label class="form-label small mt-2" for="report-cpe-product-search">Product search</label><input id="report-cpe-product-search" type="search" class="form-control form-control-sm" placeholder="Select vendor first..." autocomplete="off" disabled><div class="d-flex gap-2 mt-2"><button id="report-cpe-add-all" class="btn btn-outline-primary btn-sm" type="button" disabled>Add all products for vendor</button><button id="report-cpe-clear-selected" class="btn btn-outline-secondary btn-sm" type="button">Clear selected</button></div><div id="report-cpe-help" class="form-text">Type at least 2 characters, then choose a vendor.</div><div id="report-cpe-product-options" class="cpe-options list-group mt-1"></div><div id="report-cpe-selected" class="mt-2"></div></div>' +
+        '<div class="col-12"><label class="form-label small" for="report-cpe-vendor-search">Vendor search</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-cpe-vendor-search" type="search" class="form-control" placeholder="Search vendor..." autocomplete="off"><button id="report-cpe-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-cpe-vendor-options" class="cpe-options list-group mt-1"></div><label class="form-label small mt-2" for="report-cpe-product-search">Product search</label><input id="report-cpe-product-search" type="search" class="form-control form-control-sm" placeholder="Select vendor first..." autocomplete="off" disabled><div class="d-flex gap-2 mt-2"><button id="report-cpe-clear-selected" class="btn btn-outline-secondary btn-sm" type="button">Clear selected</button></div><div id="report-cpe-help" class="form-text">Type at least 2 characters, then choose a vendor.</div><div id="report-cpe-product-options" class="cpe-options list-group mt-1"></div><div id="report-cpe-selected" class="mt-2"></div></div>' +
         '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">Include unknown severity</label></div></div>' +
         timeWindowMarkup('report') +
         '</div>';
@@ -279,7 +279,7 @@
         if (!selectedCpes.length) {
             const empty = document.createElement('div');
             empty.className = 'text-muted small';
-            empty.textContent = 'No vendor/product filters selected.';
+            empty.textContent = 'No vendor or product filters selected.';
             box.append(empty);
             scheduleReportPreview();
             return;
@@ -295,7 +295,8 @@
             details.className = 'border rounded px-3 py-2 mb-2';
             const summary = document.createElement('summary');
             summary.className = 'fw-semibold';
-            summary.textContent = vendor + ' (' + grouped[vendor].length + ' product' + (grouped[vendor].length === 1 ? '' : 's') + ')';
+            const productCount = grouped[vendor].filter(function (entry) { return !!entry.pair.product; }).length;
+            summary.textContent = vendor + (productCount ? (' (' + productCount + ' product' + (productCount === 1 ? '' : 's') + ')') : ' (vendor)');
             details.append(summary);
 
             const productList = document.createElement('div');
@@ -304,7 +305,7 @@
                 const chip = document.createElement('button');
                 chip.type = 'button';
                 chip.className = 'btn btn-outline-secondary btn-sm';
-                chip.textContent = entry.pair.product + ' ×';
+                chip.textContent = (entry.pair.product || 'Vendor keyword') + ' ×';
                 chip.onclick = function () {
                     selectedCpes.splice(entry.index, 1);
                     renderSelectedCpes();
@@ -327,13 +328,10 @@
     }
     function resetCpeProductSearch() {
         const productSearch = document.getElementById('report-cpe-product-search');
-        const addAll = document.getElementById('report-cpe-add-all');
         productSearch.value = '';
         productSearch.disabled = true;
         productSearch.placeholder = 'Select vendor first...';
         delete productSearch.dataset.vendor;
-        addAll.disabled = true;
-        delete addAll.dataset.vendor;
     }
     function resetCpeResults() {
         document.getElementById('report-cpe-vendor-options').replaceChildren();
@@ -354,23 +352,21 @@
         setCpeStatus('Searching vendors...');
         requestJson(cpesUrl + '?type=vendor&q=' + encodeURIComponent(query)).then(function (body) {
             options.replaceChildren();
-            setCpeStatus(body.data.length ? 'Select a vendor, then search product.' : 'No vendors found.');
+            setCpeStatus(body.data.length ? 'Select a vendor to use vendor keyword search, or search for a product.' : 'No vendors found.');
             body.data.forEach(function (item) {
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'list-group-item list-group-item-action small';
                 button.textContent = item.label;
                 button.onclick = function () {
+                    addCpe({vendor: item.vendor});
                     const productSearch = document.getElementById('report-cpe-product-search');
                     productSearch.disabled = false;
                     productSearch.value = '';
                     productSearch.dataset.vendor = item.vendor;
                     productSearch.placeholder = 'Search product for ' + item.vendor + '...';
-                    const addAll = document.getElementById('report-cpe-add-all');
-                    addAll.disabled = false;
-                    addAll.dataset.vendor = item.vendor;
                     options.replaceChildren();
-                    setCpeStatus('Search product for ' + item.vendor + ' or add all products for that vendor.');
+                    setCpeStatus('Vendor keyword added for ' + item.vendor + '. Search product if you want to narrow it further.');
                     productSearch.focus();
                 };
                 options.append(button);
@@ -387,7 +383,7 @@
         setCpeStatus('Searching products...');
         requestJson(cpesUrl + '?type=product&vendor=' + encodeURIComponent(vendor) + '&q=' + encodeURIComponent(query)).then(function (body) {
             options.replaceChildren();
-            setCpeStatus(body.data.length ? 'Select a product to add the pair.' : 'No products found for this vendor.');
+            setCpeStatus(body.data.length ? 'Select a product to narrow the vendor keyword search.' : 'No products found for this vendor.');
             body.data.forEach(function (pair) {
                 const button = document.createElement('button');
                 button.type = 'button';
@@ -398,26 +394,10 @@
             });
         }).catch(function (e) { showMessage(e.message, 'danger'); });
     }
-    function addAllVendorProducts() {
-        const button = document.getElementById('report-cpe-add-all');
-        const vendor = button.dataset.vendor || '';
-        if (!vendor) return;
-        button.disabled = true;
-        setCpeStatus('Adding all products for ' + vendor + '...');
-        requestJson(cpesUrl + '?type=product&vendor=' + encodeURIComponent(vendor) + '&limit=5000').then(function (body) {
-            (body.data || []).forEach(addCpe);
-            setCpeStatus(body.data.length ? ('Added ' + body.data.length + ' product(s) for ' + vendor + '.') : ('No products found for ' + vendor + '.'));
-        }).catch(function (e) {
-            showMessage(e.message, 'danger');
-            setCpeStatus(e.message);
-        }).finally(function () {
-            button.disabled = false;
-        });
-    }
     function clearSelectedCpes() {
         selectedCpes = [];
         renderSelectedCpes();
-        setCpeStatus('Cleared selected vendor and product pairs.');
+        setCpeStatus('Cleared selected vendor and product filters.');
     }
 
     function renderCollections(prefix, selected) {
@@ -502,7 +482,9 @@
         filters = filters || {};
         if (prefix === 'newsletter') renderCollections(prefix, filters.collections || []);
         if (prefix === 'report') {
-            selectedCpes = (filters.cpe_pairs || []).map(function (pair) { return {vendor: pair.vendor, product: pair.product}; });
+            selectedCpes = (filters.cpe_pairs || []).map(function (pair) {
+                return pair.product ? {vendor: pair.vendor, product: pair.product} : {vendor: pair.vendor};
+            });
             renderSelectedCpes();
         }
         const textFields = prefix === 'report' ? [] : newsletterTextFields;
@@ -633,7 +615,6 @@
     document.getElementById('report-cpe-vendor-search').addEventListener('input', searchCpeVendors);
     document.getElementById('report-cpe-product-search').addEventListener('input', searchCpeProducts);
     document.getElementById('report-cpe-clear').addEventListener('click', clearCpeSearch);
-    document.getElementById('report-cpe-add-all').addEventListener('click', addAllVendorProducts);
     document.getElementById('report-cpe-clear-selected').addEventListener('click', clearSelectedCpes);
     document.getElementById('send-email-log-modal').addEventListener('hidden.bs.modal', stopSendEmailPolling);
     document.getElementById('report-enabled').addEventListener('change', refreshReportPreview);

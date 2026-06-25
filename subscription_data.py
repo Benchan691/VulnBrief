@@ -193,12 +193,15 @@ def validate_filters(database, value):
             raise ValueError('CPE filter entries must be objects.')
         vendor = str(item.get('vendor') or '').strip()
         product = str(item.get('product') or '').strip()
-        if not vendor or not product:
-            raise ValueError('CPE filter entries require vendor and product.')
+        if not vendor:
+            raise ValueError('CPE filter entries require a vendor.')
         key = (vendor.lower(), product.lower())
         if key not in seen_pairs:
             seen_pairs.add(key)
-            normalized_pairs.append({'vendor': vendor, 'product': product})
+            normalized = {'vendor': vendor}
+            if product:
+                normalized['product'] = product
+            normalized_pairs.append(normalized)
     filters['cpe_pairs'] = normalized_pairs
     return filters
 
@@ -432,7 +435,10 @@ def build_match_filter(filters, now=None):
         search_fields = mapping['search'] + mapping['target_vendor'] + mapping['target_product']
         pair_clauses = []
         for pair in cpe_pairs:
-            clause = _broad_text_clause(f"{pair['vendor']} {pair['product']}", search_fields)
+            clause_value = pair['vendor']
+            if pair.get('product'):
+                clause_value += f" {pair['product']}"
+            clause = _broad_text_clause(clause_value, search_fields)
             if clause:
                 pair_clauses.append(clause)
         clauses.append(pair_clauses[0] if len(pair_clauses) == 1 else {'$or': pair_clauses})
