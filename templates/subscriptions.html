@@ -77,6 +77,21 @@
         </form>
     </div>
 </div>
+
+<div class="modal fade" id="send-email-log-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Send Email Progress</h5>
+                <button class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="send-email-status" class="small text-muted mb-3">Waiting to start...</div>
+                <pre id="send-email-log-content" class="small mb-0" style="white-space:pre-wrap"></pre>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block script %}
@@ -86,12 +101,16 @@
     const previewUrl = {{ url_for('subscription.preview_subscription_report')|tojson }};
     const cpesUrl = {{ url_for('subscription.get_cpes')|tojson }};
     const reviewsUrl = {{ url_for('review.get_review_collections')|tojson }};
+    const reportJobUrlTemplate = {{ url_for('report.get_report_job', job_id='__JOB_ID__')|tojson }};
+    const reportLogsUrlTemplate = {{ url_for('report.get_report_job_logs', job_id='__JOB_ID__')|tojson }};
     const modal = new bootstrap.Modal(document.getElementById('subscription-modal'));
+    const sendEmailLogModal = new bootstrap.Modal(document.getElementById('send-email-log-modal'));
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
     let collections = [], subscriptions = [], editingEmail = null;
     let selectedCpes = [];
     let previewTimer = null;
+    let sendEmailPollTimer = null;
 
     const severityLevels = ['Critical', 'High', 'Medium', 'Low'];
     const newsletterTextFields = ['search', 'code', 'title', 'impact', 'affected', 'source'];
@@ -135,7 +154,7 @@
             return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + level + '</label></div>';
         }).join('') +
         '</div><div class="form-text">Leave all unchecked to match all known severities.</div></div>' +
-        '<div class="col-12"><label class="form-label small" for="report-cpe-vendor-search">Vendor search</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-cpe-vendor-search" type="search" class="form-control" placeholder="Search vendor..." autocomplete="off"><button id="report-cpe-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-cpe-vendor-options" class="cpe-options list-group mt-1"></div><label class="form-label small mt-2" for="report-cpe-product-search">Product search</label><input id="report-cpe-product-search" type="search" class="form-control form-control-sm" placeholder="Select vendor first..." autocomplete="off" disabled><div id="report-cpe-help" class="form-text">Type at least 2 characters, then choose a vendor.</div><div id="report-cpe-product-options" class="cpe-options list-group mt-1"></div><div id="report-cpe-selected" class="d-flex flex-wrap gap-1 mt-2"></div></div>' +
+        '<div class="col-12"><label class="form-label small" for="report-cpe-vendor-search">Vendor search</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-cpe-vendor-search" type="search" class="form-control" placeholder="Search vendor..." autocomplete="off"><button id="report-cpe-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-cpe-vendor-options" class="cpe-options list-group mt-1"></div><label class="form-label small mt-2" for="report-cpe-product-search">Product search</label><input id="report-cpe-product-search" type="search" class="form-control form-control-sm" placeholder="Select vendor first..." autocomplete="off" disabled><div class="d-flex gap-2 mt-2"><button id="report-cpe-add-all" class="btn btn-outline-primary btn-sm" type="button" disabled>Add all products for vendor</button></div><div id="report-cpe-help" class="form-text">Type at least 2 characters, then choose a vendor.</div><div id="report-cpe-product-options" class="cpe-options list-group mt-1"></div><div id="report-cpe-selected" class="d-flex flex-wrap gap-1 mt-2"></div></div>' +
         '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">Include unknown severity</label></div></div>' +
         timeWindowMarkup('report') +
         '</div>';
@@ -159,6 +178,46 @@
         const target = document.getElementById('report-preview-summary');
         box.className = 'alert border small mt-3 mb-0 alert-' + kind;
         target.textContent = summary;
+    }
+    function stopSendEmailPolling() {
+        if (sendEmailPollTimer) {
+            window.clearTimeout(sendEmailPollTimer);
+            sendEmailPollTimer = null;
+        }
+    }
+    function loadSendEmailProgress(jobId) {
+        Promise.all([
+            requestJson(reportJobUrlTemplate.replace('__JOB_ID__', jobId)),
+            requestJson(reportLogsUrlTemplate.replace('__JOB_ID__', jobId))
+        ]).then(function (results) {
+            const job = results[0];
+            const logs = (results[1].logs || []).join('\n') || 'No log entries yet.';
+            const deliveryStatus = job.delivery_status || 'queued';
+            const statusLine = 'Report: ' + job.status + ' | Email: ' + deliveryStatus + (job.status_message ? ' | ' + job.status_message : '');
+            document.getElementById('send-email-status').textContent = statusLine;
+            document.getElementById('send-email-log-content').textContent = logs;
+            const finished = (job.status === 'failed') || (job.status === 'completed' && (deliveryStatus === 'completed' || deliveryStatus === 'failed'));
+            if (!finished) {
+                sendEmailPollTimer = window.setTimeout(function () { loadSendEmailProgress(jobId); }, 1500);
+                return;
+            }
+            stopSendEmailPolling();
+            if (job.status === 'failed' || deliveryStatus === 'failed') {
+                showMessage(job.delivery_error || job.error || job.status_message || 'Email delivery failed.', 'danger');
+            } else {
+                showMessage('Report generated and email sent. Job ' + jobId + '.', 'success');
+            }
+        }).catch(function (e) {
+            document.getElementById('send-email-status').textContent = e.message;
+            stopSendEmailPolling();
+        });
+    }
+    function openSendEmailProgress(jobId) {
+        stopSendEmailPolling();
+        document.getElementById('send-email-status').textContent = 'Starting email delivery...';
+        document.getElementById('send-email-log-content').textContent = 'Loading log...';
+        sendEmailLogModal.show();
+        loadSendEmailProgress(jobId);
     }
     function getCollectionCheckboxes(prefix) {
         return Array.from(document.querySelectorAll('#' + prefix + '-collections-options .subscription-collection-checkbox'));
@@ -223,10 +282,13 @@
     }
     function resetCpeProductSearch() {
         const productSearch = document.getElementById('report-cpe-product-search');
+        const addAll = document.getElementById('report-cpe-add-all');
         productSearch.value = '';
         productSearch.disabled = true;
         productSearch.placeholder = 'Select vendor first...';
         delete productSearch.dataset.vendor;
+        addAll.disabled = true;
+        delete addAll.dataset.vendor;
     }
     function resetCpeResults() {
         document.getElementById('report-cpe-vendor-options').replaceChildren();
@@ -259,8 +321,11 @@
                     productSearch.value = '';
                     productSearch.dataset.vendor = item.vendor;
                     productSearch.placeholder = 'Search product for ' + item.vendor + '...';
+                    const addAll = document.getElementById('report-cpe-add-all');
+                    addAll.disabled = false;
+                    addAll.dataset.vendor = item.vendor;
                     options.replaceChildren();
-                    setCpeStatus('Search product for ' + item.vendor + '.');
+                    setCpeStatus('Search product for ' + item.vendor + ' or add all products for that vendor.');
                     productSearch.focus();
                 };
                 options.append(button);
@@ -287,6 +352,22 @@
                 options.append(button);
             });
         }).catch(function (e) { showMessage(e.message, 'danger'); });
+    }
+    function addAllVendorProducts() {
+        const button = document.getElementById('report-cpe-add-all');
+        const vendor = button.dataset.vendor || '';
+        if (!vendor) return;
+        button.disabled = true;
+        setCpeStatus('Adding all products for ' + vendor + '...');
+        requestJson(cpesUrl + '?type=product&vendor=' + encodeURIComponent(vendor) + '&limit=5000').then(function (body) {
+            (body.data || []).forEach(addCpe);
+            setCpeStatus(body.data.length ? ('Added ' + body.data.length + ' product(s) for ' + vendor + '.') : ('No products found for ' + vendor + '.'));
+        }).catch(function (e) {
+            showMessage(e.message, 'danger');
+            setCpeStatus(e.message);
+        }).finally(function () {
+            button.disabled = false;
+        });
     }
 
     function renderCollections(prefix, selected) {
@@ -470,7 +551,10 @@
                 actions.innerHTML += '<button class="btn btn-success btn-sm send-email">Send Email</button>';
                 actions.querySelector('.send-email').onclick = function () {
                     requestJson(apiUrl(item.email, '/send-email'), {method:'POST'})
-                        .then(function(body){ showMessage((body.message || 'Report email sent.') + ' Job ' + body.job_id + '.', 'success'); })
+                        .then(function(body){
+                            showMessage((body.message || 'Report email started.') + ' Job ' + body.job_id + '.', 'info');
+                            openSendEmailProgress(body.job_id);
+                        })
                         .catch(function(e){showMessage(e.message,'danger');});
                 };
             }
@@ -492,6 +576,8 @@
     document.getElementById('report-cpe-vendor-search').addEventListener('input', searchCpeVendors);
     document.getElementById('report-cpe-product-search').addEventListener('input', searchCpeProducts);
     document.getElementById('report-cpe-clear').addEventListener('click', clearCpeSearch);
+    document.getElementById('report-cpe-add-all').addEventListener('click', addAllVendorProducts);
+    document.getElementById('send-email-log-modal').addEventListener('hidden.bs.modal', stopSendEmailPolling);
     document.getElementById('report-enabled').addEventListener('change', refreshReportPreview);
     document.getElementById('report-generation-mode').addEventListener('change', scheduleReportPreview);
     document.getElementById('report-language').addEventListener('change', scheduleReportPreview);

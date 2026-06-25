@@ -7,6 +7,7 @@ from bson import ObjectId
 
 from mailer import send_html_email
 from mongo import get_vulnerabilities_database, get_web_database
+from report_job_progress import append_job_log
 from report_harness import _render_job_html, create_job, run_job
 from review_data import review_views
 from subscription_data import HONG_KONG, normalize_subscription, query_profile_matches
@@ -105,24 +106,60 @@ def _translate_if_needed(report, generation_mode, language, config):
     return translate_report(report, generation_mode, language, config)
 
 
-def generate_and_send_subscription_report(
-    app,
-    subscription,
-    profile,
-    *,
-    now=None,
-):
-    now = now or _now()
-    web_database = get_web_database()
+def start_subscription_report_job(subscription, profile):
     vuln_database = get_vulnerabilities_database()
     matches = query_profile_matches(vuln_database, profile)
     if not matches:
         raise ValueError('No records matched the report profile.')
     job_id = create_job(matches, 'review_selections', profile['generation_mode'], profile['report_language'])
+    get_web_database()['report_jobs'].update_one(
+        {'_id': ObjectId(job_id)},
+        {'$set': {
+            'delivery_status': 'queued',
+            'delivery_error': '',
+            'status_message': 'Queued for email delivery.',
+        }},
+    )
+    append_job_log(job_id, f'Queued subscription report email for {subscription["email"]}.')
+    return {
+        'job_id': job_id,
+        'match_count': len(matches),
+    }
+
+
+def deliver_subscription_report_job(
+    app,
+    subscription,
+    profile,
+    job_id,
+    *,
+    match_count=None,
+    now=None,
+):
+    now = now or _now()
+    web_database = get_web_database()
+    jobs = web_database['report_jobs']
+    jobs.update_one(
+        {'_id': ObjectId(job_id)},
+        {'$set': {
+            'delivery_status': 'running',
+            'delivery_error': '',
+            'status_message': 'Generating report for email delivery.',
+        }},
+    )
+    append_job_log(job_id, 'Starting subscription email delivery.')
     run_job(app, job_id)
     job = web_database['report_jobs'].find_one({'_id': ObjectId(job_id)})
     if not job or job.get('status') != 'completed':
+        jobs.update_one(
+            {'_id': ObjectId(job_id)},
+            {'$set': {
+                'delivery_status': 'failed',
+                'delivery_error': (job or {}).get('error') or 'Subscription report job failed.',
+            }},
+        )
         raise ValueError((job or {}).get('error') or 'Subscription report job failed.')
+    append_job_log(job_id, 'Rendering HTML for subscription email.')
     email_report = _translate_if_needed(
         job['report'],
         profile['generation_mode'],
@@ -130,17 +167,45 @@ def generate_and_send_subscription_report(
         app.config,
     )
     html = _render_job_html(job, email_report, report_language=profile['report_language'])
+    append_job_log(job_id, f'Sending email to {subscription["email"]}.')
     send_html_email(
         app.config,
         subscription['email'],
         f"Scheduled vulnerability report: {now.astimezone(HONG_KONG):%Y-%m-%d}",
         html,
     )
+    jobs.update_one(
+        {'_id': ObjectId(job_id)},
+        {'$set': {
+            'delivery_status': 'completed',
+            'delivery_error': '',
+            'status_message': f'Email sent to {subscription["email"]}.',
+        }},
+    )
+    append_job_log(job_id, f'Email sent to {subscription["email"]}.')
     return {
         'job_id': job_id,
         'job': job,
-        'match_count': len(matches),
+        'match_count': match_count,
     }
+
+
+def generate_and_send_subscription_report(
+    app,
+    subscription,
+    profile,
+    *,
+    now=None,
+):
+    start = start_subscription_report_job(subscription, profile)
+    return deliver_subscription_report_job(
+        app,
+        subscription,
+        profile,
+        start['job_id'],
+        match_count=start['match_count'],
+        now=now,
+    )
 
 
 def run_scheduled_report(app, subscription_id):

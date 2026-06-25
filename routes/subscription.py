@@ -1,4 +1,5 @@
 import os
+import threading
 from datetime import datetime, timezone
 
 from flask import abort, current_app, jsonify, render_template, request
@@ -18,7 +19,7 @@ from subscription_data import (
     validate_filters,
     validate_profile,
 )
-from subscription_scheduler import generate_and_send_subscription_report, next_weekly_run
+from subscription_scheduler import deliver_subscription_report_job, next_weekly_run, start_subscription_report_job
 from . import subscription_blueprint
 from .common import login_required
 
@@ -80,6 +81,38 @@ def _report_preview(matches):
     }
 
 
+def _send_subscription_report_background(app, raw_id, subscription, profile, job_id, match_count):
+    try:
+        deliver_subscription_report_job(
+            app,
+            subscription,
+            profile,
+            job_id,
+            match_count=match_count,
+        )
+        get_collection().update_one(
+            {'_id': raw_id},
+            {'$set': {
+                'report_profile.last_run_at': datetime.now(timezone.utc),
+                'report_profile.last_match_count': match_count,
+                'report_profile.last_job_id': job_id,
+                'report_profile.last_error': '',
+                'updated_at': datetime.now(timezone.utc),
+            }},
+        )
+    except Exception as exc:
+        get_collection().update_one(
+            {'_id': raw_id},
+            {'$set': {
+                'report_profile.last_run_at': datetime.now(timezone.utc),
+                'report_profile.last_match_count': match_count or 0,
+                'report_profile.last_job_id': job_id,
+                'report_profile.last_error': str(exc),
+                'updated_at': datetime.now(timezone.utc),
+            }},
+        )
+
+
 @subscription_blueprint.route('/subscriptions')
 @login_required
 def subscriptions():
@@ -118,16 +151,17 @@ def get_cpes():
     try:
         path = os.path.join(BASE_DIR, 'cpes.csv')
         kind = request.args.get('type', 'pair')
+        limit = min(max(int(request.args.get('limit', 50)), 1), 5000)
         if kind == 'vendor':
-            data = search_cpe_vendors(path, request.args.get('q', ''))
+            data = search_cpe_vendors(path, request.args.get('q', ''), limit=limit)
         elif kind == 'product':
-            data = search_cpe_products(path, request.args.get('vendor', ''), request.args.get('q', ''))
+            data = search_cpe_products(path, request.args.get('vendor', ''), request.args.get('q', ''), limit=limit)
         else:
-            data = search_cpe_pairs(path, request.args.get('q', ''))
+            data = search_cpe_pairs(path, request.args.get('q', ''), limit=limit)
         return jsonify({
             'data': data,
         })
-    except OSError:
+    except (OSError, ValueError):
         return jsonify({'error': 'Unable to load CPE data.'}), 503
 
 
@@ -283,27 +317,28 @@ def send_subscription_report(email):
         subscription = normalize_subscription(database, raw)
         if not subscription['report_profile']['enabled']:
             return jsonify({'error': 'Report profile is disabled.'}), 400
-        result = generate_and_send_subscription_report(
-            current_app._get_current_object(),
+        result = start_subscription_report_job(
             subscription,
             subscription['report_profile'],
         )
-        get_collection().update_one(
-            {'_id': raw['_id']},
-            {'$set': {
-                'report_profile.last_run_at': datetime.now(timezone.utc),
-                'report_profile.last_match_count': result['match_count'],
-                'report_profile.last_job_id': result['job_id'],
-                'report_profile.last_error': '',
-                'updated_at': datetime.now(timezone.utc),
-            }},
-        )
+        threading.Thread(
+            target=_send_subscription_report_background,
+            args=(
+                current_app._get_current_object(),
+                raw['_id'],
+                subscription,
+                subscription['report_profile'],
+                result['job_id'],
+                result['match_count'],
+            ),
+            daemon=True,
+        ).start()
         return jsonify({
             'success': True,
-            'message': 'Report generated and email sent.',
+            'message': 'Report generation and email delivery started.',
             'job_id': result['job_id'],
             'count': result['match_count'],
-        })
+        }), 202
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:

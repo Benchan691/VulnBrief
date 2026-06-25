@@ -314,18 +314,26 @@ def test_send_subscription_report_generates_job_and_emails(client, monkeypatch):
         'report_profile': {'enabled': True, 'filters': {}},
     }).status_code == 201
 
+    class FakeThread:
+        def __init__(self, target=None, args=None, daemon=None):
+            self.target = target
+            self.args = args or ()
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr('routes.subscription.threading.Thread', FakeThread)
     monkeypatch.setattr(
-        'routes.subscription.generate_and_send_subscription_report',
-        lambda app, subscription, profile: {
+        'routes.subscription.start_subscription_report_job',
+        lambda subscription, profile: {
             'job_id': 'job-123',
             'match_count': 4,
-            'job': {'status': 'completed'},
         },
     )
 
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/send-email')
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     body = response.get_json()
     assert body['job_id'] == 'job-123'
     assert body['count'] == 4
@@ -342,7 +350,7 @@ def test_send_subscription_report_returns_no_match_error(client, monkeypatch):
     def fail_generate(*args, **kwargs):
         raise ValueError('No records matched the report profile.')
 
-    monkeypatch.setattr('routes.subscription.generate_and_send_subscription_report', fail_generate)
+    monkeypatch.setattr('routes.subscription.start_subscription_report_job', fail_generate)
 
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/send-email')
 
@@ -361,7 +369,7 @@ def test_send_subscription_report_surfaces_smtp_failure(client, monkeypatch):
     def fail_generate(*args, **kwargs):
         raise RuntimeError('SMTP refused connection')
 
-    monkeypatch.setattr('routes.subscription.generate_and_send_subscription_report', fail_generate)
+    monkeypatch.setattr('routes.subscription.start_subscription_report_job', fail_generate)
 
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/send-email')
 
@@ -444,6 +452,10 @@ def test_cpe_search_endpoint(client):
     products = client.get('/api/cpes?type=product&vendor=redhat&q=linux').get_json()['data']
     assert products
     assert all(item['vendor'] == 'redhat' and 'linux' in item['product'] for item in products)
+
+    all_products = client.get('/api/cpes?type=product&vendor=redhat&limit=5000').get_json()['data']
+    assert len(all_products) >= len(products)
+    assert all(item['vendor'] == 'redhat' for item in all_products)
 
 
 def _newsletter_match(document):
