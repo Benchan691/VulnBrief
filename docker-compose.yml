@@ -29,3 +29,5 @@ services:
       - searxng
     volumes:
       - ./newsletters:/app/newsletters
+      - ./.cursor:/app/.cursor
+      - ${AVD_ROOT:-/Users/chankokpan/Documents/avd}:/Users/chankokpan/Documents/avd

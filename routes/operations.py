@@ -3,6 +3,7 @@ from pymongo.errors import PyMongoError
 
 from mongo import get_web_database
 from operations_runner import (
+    clear_runs,
     list_runs,
     load_config,
     run_logs,
@@ -47,6 +48,15 @@ def get_operations_runs():
         return jsonify({'data': list_runs(get_web_database())})
     except PyMongoError:
         return jsonify({'error': 'Unable to load operation runs.'}), 503
+
+
+@operations_blueprint.route('/api/operations/runs', methods=['DELETE'])
+@login_required
+def clear_operations_runs():
+    try:
+        return jsonify(clear_runs(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to clear operation runs.'}), 503
 
 
 @operations_blueprint.route('/api/operations/run/<operation>', methods=['POST'])

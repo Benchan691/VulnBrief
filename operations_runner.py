@@ -31,6 +31,18 @@ def _parse_time(value):
         return None
 
 
+def _resolve_python_path(config):
+    python_path = str(config.get('python_path') or '').strip()
+    preferred = os.path.join(config.get('avd_root') or '', '.venv', 'bin', 'python')
+    exists = bool(python_path) and os.path.exists(python_path)
+    if os.path.exists(preferred):
+        config['python_path'] = preferred
+    elif not python_path or python_path in {'python', 'python3'} or (os.path.sep in python_path and not exists):
+        preferred = sys.executable or 'python'
+        config['python_path'] = preferred
+    return config
+
+
 def default_config():
     avd_root = '/Users/chankokpan/Documents/avd'
     python_path = os.path.join(avd_root, '.venv', 'bin', 'python')
@@ -58,21 +70,28 @@ def default_config():
         'review': {'providers': ''},
         'reclassify_cve': {'limit': '', 'zero_shot': False},
     }
-    return _merge(defaults, _configured_defaults())
+    return _resolve_python_path(_merge(defaults, _configured_defaults()))
 
 
 def _configured_defaults():
+    value = (_app_config() or {}).get('OPERATIONS_CONFIG') or {}
+    return value if isinstance(value, dict) else {}
+
+
+def _app_config():
     try:
         from mongo import get_config
     except Exception:
         return {}
-    value = get_config().get('OPERATIONS_CONFIG') or {}
-    return value if isinstance(value, dict) else {}
+    try:
+        return get_config()
+    except Exception:
+        return {}
 
 
 def load_config(database):
     stored = database['operation_config'].find_one({'_id': CONFIG_ID}) or {}
-    return _merge(default_config(), {k: v for k, v in stored.items() if k != '_id'})
+    return _resolve_python_path(_merge(default_config(), {k: v for k, v in stored.items() if k != '_id'}))
 
 
 def save_config(database, data):
@@ -97,6 +116,11 @@ def _merge(base, override):
 
 def list_runs(database):
     return [_serialize_run(run) for run in database['operation_runs'].find({}).sort('started_at', -1).limit(RUN_LIMIT)]
+
+
+def clear_runs(database):
+    result = database['operation_runs'].delete_many({'status': {'$ne': 'running'}})
+    return {'deleted': result.deleted_count}
 
 
 def run_logs(database, run_id):
@@ -124,7 +148,7 @@ def start_operation(database, operation, *, scheduled=False, popen=None):
     run_id = result.inserted_id
     thread = threading.Thread(
         target=_run_process,
-        args=(database, run_id, command, config['avd_root'], popen or subprocess.Popen),
+        args=(database, run_id, command, config['avd_root'], _process_env(config), popen or subprocess.Popen),
         daemon=True,
     )
     thread.start()
@@ -193,8 +217,24 @@ def build_command(operation, config):
     raise ValueError('Unknown operation.')
 
 
+def _process_env(config):
+    env = os.environ.copy()
+    app_config = _app_config()
+    mongo_uri = config.get('mongo_uri') or app_config.get('MONGO_URI') or app_config.get('LOCAL_MONGO_URI')
+    if mongo_uri:
+        env['MONGO_URI'] = mongo_uri
+        env['AVD_MONGO_URI'] = mongo_uri
+    database = config.get('database') or app_config.get('VULNERABILITIES_DATABASE')
+    if database:
+        env['MONGO_DB'] = database
+        env['AVD_MONGO_DB'] = database
+    return env
+
+
 def _validate_command(config, command):
-    if not os.path.isdir(config['avd_root']):
+    avd_root = config['avd_root']
+    avd_exists = os.path.isdir(avd_root)
+    if not avd_exists:
         raise ValueError('AVD root does not exist.')
     if os.path.sep in command[0] and not os.path.exists(command[0]):
         raise ValueError('Python path does not exist.')
@@ -202,7 +242,7 @@ def _validate_command(config, command):
         raise ValueError('Command script does not exist.')
 
 
-def _run_process(database, run_id, command, cwd, popen):
+def _run_process(database, run_id, command, cwd, env, popen):
     process = None
     try:
         process = popen(
@@ -213,6 +253,7 @@ def _run_process(database, run_id, command, cwd, popen):
             text=True,
             bufsize=1,
             start_new_session=True,
+            env=env,
         )
         with _lock:
             _processes[str(run_id)] = process

@@ -80,6 +80,57 @@ def test_start_operation_records_output_and_blocks_duplicate(monkeypatch):
     assert stored['exit_code'] == 0
 
 
+def test_start_operation_uses_avd_python_and_mongo_env(monkeypatch, tmp_path):
+    avd_root = tmp_path / 'avd'
+    python_path = avd_root / '.venv' / 'bin' / 'python'
+    python_path.parent.mkdir(parents=True)
+    python_path.touch()
+    database = FakeDatabase()
+    save_config(database, {
+        'avd_root': str(avd_root),
+        'python_path': '/usr/local/bin/python3.11',
+        'classifier_daemon_path': str(avd_root / 'classifier_daemon.py'),
+        'database': 'vulnerabilities',
+    })
+    monkeypatch.setattr('mongo.get_config', lambda: {
+        'MONGO_URI': 'mongodb://shared.example/',
+        'VULNERABILITIES_DATABASE': 'vulnerabilities',
+    })
+    monkeypatch.setattr(operations_runner, '_validate_command', lambda *_: None)
+    captured = {}
+
+    def fake_popen(command, **kwargs):
+        captured['command'] = command
+        captured['env'] = kwargs['env']
+        return FakeProcess(['ok\n'], wait=0)
+
+    run = start_operation(database, 'catch_up', popen=fake_popen)
+    wait_for(lambda: database['operation_runs'].documents[ObjectId(run['id'])]['status'] == 'succeeded')
+
+    assert captured['command'][0] == str(python_path)
+    assert captured['env']['MONGO_URI'] == 'mongodb://shared.example/'
+    assert captured['env']['MONGO_DB'] == 'vulnerabilities'
+
+
+def test_clear_operations_history_keeps_running(monkeypatch):
+    database = FakeDatabase()
+    runs = database['operation_runs']
+    finished = ObjectId()
+    running = ObjectId()
+    runs.documents[finished] = {'_id': finished, 'status': 'failed'}
+    runs.documents[running] = {'_id': running, 'status': 'running'}
+    monkeypatch.setattr('routes.operations.get_web_database', lambda: database)
+    client = app.test_client()
+    authenticate(client)
+
+    response = client.delete('/api/operations/runs')
+
+    assert response.status_code == 200
+    assert response.get_json()['deleted'] == 1
+    assert finished not in runs.documents
+    assert running in runs.documents
+
+
 def test_tick_scheduler_starts_due_catch_up(monkeypatch):
     database = FakeDatabase()
     save_config(database, {
@@ -129,6 +180,11 @@ class InsertResult:
         self.inserted_id = inserted_id
 
 
+class DeleteResult:
+    def __init__(self, deleted_count):
+        self.deleted_count = deleted_count
+
+
 class Cursor(list):
     def sort(self, field, direction):
         return Cursor(sorted(self, key=lambda item: item.get(field) or '', reverse=direction < 0))
@@ -165,6 +221,12 @@ class FakeCollection:
         for field, value in update.get('$set', {}).items():
             set_path(self.documents[key], field, copy.deepcopy(value))
 
+    def delete_many(self, query):
+        keys = [key for key, document in self.documents.items() if matches(document, query)]
+        for key in keys:
+            del self.documents[key]
+        return DeleteResult(len(keys))
+
 
 class FakeDatabase:
     def __init__(self):
@@ -176,7 +238,14 @@ class FakeDatabase:
 
 
 def matches(document, query):
-    return all(value_at(document, field) == value for field, value in query.items())
+    for field, value in query.items():
+        actual = value_at(document, field)
+        if isinstance(value, dict) and '$ne' in value:
+            if actual == value['$ne']:
+                return False
+        elif actual != value:
+            return False
+    return True
 
 
 def value_at(document, field):

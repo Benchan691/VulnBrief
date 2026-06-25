@@ -538,7 +538,6 @@
         addHeader('Select');
         addHeader('CVE');
         addHeader('Severity');
-        addHeader('Score');
         addHeader('Priority');
         addHeader('Description');
         addHeader('Vendor');
@@ -690,12 +689,6 @@
                 firstValue(projectedDocument, ['severity', 'impacts', 'status']),
                 '',
                 true
-            );
-            addCell(
-                row,
-                item.selection_score === undefined || item.selection_score === null ? '-' : String(item.selection_score),
-                '',
-                false
             );
             addCell(
                 row,

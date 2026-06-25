@@ -45,6 +45,9 @@
         </div>
 
         <div class="tab-pane fade" id="history-tab">
+            <div class="d-flex justify-content-end mb-2">
+                <button class="btn btn-outline-danger btn-sm" id="clear-history-btn" type="button"><i class="bi bi-trash me-1"></i>Clear history</button>
+            </div>
             <div class="table-responsive">
                 <table class="table table-sm align-middle">
                     <thead><tr><th>Operation</th><th>Status</th><th>Started</th><th>Command</th><th></th></tr></thead>
@@ -159,6 +162,14 @@ document.querySelectorAll('.op-run').forEach(button => {
   };
 });
 document.getElementById('refresh-btn').onclick = async () => { await loadConfig(); await loadRuns(); };
+document.getElementById('clear-history-btn').onclick = async () => {
+  if (!confirm('Clear finished operation history?')) return;
+  const response = await fetch('/api/operations/runs', {method:'DELETE'});
+  const body = await response.json();
+  show(response.ok ? `Cleared ${body.deleted || 0} run${body.deleted === 1 ? '' : 's'}` : (body.error || 'Clear failed'));
+  document.getElementById('log-box').textContent = '';
+  await loadRuns();
+};
 loadConfig(); loadRuns(); setInterval(loadRuns, 5000);
 </script>
 {% endblock %}
