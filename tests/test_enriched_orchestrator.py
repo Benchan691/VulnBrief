@@ -41,30 +41,13 @@ class FakeLlamaClient:
         section_name = payload.get('section_name')
         if 'partial_sections' in payload:
             self.merge_sections.append(section_name)
-            if section_name == 'remediation_playbook':
-                return json.dumps({
-                    'summary': 'Merged remediation summary.',
-                    'actions': [
-                        action
-                        for partial in payload['partial_sections']
-                        for action in partial.get('actions', [])
-                    ],
-                }), {}
-        if section_name == 'remediation_playbook':
-            rows = payload.get('vulnerability_rows') or []
-            cve_ids = [row['cve_id'] for row in rows if row.get('cve_id')]
             return json.dumps({
-                'summary': 'Chunk summary.',
-                'actions': [{
-                    'priority': 'High',
-                    'action': f'Patch {cve_id}.',
-                    'cve_ids': [cve_id],
-                } for cve_id in cve_ids],
-            }), {}
-        if section_name == 'weekly_risk_trend':
-            return json.dumps({
-                'summary': 'Risk is concentrated in one critical CVE.',
-                'trend_points': ['One critical Acme issue.'],
+                'summary': 'Merged executive summary.',
+                'key_findings': [
+                    finding
+                    for partial in payload['partial_sections']
+                    for finding in partial.get('key_findings', [])
+                ],
             }), {}
         if section_name == 'executive_summary':
             return json.dumps({
@@ -109,7 +92,14 @@ def test_run_enriched_pipeline_completes_with_mocked_tavily_and_llm(monkeypatch)
             assert row['cve_id'] == 'CVE-2026-7000'
             assert row['what_happened'] == 'Acme Widget has a remote code execution vulnerability.'
             assert row['source_urls'] == ['https://acme.example/advisory']
-            assert job['report']['executive_summary']['summary'] == 'One Acme Widget CVE requires patching.'
+            findings = job['report']['executive_summary']['key_findings']
+            assert any('1 vulnerability reviewed.' in finding for finding in findings)
+            assert any('Overall risk: Critical.' in finding for finding in findings)
+            assert any('Acme Widget' in finding for finding in findings)
+            assert 'vulnerability_navigation' not in job['report']
+            assert 'appendix' not in job['report']
+            assert 'weekly_risk_trend' not in job['report']
+            assert 'remediation_playbook' not in job['report']
             assert 'research_scope' not in job['report']
             assert 'management_brief' not in job['report']
             assert web['candidate_vulnerability_items'].count_documents({'run_id': job_id}) == 1
@@ -120,7 +110,7 @@ def test_run_enriched_pipeline_completes_with_mocked_tavily_and_llm(monkeypatch)
             vulnerabilities['cve'].delete_many({'_id': 'cve:orchestrator'})
 
 
-def test_run_enriched_pipeline_chunks_remediation_playbook_for_large_reports(monkeypatch):
+def test_run_enriched_pipeline_skips_removed_report_sections(monkeypatch):
     monkeypatch.setitem(app.config, 'TAVILY_API_KEY', 'fake')
     monkeypatch.setitem(app.config, 'ENRICHED_LLM_BASE_URL', 'http://llama.example/v1')
     monkeypatch.setitem(app.config, 'ENRICHED_RESULTS_PER_TASK', 1)
@@ -155,10 +145,13 @@ def test_run_enriched_pipeline_chunks_remediation_playbook_for_large_reports(mon
 
             job = web['report_jobs'].find_one({'_id': ObjectId(job_id)})
             assert job['status'] == 'completed'
-            actions = job['report']['remediation_playbook']['actions']
-            assert len(actions) == 4
-            assert {action['cve_ids'][0] for action in actions} == set(cve_ids)
-            assert 'remediation_playbook' in llama.merge_sections
+            assert len(job['report']['vulnerability_detail_table']['rows']) == 4
+            assert 'vulnerability_navigation' not in job['report']
+            assert 'appendix' not in job['report']
+            assert 'weekly_risk_trend' not in job['report']
+            assert 'remediation_playbook' not in job['report']
+            assert 'remediation_playbook' not in llama.merge_sections
+            assert 'weekly_risk_trend' not in llama.merge_sections
         finally:
             purge_run_artifacts(web, job_id)
             web['report_jobs'].delete_many({'_id': ObjectId(job_id)})

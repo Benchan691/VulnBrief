@@ -3,6 +3,7 @@ from pymongo.errors import ServerSelectionTimeoutError
 from zoneinfo import ZoneInfo
 
 from app import app
+from subscription_data import SUB_ACCOUNT_COLLECTION
 from mongo import get_web_database
 
 
@@ -14,11 +15,11 @@ TEST_EMAIL = 'subscriptions-test@example.com'
 def client():
     app.config.update(TESTING=True)
     with app.app_context():
-        get_web_database()['subscriptions'].delete_many({'email': TEST_EMAIL})
+        get_web_database()[SUB_ACCOUNT_COLLECTION].delete_many({'email': TEST_EMAIL})
     client = app.test_client()
     yield client
     with app.app_context():
-        get_web_database()['subscriptions'].delete_many({'email': TEST_EMAIL})
+        get_web_database()[SUB_ACCOUNT_COLLECTION].delete_many({'email': TEST_EMAIL})
 
 
 def authenticate(client):

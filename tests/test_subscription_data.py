@@ -131,3 +131,21 @@ def test_enriched_filters_include_target_fields_threshold_and_scope_limit():
 
     profile = {'generation_mode': 'enriched_weekly', 'filters': filters}
     assert query_profile_matches(FakeDatabase(), profile, limit=10) == []
+
+
+def test_ensure_sub_account_collection_creates_empty_collection():
+    from app import app
+    from mongo import get_web_database
+    from subscription_data import SUB_ACCOUNT_COLLECTION, ensure_sub_account_collection
+
+    with app.app_context():
+        database = get_web_database()
+        if SUB_ACCOUNT_COLLECTION in database.list_collection_names():
+            database.drop_collection(SUB_ACCOUNT_COLLECTION)
+
+        ensure_sub_account_collection()
+
+        assert SUB_ACCOUNT_COLLECTION in database.list_collection_names()
+        assert database[SUB_ACCOUNT_COLLECTION].find_one({}) is None
+
+        database.drop_collection(SUB_ACCOUNT_COLLECTION)

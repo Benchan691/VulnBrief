@@ -15,6 +15,7 @@ TRANSLATION_LANGUAGES = {
 }
 
 _PROTECTED_KEYS = {
+    'card_anchor',
     'cve_id',
     'cve_ids',
     'code',
@@ -22,6 +23,7 @@ _PROTECTED_KEYS = {
     'related_links',
     'source_link',
     'source_urls',
+    'href',
     'urls',
 }
 
@@ -161,22 +163,20 @@ def _progress(progress_callback, current, total, section_name):
 
 def _translate_enriched_report(report, language, client, config, progress_callback=None):
     translated = deepcopy(report)
+    translated.pop('weekly_risk_trend', None)
+    translated.pop('remediation_playbook', None)
+    translated.pop('appendix', None)
     row_count = len((report.get('vulnerability_detail_table') or {}).get('rows') or [])
-    section_total = 4 + row_count
+    section_total = 2 + row_count
     current = 0
 
     translated['title'] = _translate_fragment(report['title'], language, client, config)
     current += 1
     _progress(progress_callback, current, section_total, 'title')
 
-    for section_name in (
-        'executive_summary',
-        'weekly_risk_trend',
-        'remediation_playbook',
-    ):
-        translated[section_name] = _translate_fragment(report[section_name], language, client, config)
-        current += 1
-        _progress(progress_callback, current, section_total, section_name)
+    translated['executive_summary'] = _translate_fragment(report['executive_summary'], language, client, config)
+    current += 1
+    _progress(progress_callback, current, section_total, 'executive_summary')
 
     rows = []
     for index, row in enumerate((report.get('vulnerability_detail_table') or {}).get('rows') or [], start=1):
@@ -184,7 +184,6 @@ def _translate_enriched_report(report, language, client, config, progress_callba
         current += 1
         _progress(progress_callback, current, section_total, f'vulnerability row {index}/{row_count}')
     translated['vulnerability_detail_table'] = {'rows': rows}
-    translated['appendix'] = deepcopy(report.get('appendix') or {'source_references': [], 'metrics': {}})
     return validate_enriched_report(translated)
 
 

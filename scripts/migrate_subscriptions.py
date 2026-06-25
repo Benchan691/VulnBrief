@@ -12,9 +12,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bootstrap import BASE_DIR, configure_application
-from mongo import get_config, get_vulnerabilities_database, get_web_database
+from mongo import get_config, get_vulnerabilities_database
 from review_data import review_views
-from subscription_data import validate_profile
+from subscription_data import get_sub_account_collection, validate_profile
 
 
 LEGACY_ALIASES = {
@@ -144,7 +144,7 @@ def main():
     configure_application(BASE_DIR)
     config = get_config()
     vuln_db = get_vulnerabilities_database()
-    collection = get_web_database()['subscriptions']
+    collection = get_sub_account_collection()
     views = review_views(vuln_db)
     by_source, by_name = build_view_indexes(views, config['REVIEW_VIEW_SUFFIX'])
     legacy_records = load_legacy_records(args.input)

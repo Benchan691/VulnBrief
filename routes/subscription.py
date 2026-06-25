@@ -3,9 +3,10 @@ from datetime import datetime, timezone
 from flask import abort, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from mongo import get_vulnerabilities_database, get_web_database
+from mongo import get_vulnerabilities_database
 from newsletter_store import filter_newsletter_feed
 from subscription_data import (
+    get_sub_account_collection,
     normalize_subscription,
     profile_with_window,
     query_profile_matches,
@@ -17,7 +18,7 @@ from .common import login_required
 
 
 def get_collection():
-    return get_web_database()['subscriptions']
+    return get_sub_account_collection()
 
 
 SCHEDULE_FIELD_UNSET = {

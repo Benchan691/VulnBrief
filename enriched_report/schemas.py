@@ -84,6 +84,7 @@ VULNERABILITY_DETAIL_ROW_SCHEMA = {
     ],
     'properties': {
         'cve_id': {'type': 'string'},
+        'card_anchor': {'type': 'string'},
         'title': {'type': 'string'},
         'vendor': NULLABLE_STRING,
         'product': NULLABLE_STRING,
@@ -101,25 +102,15 @@ VULNERABILITY_DETAIL_ROW_SCHEMA = {
 ENRICHED_REPORT_SCHEMA = {
     'type': 'object',
     'required': [
-        'title', 'executive_summary', 'weekly_risk_trend',
-        'vulnerability_detail_table', 'remediation_playbook', 'appendix',
+        'title', 'executive_summary', 'vulnerability_detail_table',
     ],
     'properties': {
         'title': {'type': 'string'},
         'executive_summary': {
             'type': 'object',
-            'required': ['summary', 'key_findings'],
+            'required': ['key_findings'],
             'properties': {
-                'summary': {'type': 'string'},
                 'key_findings': STRING_ARRAY,
-            },
-        },
-        'weekly_risk_trend': {
-            'type': 'object',
-            'required': ['summary', 'trend_points'],
-            'properties': {
-                'summary': {'type': 'string'},
-                'trend_points': STRING_ARRAY,
             },
         },
         'vulnerability_detail_table': {
@@ -127,43 +118,6 @@ ENRICHED_REPORT_SCHEMA = {
             'required': ['rows'],
             'properties': {
                 'rows': {'type': 'array', 'items': VULNERABILITY_DETAIL_ROW_SCHEMA},
-            },
-        },
-        'remediation_playbook': {
-            'type': 'object',
-            'required': ['summary', 'actions'],
-            'properties': {
-                'summary': {'type': 'string'},
-                'actions': {
-                    'type': 'array',
-                    'items': {
-                        'type': 'object',
-                        'required': ['priority', 'action', 'cve_ids'],
-                        'properties': {
-                            'priority': {'type': 'string'},
-                            'action': {'type': 'string'},
-                            'cve_ids': STRING_ARRAY,
-                        },
-                    },
-                },
-            },
-        },
-        'appendix': {
-            'type': 'object',
-            'required': ['source_references', 'metrics'],
-            'properties': {
-                'source_references': {
-                    'type': 'array',
-                    'items': {
-                        'type': 'object',
-                        'required': ['cve_id', 'urls'],
-                        'properties': {
-                            'cve_id': {'type': 'string'},
-                            'urls': STRING_ARRAY,
-                        },
-                    },
-                },
-                'metrics': {'type': 'object'},
             },
         },
     },

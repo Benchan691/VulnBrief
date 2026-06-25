@@ -1,8 +1,22 @@
+import re
+
+
+def _card_anchor(card):
+    label = ' '.join(
+        str(value)
+        for value in (card.get('cve_id'), card.get('vendor'), card.get('product'))
+        if value
+    )
+    slug = re.sub(r'[^a-z0-9]+', '-', label.lower()).strip('-')
+    return f'card-{slug or "vulnerability"}'
+
+
 def build_vulnerability_detail_table(cards):
     return {
         'rows': [
             {
                 'cve_id': card['cve_id'],
+                'card_anchor': _card_anchor(card),
                 'title': card['title'],
                 'vendor': card.get('vendor'),
                 'product': card.get('product'),
@@ -19,40 +33,51 @@ def build_vulnerability_detail_table(cards):
     }
 
 
-def build_appendix(cards, evidence_cards, metrics):
-    refs_by_cve = {}
-    cve_order = []
-    seen = set()
+def build_executive_summary(rows):
+    total = len(rows)
+    severity_counts = {}
+    for row in rows:
+        severity = str(row.get('severity') or 'Unknown').title()
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+    severities = {severity.lower() for severity in severity_counts}
+    if 'critical' in severities:
+        risk = 'Critical'
+    elif 'high' in severities:
+        risk = 'High'
+    elif 'medium' in severities:
+        risk = 'Medium'
+    elif 'low' in severities:
+        risk = 'Low'
+    else:
+        risk = 'Unknown'
 
-    def add_url(cve_id, url):
-        if not url:
-            return
-        key = (cve_id, url)
-        if key in seen:
-            return
-        seen.add(key)
-        if cve_id not in refs_by_cve:
-            refs_by_cve[cve_id] = []
-            cve_order.append(cve_id)
-        refs_by_cve[cve_id].append(url)
+    products = []
+    seen_products = set()
+    for row in rows:
+        vendor = row.get('vendor') or 'Unknown vendor'
+        product = row.get('product') or 'Unknown product'
+        name = f'{vendor} {product}'.strip()
+        key = name.lower()
+        if key not in seen_products:
+            seen_products.add(key)
+            products.append(name)
+    product_text = ', '.join(products[:8]) if products else 'No affected products confirmed'
+    if len(products) > 8:
+        product_text += f', and {len(products) - 8} more'
 
-    for card in cards:
-        cve_id = card['cve_id']
-        for url in card.get('source_references') or []:
-            add_url(cve_id, url)
-    for card in evidence_cards:
-        add_url(card['cve_id'], card.get('source_url'))
-
-    refs = [
-        {'cve_id': cve_id, 'urls': refs_by_cve[cve_id]}
-        for cve_id in cve_order
-    ]
-    appendix_metrics = {
-        key: value
-        for key, value in metrics.items()
-        if key not in {'run_id', '_id'}
-    }
+    count_word = 'vulnerability' if total == 1 else 'vulnerabilities'
+    severity_text = ', '.join(
+        f'{count} {severity}'
+        for severity, count in severity_counts.items()
+    ) or 'no confirmed severity data'
     return {
-        'source_references': refs,
-        'metrics': appendix_metrics,
+        'key_findings': [
+            f'{total} {count_word} reviewed.',
+            f'Overall risk: {risk}.',
+            f'Affected products: {product_text}.',
+            f'Severity coverage: {severity_text}.',
+            'Validate whether affected systems are deployed, internet-facing, or business-critical before scheduling changes.',
+            'Patch Critical and High severity items first, apply vendor fixes, and record remediation evidence through change control.',
+            'Keep unconfirmed exposures in the follow-up queue until asset owners verify product presence.',
+        ],
     }

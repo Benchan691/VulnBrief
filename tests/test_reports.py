@@ -853,6 +853,55 @@ def test_rendered_report_includes_item_table(tmp_path):
             app.config['NEWSLETTER_ROOT'] = original_root
 
 
+def test_rendered_enriched_report_uses_cards_and_short_summary():
+    with app.app_context():
+        report = {
+            'title': 'Weekly Cybersecurity Intelligence Report',
+            'executive_summary': {
+                'key_findings': [
+                    '1 vulnerability reviewed.',
+                    'Overall risk: Critical.',
+                    'Affected products: Acme Widget.',
+                    'Patch Critical and High items first.',
+                ],
+            },
+            'vulnerability_detail_table': {
+                'rows': [{
+                    'cve_id': 'CVE-2026-7000',
+                    'card_anchor': 'card-cve-2026-7000-acme-widget',
+                    'title': 'Acme Widget RCE',
+                    'vendor': 'Acme',
+                    'product': 'Widget',
+                    'severity': 'Critical',
+                    'priority_score': 99,
+                    'patch_priority': 'Critical',
+                    'what_happened': 'Acme Widget has a remote code execution vulnerability.',
+                    'why_matters': 'Remote code execution can affect internet-facing systems.',
+                    'how_to_respond': 'Upgrade to version 2.0.',
+                    'source_urls': ['https://acme.example/advisory'],
+                }],
+            },
+        }
+        html = _render_job_html({
+            'source_count': 1,
+            'generation_mode': 'enriched_weekly',
+            'effective_report_language': 'en',
+        }, report)
+
+        assert '<h2>Vulnerability Cards</h2>' in html
+        assert 'id="card-cve-2026-7000-acme-widget"' in html
+        assert 'href="#card-cve-2026-7000-acme-widget">CVE-2026-7000 | Acme | Widget</a>' in html
+        assert '1 vulnerability reviewed.' in html
+        assert 'Overall risk: Critical.' in html
+        assert 'Affected products: Acme Widget.' in html
+        assert 'Vulnerability Navigation' not in html
+        assert '&lt;a href' not in html
+        assert 'Priority' not in html
+        assert 'Appendix' not in html
+        assert 'Weekly Risk Trend' not in html
+        assert 'Remediation Playbook' not in html
+
+
 def test_rendered_template_report_includes_blank_sections_table_and_newsletter(tmp_path):
     with app.app_context():
         original_root = app.config['NEWSLETTER_ROOT']

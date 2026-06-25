@@ -7,6 +7,12 @@ from configuration import load_application_config
 from mongo import configure
 
 
+def ensure_sub_account_collection():
+    from subscription_data import ensure_sub_account_collection as migrate_collection
+
+    migrate_collection()
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -19,5 +25,6 @@ def configure_application(base_dir=None):
     _load_env(base_dir)
     config = load_application_config(base_dir)
     configure(config)
+    ensure_sub_account_collection()
     ensure_bootstrap_user(config)
     return config

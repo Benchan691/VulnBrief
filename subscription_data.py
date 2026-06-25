@@ -3,7 +3,22 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from mongo import get_web_database
 from review_data import MAX_EXPORT_SELECTIONS, review_views
+
+
+SUB_ACCOUNT_COLLECTION = 'sub_account'
+
+
+def get_sub_account_collection():
+    return get_web_database()[SUB_ACCOUNT_COLLECTION]
+
+
+def ensure_sub_account_collection():
+    database = get_web_database()
+    if SUB_ACCOUNT_COLLECTION in database.list_collection_names():
+        return
+    database.create_collection(SUB_ACCOUNT_COLLECTION)
 
 
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')

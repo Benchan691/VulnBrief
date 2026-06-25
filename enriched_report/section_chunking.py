@@ -1,7 +1,5 @@
 CHUNKABLE_SECTIONS = frozenset({
     'executive_summary',
-    'weekly_risk_trend',
-    'remediation_playbook',
 })
 
 DEFAULT_CHUNK_PROMPT_CHARS = 20000

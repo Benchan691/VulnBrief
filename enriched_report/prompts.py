@@ -30,11 +30,6 @@ DEFAULT_PROMPTS = {
         'Do not use raw search results. Do not invent facts. Use "Not confirmed from '
         'available sources." when evidence is missing.'
     ),
-    'report_section_user_instructions_remediation_playbook': (
-        'Use only vulnerability_rows from the vulnerability detail table. '
-        'Do not use raw search results. Do not invent facts. Use "Not confirmed from '
-        'available sources." when evidence is missing.'
-    ),
     'report_section_merge_system': (
         'You merge partial JSON outputs for one enriched weekly cybersecurity report section. '
         'Use only the supplied partial_sections and any other supplied section payload fields. '
@@ -45,17 +40,6 @@ DEFAULT_PROMPTS = {
     'report_section_merge_user': (
         'Merge these partial section JSON values into one final schema-valid section. '
         'Preserve the requested language and use supplied cards, metrics, and evidence only.'
-    ),
-    'report_section_merge_system_remediation_playbook': (
-        'You merge partial JSON outputs for one enriched weekly cybersecurity remediation_playbook section. '
-        'Use only the supplied partial_sections. Do not invent facts. Deduplicate actions by cve_ids, '
-        'synthesize one coherent summary, and do not add actions or CVEs not present in partial_sections. '
-        'Return only valid JSON matching exactly this shape and keys. Do not add markdown, explanations, or extra keys.\n\n'
-        'Required JSON shape:\n${section_example}'
-    ),
-    'report_section_merge_user_remediation_playbook': (
-        'Merge these partial remediation_playbook JSON values into one final schema-valid section. '
-        'Preserve the requested language. Do not add actions beyond those in partial_sections.'
     ),
     'translation_system': (
         'Translate user-facing report text to ${language_name}. '

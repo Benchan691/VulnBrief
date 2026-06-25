@@ -22,7 +22,7 @@ flowchart LR
 | Process | Role |
 |---------|------|
 | `web` | Flask UI, report job orchestration, enriched pipeline |
-| Local MongoDB | `vulnerabilities` DB for CVE/review data; `web` DB for auth, subscriptions, report jobs, enriched artifacts |
+| Local MongoDB | `vulnerabilities` DB for CVE/review data; `web` DB for auth, sub accounts, report jobs, enriched artifacts |
 
 ## Prerequisites
 

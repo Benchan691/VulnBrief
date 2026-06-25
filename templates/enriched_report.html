@@ -12,16 +12,16 @@
         .meta { color: #667085; font-size: 0.9rem; }
         .section { margin: 16px 0 24px; }
         .brief { background: #f7faf9; border-left: 4px solid #0f766e; padding: 14px 18px; }
-        table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.92rem; }
-        th, td { border: 1px solid #d0d5dd; padding: 8px 10px; text-align: left; vertical-align: top; }
-        th { background: #eef8f6; }
         ul, ol { padding-left: 22px; }
         li { margin-bottom: 6px; }
-        .priority-critical { color: #b42318; font-weight: 700; }
-        .priority-high { color: #b54708; font-weight: 700; }
-        .priority-medium { color: #175cd3; font-weight: 700; }
-        .priority-low { color: #027a48; font-weight: 700; }
         .small { font-size: 0.88rem; }
+        .card-list { display: grid; gap: 16px; margin-top: 12px; }
+        .vulnerability-card { border: 1px solid #d0d5dd; border-radius: 8px; padding: 16px; background: #fff; }
+        .vulnerability-card h3 { margin-top: 0; }
+        .vulnerability-card h3 a { color: #0f4f4a; text-decoration: none; }
+        .vulnerability-card h3 a:hover { text-decoration: underline; }
+        .field { margin: 10px 0; }
+        .field strong { display: block; color: #344054; }
     </style>
 </head>
 <body>
@@ -30,63 +30,31 @@
 
     <h2>{{ labels.executive_summary }}</h2>
     <div class="section brief">
-        <p>{{ report.executive_summary.summary }}</p>
         <ul>{% for finding in report.executive_summary.key_findings or [] %}<li>{{ finding }}</li>{% endfor %}</ul>
     </div>
 
-    <h2>{{ labels.weekly_risk_trend }}</h2>
-    <div class="section">
-        <p>{{ report.weekly_risk_trend.summary }}</p>
-        <ul>{% for point in report.weekly_risk_trend.trend_points or [] %}<li>{{ point }}</li>{% endfor %}</ul>
-    </div>
-
-    <h2>{{ labels.vulnerability_detail_table }}</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>{{ labels.cve }}</th><th>{{ labels.vendor }}</th><th>{{ labels.product }}</th><th>{{ labels.severity }}</th>
-                <th>{{ labels.priority }}</th><th>{{ labels.vulnerability_overview }}</th><th>{{ labels.risk_and_impact }}</th><th>{{ labels.remediation_guidance }}</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in report.vulnerability_detail_table.rows or [] %}
-            <tr>
-                <td>{{ row.cve_id }}</td>
-                <td>{{ row.vendor or '' }}</td>
-                <td>{{ row.product or '' }}</td>
-                <td>{{ row.severity or '' }}</td>
-                <td class="priority-{{ (row.patch_priority or 'low')|lower }}">{{ row.patch_priority }} ({{ row.priority_score }})</td>
-                <td>{{ row.what_happened }}</td>
-                <td>{{ row.why_matters }}</td>
-                <td>{{ row.how_to_respond }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-
-    <h2>{{ labels.remediation_playbook }}</h2>
-    <div class="section">
-        <p>{{ report.remediation_playbook.summary }}</p>
-        <ol>
-            {% for action in report.remediation_playbook.actions or [] %}
-            <li><strong>{{ action.priority }}:</strong> {{ action.action }} <span class="meta">{{ action.cve_ids|join(', ') }}</span></li>
-            {% endfor %}
-        </ol>
-    </div>
-
-    <h2>{{ labels.appendix }}</h2>
-    <div class="section">
-        <h3>{{ labels.source_references }}</h3>
-        <div class="small">
-            {% for group in report.appendix.source_references or [] %}
-            <p><strong>{{ group.cve_id }}:</strong></p>
-            <ul>
-                {% for url in group.urls or [] %}
-                <li><a href="{{ url }}" rel="noopener">{{ url }}</a></li>
-                {% endfor %}
-            </ul>
-            {% endfor %}
-        </div>
+    <h2>{{ labels.vulnerability_cards }}</h2>
+    <div class="section card-list">
+        {% for row in report.vulnerability_detail_table.rows or [] %}
+        {% set card_anchor = row.card_anchor or row.cve_id %}
+        <article id="{{ card_anchor }}" class="vulnerability-card">
+            <h3><a href="#{{ card_anchor }}">{{ row.cve_id }} | {{ row.vendor or 'Unknown vendor' }} | {{ row.product or 'Unknown product' }}</a></h3>
+            <p class="meta">{{ labels.severity }}: {{ row.severity or '' }}</p>
+            <div class="field"><strong>{{ labels.vulnerability_overview }}</strong>{{ row.what_happened }}</div>
+            <div class="field"><strong>{{ labels.risk_and_impact }}</strong>{{ row.why_matters }}</div>
+            <div class="field"><strong>{{ labels.remediation_guidance }}</strong>{{ row.how_to_respond }}</div>
+            {% if row.source_urls %}
+            <div class="field small">
+                <strong>{{ labels.source_references }}</strong>
+                <ul>
+                    {% for url in row.source_urls %}
+                    <li><a href="{{ url }}" rel="noopener">{{ url }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </article>
+        {% endfor %}
     </div>
 </body>
 </html>

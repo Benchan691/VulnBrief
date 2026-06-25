@@ -95,11 +95,11 @@ def test_translate_enriched_report_translates_each_row_and_preserves_identifiers
     client = FakeClient()
     report = {
         'title': 'English Report',
-        'executive_summary': {'summary': 'English summary', 'key_findings': ['Patch now']},
-        'weekly_risk_trend': {'summary': 'English trend', 'trend_points': ['English point']},
+        'executive_summary': {'key_findings': ['Patch now']},
         'vulnerability_detail_table': {
             'rows': [{
                 'cve_id': 'CVE-2026-0001',
+                'card_anchor': 'card-cve-2026-0001-acme-widget',
                 'title': 'English title',
                 'vendor': 'Acme',
                 'product': 'Widget',
@@ -112,21 +112,15 @@ def test_translate_enriched_report_translates_each_row_and_preserves_identifiers
                 'source_urls': ['https://example.com/source'],
             }],
         },
-        'remediation_playbook': {
-            'summary': 'Patch systems',
-            'actions': [{'priority': 'High', 'action': 'Patch now', 'cve_ids': ['CVE-2026-0001']}],
-        },
-        'appendix': {
-            'source_references': [{'cve_id': 'CVE-2026-0001', 'urls': ['https://example.com/source']}],
-            'metrics': {'total_vulnerabilities': 1},
-        },
     }
 
     translated = translate_report(report, 'enriched_weekly', 'ch', {}, client=client)
 
-    assert len(client.calls) == 5
+    assert len(client.calls) == 3
     assert translated['title'] == '中文 Report'
     assert translated['vulnerability_detail_table']['rows'][0]['cve_id'] == 'CVE-2026-0001'
+    assert translated['vulnerability_detail_table']['rows'][0]['card_anchor'] == 'card-cve-2026-0001-acme-widget'
     assert translated['vulnerability_detail_table']['rows'][0]['source_urls'] == ['https://example.com/source']
-    assert translated['remediation_playbook']['actions'][0]['cve_ids'] == ['CVE-2026-0001']
-    assert translated['appendix'] == report['appendix']
+    assert 'appendix' not in translated
+    assert 'weekly_risk_trend' not in translated
+    assert 'remediation_playbook' not in translated

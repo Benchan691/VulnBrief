@@ -65,7 +65,7 @@ use `.venv/bin/python` so they work even if the venv is not activated.
 ## 4. Start local MongoDB
 
 The app uses a single local MongoDB server with two databases: `vulnerabilities`
-for CVE/review data and `web` for users, subscriptions, and report jobs. Docker
+for CVE/review data and `web` for users, sub accounts, and report jobs. Docker
 Compose expects MongoDB on the **host** at port 27017 (`web` connects via
 `host.docker.internal`).
 
@@ -222,11 +222,11 @@ Generate TLS certs (step 6) or use Gunicorn instead.
 
 Confirm local Mongo is listening on port 27017. For Docker Compose, `web` uses
 `host.docker.internal:27017`; data you inspect with `mongosh localhost:27017` is
-the same server the UI uses (`web.subscriptions`, `vulnerabilities.cve_review`, etc.).
+the same server the UI uses (`web.sub_account`, `vulnerabilities.cve_review`, etc.).
 
 **Subscription data not visible in MongoDB**
 
-Subscriptions live in local MongoDB `web.subscriptions`. Vulnerability data lives in
+Sub accounts live in local MongoDB `web.sub_account`. Vulnerability data lives in
 `vulnerabilities`. If the UI
 shows subscribers but `mongosh` does not, you are likely connected to a different
 Mongo instance than the app. With Docker Compose, use host Mongo on port 27017,
