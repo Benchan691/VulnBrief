@@ -11,6 +11,14 @@ from subscription_data import (
 )
 
 
+@pytest.fixture(autouse=True)
+def patch_review_views(monkeypatch):
+    monkeypatch.setattr('subscription_data.review_views', lambda database: {
+        'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
+        'avd_review': {'options': {'viewOn': 'avd', 'pipeline': [{'$project': {'title': 1}}]}},
+    })
+
+
 def test_curated_filter_builds_combined_mongo_match():
     mongo_filter = build_match_filter({
         'search': 'openssl',
@@ -131,6 +139,41 @@ def test_enriched_filters_include_target_fields_threshold_and_scope_limit():
 
     profile = {'generation_mode': 'enriched_weekly', 'filters': filters}
     assert query_profile_matches(FakeDatabase(), profile, limit=10) == []
+
+
+def test_cpe_pairs_use_broad_keyboard_style_search_clauses():
+    filters = validate_filters(FakeDatabase(), {
+        'cpe_pairs': [{'vendor': 'Red Hat', 'product': 'Enterprise Linux'}],
+    })
+    mongo_filter = build_match_filter({
+        **filters,
+        'time_window': 'all',
+    })
+
+    assert '$and' in mongo_filter
+    clause_text = str(mongo_filter['$and'])
+    assert 'classification.best_vendor' in clause_text
+    assert 'classification.best_product' in clause_text
+    assert 'description' in clause_text
+    assert 'Red' in clause_text
+    assert 'Hat' in clause_text
+    assert 'Enterprise' in clause_text
+    assert 'Linux' in clause_text
+
+
+def test_multiple_cpe_pairs_combine_with_or():
+    mongo_filter = build_match_filter({
+        'cpe_pairs': [
+            {'vendor': 'Red Hat', 'product': 'Enterprise Linux'},
+            {'vendor': 'Acme', 'product': 'Widget'},
+        ],
+        'time_window': 'all',
+    })
+
+    assert '$and' in mongo_filter
+    cpe_clause = mongo_filter['$and'][0]
+    assert '$or' in cpe_clause
+    assert len(cpe_clause['$or']) == 2
 
 
 def test_ensure_sub_account_collection_creates_empty_collection():

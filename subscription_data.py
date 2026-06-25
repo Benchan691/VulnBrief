@@ -383,6 +383,20 @@ def _window_bounds(filters, now=None):
     return parse_hong_kong_datetime(filters['start']), parse_hong_kong_datetime(filters['end'])
 
 
+def _broad_text_clause(value, fields):
+    terms = [term for term in str(value or '').split() if term]
+    if not terms:
+        return None
+    if len(terms) == 1:
+        return {'$or': [{field: _regex(terms[0])} for field in fields]}
+    return {
+        '$and': [
+            {'$or': [{field: _regex(term)} for field in fields]}
+            for term in terms
+        ],
+    }
+
+
 def build_match_filter(filters, now=None):
     clauses = []
     mapping = {
@@ -412,17 +426,15 @@ def build_match_filter(filters, now=None):
     for parameter, fields in mapping.items():
         value = filters.get(parameter, '')
         if value:
-            clauses.append({'$or': [{field: _regex(value)} for field in fields]})
+            clauses.append(_broad_text_clause(value, fields))
     cpe_pairs = filters.get('cpe_pairs') or []
     if cpe_pairs:
-        vendor_fields = mapping['target_vendor']
-        product_fields = mapping['target_product']
+        search_fields = mapping['search'] + mapping['target_vendor'] + mapping['target_product']
         pair_clauses = []
         for pair in cpe_pairs:
-            pair_clauses.append({'$and': [
-                {'$or': [{field: _regex(pair['vendor'])} for field in vendor_fields]},
-                {'$or': [{field: _regex(pair['product'])} for field in product_fields]},
-            ]})
+            clause = _broad_text_clause(f"{pair['vendor']} {pair['product']}", search_fields)
+            if clause:
+                pair_clauses.append(clause)
         clauses.append(pair_clauses[0] if len(pair_clauses) == 1 else {'$or': pair_clauses})
     status = filters.get('status', '')
     include_unknown = filters.get('include_unknown', False)
