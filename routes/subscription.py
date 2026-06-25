@@ -329,7 +329,7 @@ def send_subscription_report(email):
                 subscription,
                 subscription['report_profile'],
                 result['job_id'],
-                result['match_count'],
+                None,
             ),
             daemon=True,
         ).start()
@@ -337,7 +337,6 @@ def send_subscription_report(email):
             'success': True,
             'message': 'Report generation and email delivery started.',
             'job_id': result['job_id'],
-            'count': result['match_count'],
         }), 202
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400

@@ -327,7 +327,6 @@ def test_send_subscription_report_generates_job_and_emails(client, monkeypatch):
         'routes.subscription.start_subscription_report_job',
         lambda subscription, profile: {
             'job_id': 'job-123',
-            'match_count': 4,
         },
     )
 
@@ -336,7 +335,6 @@ def test_send_subscription_report_generates_job_and_emails(client, monkeypatch):
     assert response.status_code == 202
     body = response.get_json()
     assert body['job_id'] == 'job-123'
-    assert body['count'] == 4
 
 
 def test_send_subscription_report_returns_no_match_error(client, monkeypatch):

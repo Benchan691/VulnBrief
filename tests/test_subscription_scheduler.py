@@ -31,12 +31,10 @@ def test_force_week_window_ignores_saved_window():
 
 def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
     sent = {}
-    job_id = ObjectId()
     with app.app_context():
         web = get_web_database()
         subscription_id = ObjectId()
         web['sub_account'].delete_many({'_id': subscription_id})
-        web['report_jobs'].delete_many({'_id': job_id})
         web['sub_account'].insert_one({
             '_id': subscription_id,
             'email': 'scheduled@example.com',
@@ -51,16 +49,6 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
                 'filters': {'time_window': 'all'},
             },
         })
-        web['report_jobs'].insert_one({
-            '_id': job_id,
-            'status': 'completed',
-            'generation_mode': 'enriched_weekly',
-            'effective_generation_mode': 'enriched_weekly',
-            'report_language': 'en',
-            'effective_report_language': 'en',
-            'source_count': 1,
-            'report': {'title': 'Report'},
-        })
 
         monkeypatch.setattr(subscription_scheduler, 'get_vulnerabilities_database', lambda: object())
         monkeypatch.setattr(subscription_scheduler, 'normalize_subscription', lambda database, raw: {
@@ -70,8 +58,21 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
         monkeypatch.setattr(subscription_scheduler, 'query_profile_matches', lambda database, profile: [
             {'collection': 'cve_review', 'source_collection': 'cve', 'selection_id': 'cve:1'},
         ])
-        monkeypatch.setattr(subscription_scheduler, 'create_job', lambda *args: str(job_id))
-        monkeypatch.setattr(subscription_scheduler, 'run_job', lambda *args: None)
+        def fake_run_job(app_obj, job_id):
+            web['report_jobs'].update_one(
+                {'_id': ObjectId(job_id)},
+                {'$set': {
+                    'status': 'completed',
+                    'generation_mode': 'enriched_weekly',
+                    'effective_generation_mode': 'enriched_weekly',
+                    'report_language': 'en',
+                    'effective_report_language': 'en',
+                    'source_count': 1,
+                        'delivery_status': 'running',
+                    'report': {'title': 'Report'},
+                }},
+            )
+        monkeypatch.setattr(subscription_scheduler, 'run_job', fake_run_job)
         monkeypatch.setattr(subscription_scheduler, '_render_job_html', lambda *args, **kwargs: '<h1>Report</h1>')
         monkeypatch.setattr(subscription_scheduler, 'send_html_email', lambda config, to, subject, html: sent.update({
             'to': to,
@@ -82,14 +83,15 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
         run_scheduled_report(app, str(subscription_id))
 
         stored = web['sub_account'].find_one({'_id': subscription_id})
-        assert stored['report_profile']['last_job_id'] == str(job_id)
+        assert stored['report_profile'].get('last_error', '') == ''
+        assert stored['report_profile']['last_job_id']
         assert stored['report_profile']['last_match_count'] == 1
         assert stored['report_profile']['next_run_at']
         assert sent['to'] == 'scheduled@example.com'
         assert sent['html'] == '<h1>Report</h1>'
 
         web['sub_account'].delete_many({'_id': subscription_id})
-        web['report_jobs'].delete_many({'_id': job_id})
+        web['report_jobs'].delete_many({'_id': ObjectId(stored['report_profile']['last_job_id'])})
 
 
 def test_purge_old_data_removes_old_sources_and_report_artifacts(monkeypatch):

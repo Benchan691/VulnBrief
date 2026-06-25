@@ -8,7 +8,7 @@ from bson import ObjectId
 from mailer import send_html_email
 from mongo import get_vulnerabilities_database, get_web_database
 from report_job_progress import append_job_log
-from report_harness import _render_job_html, create_job, run_job
+from report_harness import _render_job_html, run_job
 from review_data import review_views
 from subscription_data import HONG_KONG, normalize_subscription, query_profile_matches
 
@@ -106,24 +106,77 @@ def _translate_if_needed(report, generation_mode, language, config):
     return translate_report(report, generation_mode, language, config)
 
 
-def start_subscription_report_job(subscription, profile):
-    vuln_database = get_vulnerabilities_database()
-    matches = query_profile_matches(vuln_database, profile)
+def _placeholder_job(profile, now):
+    generation_mode = profile['generation_mode']
+    if generation_mode == 'enriched_weekly':
+        provider = 'Search API + llama-server'
+        model = 'Enriched Weekly'
+    else:
+        provider = None
+        model = 'Fixed Template'
+    return {
+        'generation_mode': generation_mode,
+        'effective_generation_mode': generation_mode,
+        'report_language': 'en',
+        'effective_report_language': 'en',
+        'input_source': 'review_selections',
+        'source_count': 0,
+        'processed_count': 0,
+        'current_position': 0,
+        'item_fallback_count': 0,
+        'status': 'queued',
+        'created_at': now,
+        'updated_at': now,
+        'provider': provider,
+        'model': model,
+        'progress_percent': 0,
+        'progress_current': 0,
+        'progress_total': 1,
+        'progress_label': 'Queued',
+        'status_message': 'Queued for email delivery.',
+        'estimated_seconds_remaining': None,
+        'started_at': None,
+        'pipeline_logs': [],
+        'delivery_status': 'queued',
+        'delivery_error': '',
+    }
+
+
+def _queue_subscription_job_inputs(job_id, matches, generation_mode):
     if not matches:
         raise ValueError('No records matched the report profile.')
-    job_id = create_job(matches, 'review_selections', profile['generation_mode'], profile['report_language'])
-    get_web_database()['report_jobs'].update_one(
+    queued_inputs = []
+    for position, item in enumerate(matches):
+        if generation_mode == 'enriched_weekly' and (
+            item.get('collection') != 'cve_review' or item.get('source_collection') != 'cve'
+        ):
+            raise ValueError('enriched_weekly reports only support cve_review selections.')
+        queued_inputs.append({
+            'job_id': ObjectId(job_id),
+            'position': position,
+            'source_collection': item['source_collection'],
+            'selection_id': item['selection_id'],
+            'identifier': item['selection_id'],
+        })
+    web_database = get_web_database()
+    web_database['report_job_inputs'].delete_many({'job_id': ObjectId(job_id)})
+    web_database['report_job_inputs'].insert_many(queued_inputs)
+    web_database['report_jobs'].update_one(
         {'_id': ObjectId(job_id)},
         {'$set': {
-            'delivery_status': 'queued',
-            'delivery_error': '',
-            'status_message': 'Queued for email delivery.',
+            'source_count': len(matches),
+            'progress_total': max(len(matches), 1),
+            'updated_at': _now(),
         }},
     )
+
+
+def start_subscription_report_job(subscription, profile):
+    now = _now()
+    job_id = get_web_database()['report_jobs'].insert_one(_placeholder_job(profile, now)).inserted_id
     append_job_log(job_id, f'Queued subscription report email for {subscription["email"]}.')
     return {
-        'job_id': job_id,
-        'match_count': len(matches),
+        'job_id': str(job_id),
     }
 
 
@@ -144,10 +197,22 @@ def deliver_subscription_report_job(
         {'$set': {
             'delivery_status': 'running',
             'delivery_error': '',
-            'status_message': 'Generating report for email delivery.',
+            'status_message': 'Finding matching CVEs for email delivery.',
         }},
     )
     append_job_log(job_id, 'Starting subscription email delivery.')
+    append_job_log(job_id, 'Finding matching CVEs.')
+    matches = query_profile_matches(get_vulnerabilities_database(), profile)
+    append_job_log(job_id, f'Found {len(matches)} matching CVE(s).')
+    append_job_log(job_id, 'Creating report job inputs.')
+    _queue_subscription_job_inputs(job_id, matches, profile['generation_mode'])
+    jobs.update_one(
+        {'_id': ObjectId(job_id)},
+        {'$set': {
+            'status_message': 'Generating report for email delivery.',
+            'updated_at': _now(),
+        }},
+    )
     run_job(app, job_id)
     job = web_database['report_jobs'].find_one({'_id': ObjectId(job_id)})
     if not job or job.get('status') != 'completed':
@@ -186,7 +251,7 @@ def deliver_subscription_report_job(
     return {
         'job_id': job_id,
         'job': job,
-        'match_count': match_count,
+        'match_count': len(matches),
     }
 
 
@@ -203,7 +268,6 @@ def generate_and_send_subscription_report(
         subscription,
         profile,
         start['job_id'],
-        match_count=start['match_count'],
         now=now,
     )
 
