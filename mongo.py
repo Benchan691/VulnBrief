@@ -26,11 +26,6 @@ def get_mongo_client():
     return _client
 
 
-def get_local_mongo_client():
-    """Backward-compatible alias for the shared MongoDB client."""
-    return get_mongo_client()
-
-
 def get_web_database():
     config = get_config()
     return get_mongo_client()[config.get('WEB_DATABASE') or config['LOCAL_DATABASE']]

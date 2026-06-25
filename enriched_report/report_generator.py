@@ -5,7 +5,6 @@ from string import Template
 from jsonschema import ValidationError
 from jsonschema import validate
 
-from .debug_runtime import debug_log
 from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
 from .prompts import resolve_prompt
@@ -178,40 +177,11 @@ def _complete_json_section_with_retries(section_name, system, text, schema, clie
                 if isinstance(exc, EnrichedLLMError):
                     raise
                 raise EnrichedLLMError(str(exc)) from exc
-            # #region agent log
-            debug_log(
-                'enriched_report/report_generator.py:_complete_json_section_with_retries',
-                'Retrying invalid report section JSON',
-                {
-                    'section_name': section_name,
-                    'attempt': attempt + 1,
-                    'max_attempts': retries + 1,
-                    'error': str(exc),
-                    'bad_response_preview': text[:200],
-                },
-                f'section-{section_name}',
-                'H6',
-            )
-            # #endregion
             text, _ = client.complete_text(
                 system,
                 _json_repair_prompt(config, text, exc),
                 max_output_tokens=client.report_max_output_tokens,
             )
-            # #region agent log
-            debug_log(
-                'enriched_report/report_generator.py:_complete_json_section_with_retries',
-                'Received retry report section text',
-                {
-                    'section_name': section_name,
-                    'attempt': attempt + 2,
-                    'response_chars': len(text),
-                    'response_preview': text[:200],
-                },
-                f'section-{section_name}',
-                'H6',
-            )
-            # #endregion
 
 
 def _merge_section_partials_with_ai(
@@ -371,40 +341,11 @@ def _generate_text_section(
             section_name, cards, metrics, evidence_cards, client, language, config,
             progress_callback, progress_current, progress_total,
         )
-    # #region agent log
-    debug_log(
-        'enriched_report/report_generator.py:_generate_text_section',
-        'Starting report section generation',
-        {
-            'section_name': section_name,
-            'language': language,
-            'system_prompt_chars': len(system),
-            'user_prompt_chars': len(user_prompt),
-            'card_count': len(cards),
-            'evidence_count': len(evidence_cards),
-        },
-        f'section-{section_name}',
-        'H5',
-    )
-    # #endregion
     text, _ = client.complete_text(
         system,
         user_prompt,
         max_output_tokens=client.report_max_output_tokens,
     )
-    # #region agent log
-    debug_log(
-        'enriched_report/report_generator.py:_generate_text_section',
-        'Received report section text',
-        {
-            'section_name': section_name,
-            'response_chars': len(text),
-            'response_preview': text[:200],
-        },
-        f'section-{section_name}',
-        'H3',
-    )
-    # #endregion
     return _complete_json_section_with_retries(
         section_name,
         system,

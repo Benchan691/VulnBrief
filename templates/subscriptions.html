@@ -11,6 +11,10 @@
         max-height: 12rem;
         overflow-y: auto;
     }
+    .cpe-options {
+        max-height: 10rem;
+        overflow-y: auto;
+    }
 </style>
 <div class="container">
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -57,6 +61,9 @@
                             <div class="row g-2">
                                 <div class="col-md-6"><label class="form-label small">Generation mode</label><select id="report-generation-mode" class="form-select"><option value="enriched_weekly">Enriched Weekly</option><option value="template">Fixed Template</option></select></div>
                                 <div class="col-md-6"><label class="form-label small">Language</label><select id="report-language" class="form-select"><option value="en">English</option><option value="zh">Traditional Chinese</option><option value="ch">Simplified Chinese</option></select></div>
+                                <div class="col-12"><div class="form-check form-switch"><input id="report-schedule-enabled" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-schedule-enabled">Weekly email schedule enabled</label></div></div>
+                                <div class="col-md-6"><label class="form-label small">Weekday (HKT)</label><select id="report-schedule-weekday" class="form-select form-select-sm"><option value="mon">Monday</option><option value="tue">Tuesday</option><option value="wed">Wednesday</option><option value="thu">Thursday</option><option value="fri">Friday</option><option value="sat">Saturday</option><option value="sun">Sunday</option></select></div>
+                                <div class="col-md-6"><label class="form-label small">Time (HKT)</label><input id="report-schedule-time" type="time" class="form-control form-control-sm" value="09:00"></div>
                             </div>
                         </div></div>
                     </div>
@@ -72,6 +79,7 @@
 <script>
 (function () {
     const subscriptionsUrl = {{ url_for('subscription.get_subscriptions')|tojson }};
+    const cpesUrl = {{ url_for('subscription.get_cpes')|tojson }};
     const reviewsUrl = {{ url_for('review.get_review_collections')|tojson }};
     const reviewsPageUrl = {{ url_for('review.reviews')|tojson }};
     const selectionKey = 'vulnerabilityReviewSelections';
@@ -81,6 +89,7 @@
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
     let collections = [], subscriptions = [], editingEmail = null;
+    let selectedCpes = [];
 
     const severityLevels = ['Critical', 'High', 'Medium', 'Low'];
     const newsletterTextFields = ['search', 'code', 'title', 'impact', 'affected', 'source'];
@@ -130,6 +139,7 @@
             return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + level + '</label></div>';
         }).join('') +
         '</div><div class="form-text">Leave all unchecked to match all known severities.</div></div>' +
+        '<div class="col-12"><label class="form-label small" for="report-cpe-vendor-search">Vendor search</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-cpe-vendor-search" type="search" class="form-control" placeholder="Search vendor..." autocomplete="off"><button id="report-cpe-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-cpe-vendor-options" class="cpe-options list-group mt-1"></div><label class="form-label small mt-2" for="report-cpe-product-search">Product search</label><input id="report-cpe-product-search" type="search" class="form-control form-control-sm" placeholder="Select vendor first..." autocomplete="off" disabled><div id="report-cpe-help" class="form-text">Type at least 2 characters, then choose a vendor.</div><div id="report-cpe-product-options" class="cpe-options list-group mt-1"></div><div id="report-cpe-selected" class="d-flex flex-wrap gap-1 mt-2"></div></div>' +
         '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">Include unknown severity</label></div></div>' +
         timeWindowMarkup('report') +
         '</div>';
@@ -185,6 +195,95 @@
     }
     function isReportEnriched() {
         return document.getElementById('report-generation-mode').value === 'enriched_weekly';
+    }
+    function cpeKey(pair) { return (pair.vendor || '').toLowerCase() + '\n' + (pair.product || '').toLowerCase(); }
+    function renderSelectedCpes() {
+        const box = document.getElementById('report-cpe-selected');
+        box.replaceChildren();
+        selectedCpes.forEach(function (pair, index) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'btn btn-outline-secondary btn-sm';
+            chip.textContent = pair.vendor + ' | ' + pair.product + ' ×';
+            chip.onclick = function () { selectedCpes.splice(index, 1); renderSelectedCpes(); };
+            box.append(chip);
+        });
+    }
+    function addCpe(pair) {
+        if (!selectedCpes.some(function (item) { return cpeKey(item) === cpeKey(pair); })) {
+            selectedCpes.push({vendor: pair.vendor, product: pair.product});
+            renderSelectedCpes();
+        }
+    }
+    function setCpeStatus(text) {
+        document.getElementById('report-cpe-help').textContent = text;
+    }
+    function resetCpeProductSearch() {
+        const productSearch = document.getElementById('report-cpe-product-search');
+        productSearch.value = '';
+        productSearch.disabled = true;
+        productSearch.placeholder = 'Select vendor first...';
+        delete productSearch.dataset.vendor;
+    }
+    function resetCpeResults() {
+        document.getElementById('report-cpe-vendor-options').replaceChildren();
+        document.getElementById('report-cpe-product-options').replaceChildren();
+        resetCpeProductSearch();
+        setCpeStatus('Type at least 2 characters, then choose a vendor.');
+    }
+    function clearCpeSearch() {
+        document.getElementById('report-cpe-vendor-search').value = '';
+        resetCpeResults();
+    }
+    function searchCpeVendors() {
+        const query = document.getElementById('report-cpe-vendor-search').value.trim();
+        const options = document.getElementById('report-cpe-vendor-options');
+        if (query.length < 2) { resetCpeResults(); return; }
+        options.replaceChildren();
+        document.getElementById('report-cpe-product-options').replaceChildren();
+        setCpeStatus('Searching vendors...');
+        requestJson(cpesUrl + '?type=vendor&q=' + encodeURIComponent(query)).then(function (body) {
+            options.replaceChildren();
+            setCpeStatus(body.data.length ? 'Select a vendor, then search product.' : 'No vendors found.');
+            body.data.forEach(function (item) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'list-group-item list-group-item-action small';
+                button.textContent = item.label;
+                button.onclick = function () {
+                    const productSearch = document.getElementById('report-cpe-product-search');
+                    productSearch.disabled = false;
+                    productSearch.value = '';
+                    productSearch.dataset.vendor = item.vendor;
+                    productSearch.placeholder = 'Search product for ' + item.vendor + '...';
+                    options.replaceChildren();
+                    setCpeStatus('Search product for ' + item.vendor + '.');
+                    productSearch.focus();
+                };
+                options.append(button);
+            });
+        }).catch(function (e) { showMessage(e.message, 'danger'); });
+    }
+    function searchCpeProducts() {
+        const input = document.getElementById('report-cpe-product-search');
+        const query = input.value.trim();
+        const vendor = input.dataset.vendor || '';
+        const options = document.getElementById('report-cpe-product-options');
+        if (!vendor || query.length < 2) { options.replaceChildren(); return; }
+        options.replaceChildren();
+        setCpeStatus('Searching products...');
+        requestJson(cpesUrl + '?type=product&vendor=' + encodeURIComponent(vendor) + '&q=' + encodeURIComponent(query)).then(function (body) {
+            options.replaceChildren();
+            setCpeStatus(body.data.length ? 'Select a product to add the pair.' : 'No products found for this vendor.');
+            body.data.forEach(function (pair) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'list-group-item list-group-item-action small';
+                button.textContent = pair.product;
+                button.onclick = function () { addCpe(pair); clearCpeSearch(); };
+                options.append(button);
+            });
+        }).catch(function (e) { showMessage(e.message, 'danger'); });
     }
 
     function renderCollections(prefix, selected) {
@@ -268,6 +367,10 @@
     function setFilters(prefix, filters) {
         filters = filters || {};
         if (prefix === 'newsletter') renderCollections(prefix, filters.collections || []);
+        if (prefix === 'report') {
+            selectedCpes = (filters.cpe_pairs || []).map(function (pair) { return {vendor: pair.vendor, product: pair.product}; });
+            renderSelectedCpes();
+        }
         const textFields = prefix === 'report' ? reportTextFields : newsletterTextFields;
         textFields.forEach(function (field) {
             document.getElementById(prefix + '-' + field).value = filters[field] || '';
@@ -291,6 +394,7 @@
             filters[field] = document.getElementById(prefix + '-' + field).value;
         });
         filters.status = readStatusFilters(prefix);
+        if (prefix === 'report') filters.cpe_pairs = selectedCpes;
         filters.include_unknown = document.getElementById(prefix + '-include-unknown').checked;
         filters.time_window = document.getElementById(prefix + '-time-window').value;
         filters.start = document.getElementById(prefix + '-start').value;
@@ -309,6 +413,9 @@
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
         document.getElementById('report-generation-mode').value = report.generation_mode;
         document.getElementById('report-language').value = report.report_language;
+        document.getElementById('report-schedule-enabled').checked = report.schedule_enabled === true;
+        document.getElementById('report-schedule-weekday').value = report.schedule_weekday || 'mon';
+        document.getElementById('report-schedule-time').value = report.schedule_time || '09:00';
         modal.show();
     }
     function renderRows() {
@@ -318,14 +425,19 @@
             tr.innerHTML = '<td><strong></strong><div class="text-muted small"></div></td><td></td><td></td><td></td>';
             tr.children[0].querySelector('strong').textContent = item.email; tr.children[0].querySelector('div').textContent = item.team;
             tr.children[1].textContent = item.newsletter_profile.enabled ? 'Enabled · ' + (item.newsletter_profile.filters.collections.length || 'all') + ' collection(s)' : 'Disabled';
-            tr.children[2].textContent = item.report_profile.enabled ? 'Enabled' : 'Disabled';
+            tr.children[2].textContent = item.report_profile.enabled ? ('Enabled' + (item.report_profile.schedule_enabled ? ' · weekly ' + (item.report_profile.schedule_weekday || '') + ' ' + (item.report_profile.schedule_time || '') + ' HKT' : '')) : 'Disabled';
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
             if (item.newsletter_profile.enabled) actions.innerHTML += '<a class="btn btn-outline-primary btn-sm" href="/subscriptions/' + encodeURIComponent(item.email) + '/newsletter-feed">View Feed</a>';
             if (item.report_profile.enabled) {
                 actions.innerHTML += '<button class="btn btn-success btn-sm run">Run Report</button>';
                 actions.querySelector('.run').onclick = function () { requestJson(apiUrl(item.email, '/run'), {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(body){ if (!body.count) return showMessage('No records matched the report profile.', 'warning'); localStorage.setItem(selectionKey, JSON.stringify(body.selections)); localStorage.setItem(reportModeKey, item.report_profile.generation_mode || 'enriched_weekly'); localStorage.setItem(reportLanguageKey, item.report_profile.report_language || 'en'); window.location.href = reviewsPageUrl; }).catch(function(e){showMessage(e.message,'danger');}); };
             }
-            actions.innerHTML += '<button class="btn btn-outline-primary btn-sm edit">Edit</button><button class="btn btn-outline-danger btn-sm remove">Delete</button>';
+            actions.innerHTML += '<button class="btn btn-outline-success btn-sm verify-email">Verify Email</button><button class="btn btn-outline-primary btn-sm edit">Edit</button><button class="btn btn-outline-danger btn-sm remove">Delete</button>';
+            actions.querySelector('.verify-email').onclick = function () {
+                requestJson(apiUrl(item.email, '/verify-email'), {method:'POST'})
+                    .then(function(body){ showMessage(body.message || 'Verification email sent.', 'success'); })
+                    .catch(function(e){ showMessage(e.message, 'danger'); });
+            };
             actions.querySelector('.edit').onclick = function () { openEditor(item); };
             actions.querySelector('.remove').onclick = function () { if (confirm('Delete subscription for ' + item.email + '?')) requestJson(apiUrl(item.email), {method:'DELETE'}).then(load).catch(function(e){showMessage(e.message,'danger');}); };
             tr.children[3].append(actions); rows.append(tr);
@@ -335,12 +447,23 @@
     wireCollectionsDropdown('newsletter');
     document.getElementById('newsletter-time-window').addEventListener('change', function () { toggleCustomWindow('newsletter'); });
     document.getElementById('report-time-window').addEventListener('change', function () { toggleCustomWindow('report'); });
+    document.getElementById('report-cpe-vendor-search').addEventListener('input', searchCpeVendors);
+    document.getElementById('report-cpe-product-search').addEventListener('input', searchCpeProducts);
+    document.getElementById('report-cpe-clear').addEventListener('click', clearCpeSearch);
     document.getElementById('add-btn').onclick = function () { openEditor(null); };
     document.getElementById('subscription-form').onsubmit = function (event) {
         event.preventDefault();
         const payload = { email:document.getElementById('email').value, team:document.getElementById('team').value,
             newsletter_profile:{enabled:document.getElementById('newsletter-enabled').checked,filters:readFilters('newsletter')},
-            report_profile:{enabled:document.getElementById('report-enabled').checked,filters:readFilters('report'),generation_mode:document.getElementById('report-generation-mode').value,report_language:document.getElementById('report-language').value} };
+            report_profile:{
+                enabled:document.getElementById('report-enabled').checked,
+                filters:readFilters('report'),
+                generation_mode:document.getElementById('report-generation-mode').value,
+                report_language:document.getElementById('report-language').value,
+                schedule_enabled:document.getElementById('report-schedule-enabled').checked,
+                schedule_weekday:document.getElementById('report-schedule-weekday').value,
+                schedule_time:document.getElementById('report-schedule-time').value
+            } };
         requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage('Subscription saved.','success');return load();}).catch(function(e){showMessage(e.message,'danger');});
     };
     requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});

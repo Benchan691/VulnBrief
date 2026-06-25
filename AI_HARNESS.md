@@ -39,8 +39,8 @@ list for manual report generation on the Reports page.
 
 ## Enriched Weekly configuration
 
-Secrets live in `.env` (`TAVILY_API_KEYS`, `EXA_API_KEYS`, or `SEARXNG_BASE_URL`). Other enriched/search settings live in
-`config/config.json` under `enriched.*`, `tavily.*`, `exa.*`, `search.*`, and `searxng.*`. At least one Tavily key, Exa key, or SearXNG URL is required for search
+Secrets live in `.env` (`TAVILY_API_KEYS` or `SEARXNG_BASE_URL`). Other enriched/search settings live in
+`config/config.json` under `enriched.*`, `tavily.*`, and `searxng.*`. At least one Tavily key or SearXNG URL is required for search
 enrichment. SearXNG uses JSON snippets only (no per-result page fetch or LLM compression during search); snippets over `searxng.max_snippet_chars` are dropped. `ENRICHED_LLM_BASE_URL` (or `enriched.llm_base_url` in JSON) must
 point at a llama-server OpenAI-compatible `/v1` base URL. The pipeline calls that
 endpoint directly for evidence extraction, report section generation, and AI

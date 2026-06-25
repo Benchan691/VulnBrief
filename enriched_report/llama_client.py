@@ -7,8 +7,6 @@ import time
 import requests
 from requests.adapters import HTTPAdapter
 
-from .debug_runtime import debug_log
-
 logger = logging.getLogger(__name__)
 NO_THINK_DIRECTIVE = '/no_think'
 _REQUEST_LOCK = threading.Lock()
@@ -36,32 +34,14 @@ def _strip_think_blocks(text):
 
 def _message_text(message):
     if not isinstance(message, dict):
-        # #region agent log
-        debug_log(
-            'enriched_report/llama_client.py:_message_text',
-            'Completion message was not a dict',
-            {'message_type': type(message).__name__},
-            'initial-debug',
-            'H4',
-        )
-        # #endregion
+        logger.debug('completion message was not a dict: %s', type(message).__name__)
         return ''
     content = str(message.get('content') or '').strip()
     reasoning = str(message.get('reasoning_content') or '').strip()
-    # #region agent log
-    debug_log(
-        'enriched_report/llama_client.py:_message_text',
-        'Evaluated completion message text sources',
-        {
-            'content_present': bool(content),
-            'content_chars': len(content),
-            'reasoning_present': bool(reasoning),
-            'reasoning_chars': len(reasoning),
-            'content_type': type(message.get('content')).__name__,
-            'reasoning_type': type(message.get('reasoning_content')).__name__,
-        },
-        'initial-debug',
-        'H1',
+    logger.debug(
+        'completion text sources content_chars=%d reasoning_chars=%d',
+        len(content),
+        len(reasoning),
     )
     # #endregion
     if content:
@@ -76,18 +56,7 @@ def _completion_message_text(response_json):
     try:
         message = response_json['choices'][0]['message']
     except (KeyError, IndexError, TypeError) as exc:
-        # #region agent log
-        debug_log(
-            'enriched_report/llama_client.py:_completion_message_text',
-            'Completion payload had unexpected shape',
-            {
-                'response_type': type(response_json).__name__,
-                'top_level_keys': sorted(response_json.keys()) if isinstance(response_json, dict) else None,
-            },
-            'initial-debug',
-            'H4',
-        )
-        # #endregion
+        logger.debug('completion payload had unexpected shape: %s', type(response_json).__name__)
         raise EnrichedLLMError('llama-server returned an unexpected completion payload.') from exc
     text = _message_text(message)
     if not text:

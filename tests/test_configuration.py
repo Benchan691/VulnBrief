@@ -24,12 +24,10 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         monkeypatch,
         TAVILY_API_KEY='tavily-key',
         TAVILY_API_KEYS='["tavily-a","tavily-b"]',
-        EXA_API_KEYS='exa-a,exa-b',
         TAVILY_SEARCH_DEPTH='advanced',
         TAVILY_MAX_RESULTS='7',
         TAVILY_REQUEST_TIMEOUT_SECONDS='31',
         TAVILY_MAX_CONCURRENT_REQUESTS='2',
-        SEARCH_PROVIDER_ORDER='searxng,tavily,exa',
         SEARXNG_BASE_URL='https://search.example',
         SEARXNG_MAX_RESULTS='6',
         SEARXNG_REQUEST_TIMEOUT_SECONDS='12',
@@ -57,12 +55,10 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['LOCAL_DATABASE'] == 'web'
     assert loaded['TAVILY_API_KEY'] == 'tavily-key'
     assert loaded['TAVILY_API_KEYS'] == ['tavily-a', 'tavily-b']
-    assert loaded['EXA_API_KEYS'] == ['exa-a', 'exa-b']
     assert loaded['TAVILY_SEARCH_DEPTH'] == 'advanced'
     assert loaded['TAVILY_MAX_RESULTS'] == 7
     assert loaded['TAVILY_REQUEST_TIMEOUT_SECONDS'] == 31
     assert loaded['TAVILY_MAX_CONCURRENT_REQUESTS'] == 2
-    assert loaded['SEARCH_PROVIDER_ORDER'] == ['searxng', 'tavily', 'exa']
     assert loaded['SEARXNG_BASE_URL'] == 'https://search.example'
     assert loaded['SEARXNG_MAX_RESULTS'] == 6
     assert loaded['SEARXNG_REQUEST_TIMEOUT_SECONDS'] == 12

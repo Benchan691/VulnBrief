@@ -1,8 +1,12 @@
+import os
 from datetime import datetime, timezone
 
-from flask import abort, jsonify, render_template, request
+from flask import abort, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
+from bootstrap import BASE_DIR
+from cpe_store import search_cpe_pairs, search_cpe_products, search_cpe_vendors
+from mailer import send_html_email
 from mongo import get_vulnerabilities_database
 from newsletter_store import filter_newsletter_feed
 from subscription_data import (
@@ -13,6 +17,7 @@ from subscription_data import (
     validate_filters,
     validate_profile,
 )
+from subscription_scheduler import next_weekly_run
 from . import subscription_blueprint
 from .common import login_required
 
@@ -24,13 +29,6 @@ def get_collection():
 SCHEDULE_FIELD_UNSET = {
     'schedule_claim_owner': '',
     'schedule_claim_until': '',
-    'report_profile.schedule_enabled': '',
-    'report_profile.cron': '',
-    'report_profile.next_run_at': '',
-    'report_profile.last_run_at': '',
-    'report_profile.last_job_id': '',
-    'report_profile.last_error': '',
-    'report_profile.last_match_count': '',
 }
 TOP_LEVEL_SCHEDULE_FIELD_UNSET = {
     key: value for key, value in SCHEDULE_FIELD_UNSET.items() if '.' not in key
@@ -53,6 +51,13 @@ def _profiles(database, data):
     newsletter_profile = validate_profile(database, newsletter_value, 'newsletter')
     report_profile = validate_profile(database, report_value, 'report')
     return newsletter_profile, report_profile
+
+
+def _with_next_run(profile):
+    if profile.get('schedule_enabled'):
+        profile = dict(profile)
+        profile['next_run_at'] = next_weekly_run(profile)
+    return profile
 
 
 @subscription_blueprint.route('/subscriptions')
@@ -87,6 +92,25 @@ def get_subscriptions():
         return jsonify({'error': 'Unable to load subscriptions.'}), 503
 
 
+@subscription_blueprint.route('/api/cpes')
+@login_required
+def get_cpes():
+    try:
+        path = os.path.join(BASE_DIR, 'cpes.csv')
+        kind = request.args.get('type', 'pair')
+        if kind == 'vendor':
+            data = search_cpe_vendors(path, request.args.get('q', ''))
+        elif kind == 'product':
+            data = search_cpe_products(path, request.args.get('vendor', ''), request.args.get('q', ''))
+        else:
+            data = search_cpe_pairs(path, request.args.get('q', ''))
+        return jsonify({
+            'data': data,
+        })
+    except OSError:
+        return jsonify({'error': 'Unable to load CPE data.'}), 503
+
+
 @subscription_blueprint.route('/api/subscriptions', methods=['POST'])
 @login_required
 def add_subscription():
@@ -98,6 +122,7 @@ def add_subscription():
     try:
         database = get_vulnerabilities_database()
         newsletter_profile, report_profile = _profiles(database, data)
+        report_profile = _with_next_run(report_profile)
         if get_collection().find_one({'email': email}):
             return jsonify({'error': 'A subscription already exists for this email.'}), 409
         now = datetime.now(timezone.utc)
@@ -131,6 +156,7 @@ def edit_subscription(email):
         if 'report_profile' not in data and 'subscriptions' not in data:
             data['report_profile'] = current['report_profile']
         newsletter_profile, report_profile = _profiles(database, data)
+        report_profile = _with_next_run(report_profile)
         update = {
             'newsletter_profile': newsletter_profile,
             'report_profile': report_profile,
@@ -159,6 +185,27 @@ def remove_subscription(email):
         return jsonify({'success': True})
     except PyMongoError:
         return jsonify({'error': 'Unable to remove subscription.'}), 503
+
+
+@subscription_blueprint.route('/api/subscriptions/<path:email>/verify-email', methods=['POST'])
+@login_required
+def verify_subscription_email(email):
+    try:
+        if get_collection().find_one({'email': email}) is None:
+            return jsonify({'error': 'Subscription not found.'}), 404
+        send_html_email(
+            current_app.config,
+            email,
+            'Security Portal email verification',
+            '<p>This is a test email from Security Portal.</p>',
+        )
+        return jsonify({'success': True, 'message': 'Verification email sent.'})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to verify subscription email.'}), 503
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
 
 
 @subscription_blueprint.route('/api/subscriptions/<path:email>/run', methods=['POST'])

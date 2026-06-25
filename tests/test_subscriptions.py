@@ -104,6 +104,51 @@ def test_subscriptions_crud_validates_review_views(client):
     assert client.delete(f'/api/subscriptions/{TEST_EMAIL}').status_code == 200
 
 
+def test_verify_subscription_email_sends_test_message(client, monkeypatch):
+    authenticate(client)
+    sent = {}
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'enabled': True},
+    }).status_code == 201
+    monkeypatch.setattr(
+        'routes.subscription.send_html_email',
+        lambda config, to, subject, html: sent.update({
+            'to': to,
+            'subject': subject,
+            'html': html,
+        }),
+    )
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/verify-email')
+
+    assert response.status_code == 200
+    assert response.get_json()['message'] == 'Verification email sent.'
+    assert sent['to'] == TEST_EMAIL
+    assert sent['subject'] == 'Security Portal email verification'
+    assert 'test email' in sent['html']
+
+
+def test_verify_subscription_email_returns_send_error(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'enabled': True},
+    }).status_code == 201
+
+    def fail_send(*args):
+        raise RuntimeError('SMTP refused connection')
+
+    monkeypatch.setattr('routes.subscription.send_html_email', fail_send)
+
+    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/verify-email')
+
+    assert response.status_code == 502
+    assert response.get_json()['error'] == 'SMTP refused connection'
+
+
 def test_subscriptions_run_daily_window_selects_matching_source_documents(client, monkeypatch):
     authenticate(client)
     assert client.post('/api/subscriptions', json={
@@ -204,6 +249,69 @@ def test_subscription_rejects_invalid_severity_choice(client):
     })
     assert response.status_code == 400
     assert response.get_json()['error'].startswith('Severity/status must be')
+
+
+def test_report_profile_accepts_schedule_and_cpe_pairs(client):
+    authenticate(client)
+    response = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {
+            'enabled': True,
+            'generation_mode': 'enriched_weekly',
+            'report_language': 'zh',
+            'schedule_enabled': True,
+            'schedule_weekday': 'fri',
+            'schedule_time': '14:30',
+            'filters': {
+                'cpe_pairs': [{'vendor': 'Red Hat', 'product': 'Enterprise Linux'}],
+            },
+        },
+    })
+
+    assert response.status_code == 201
+    item = next(item for item in client.get('/api/subscriptions').get_json()['data'] if item['email'] == TEST_EMAIL)
+    assert item['report_profile']['schedule_enabled'] is True
+    assert item['report_profile']['schedule_weekday'] == 'fri'
+    assert item['report_profile']['schedule_time'] == '14:30'
+    assert item['report_profile']['next_run_at']
+    assert item['report_profile']['filters']['cpe_pairs'] == [
+        {'vendor': 'Red Hat', 'product': 'Enterprise Linux'},
+    ]
+
+
+def test_report_profile_rejects_invalid_schedule_and_cpe(client):
+    authenticate(client)
+    bad_schedule = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'schedule_enabled': True, 'schedule_weekday': 'funday'},
+    })
+    assert bad_schedule.status_code == 400
+
+    bad_cpe = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'report_profile': {'filters': {'cpe_pairs': [{'vendor': 'Only Vendor'}]}},
+    })
+    assert bad_cpe.status_code == 400
+
+
+def test_cpe_search_endpoint(client):
+    authenticate(client)
+    response = client.get('/api/cpes?q=redhat')
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert len(body['data']) <= 50
+    assert any('redhat' in item['label'].lower() for item in body['data'])
+
+    vendors = client.get('/api/cpes?type=vendor&q=redhat').get_json()['data']
+    assert vendors[0] == {'vendor': 'redhat', 'label': 'redhat'}
+
+    products = client.get('/api/cpes?type=product&vendor=redhat&q=linux').get_json()['data']
+    assert products
+    assert all(item['vendor'] == 'redhat' and 'linux' in item['product'] for item in products)
 
 
 def _newsletter_match(document):

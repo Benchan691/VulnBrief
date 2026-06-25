@@ -119,7 +119,6 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `MONGO_URI` | Optional alias for `LOCAL_MONGO_URI` when both are set |
 | `FLASK_SECRET_KEY` | Flask session signing (use a long random string) |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly reports) |
-| `EXA_API_KEYS` | Exa search fallback (Enriched Weekly reports) |
 
 ### Common `config/config.json` sections
 
@@ -234,7 +233,7 @@ not a separate unpublished compose Mongo container.
 
 **Enriched Weekly report fails**
 
-Check `TAVILY_API_KEYS` or `EXA_API_KEYS` in `.env` and `enriched.llm_base_url` in
+Check `TAVILY_API_KEYS` or `SEARXNG_BASE_URL` in `.env` and `enriched.llm_base_url` in
 `config/config.json`. The llama-server endpoint must accept OpenAI-compatible
 `/v1/chat/completions` requests.
 

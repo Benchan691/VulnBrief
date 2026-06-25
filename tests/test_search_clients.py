@@ -1,5 +1,4 @@
-from enriched_report import tavily_client
-from enriched_report.tavily_client import ExaClient, FailoverSearchClient, SearXNGClient, build_search_client
+from enriched_report.tavily_client import SearXNGClient, TavilyClient, build_search_client
 
 
 class FakeResponse:
@@ -14,7 +13,7 @@ class FakeResponse:
         return self.body
 
 
-def test_exa_client_maps_response_to_search_result(monkeypatch):
+def test_tavily_client_posts_search_request(monkeypatch):
     calls = []
 
     def fake_post(url, headers, json, timeout):
@@ -23,30 +22,24 @@ def test_exa_client_maps_response_to_search_result(monkeypatch):
             'results': [{
                 'url': 'https://example.com/advisory',
                 'title': 'Advisory',
-                'highlights': ['Patch now.'],
-                'text': 'Full page text.',
-                'score': 0.42,
+                'content': 'Snippet',
             }],
         })
 
     monkeypatch.setattr('requests.post', fake_post)
 
-    results = ExaClient('exa-key', max_results=3, timeout_seconds=9).search('CVE query')
+    results = TavilyClient('tavily-key', max_results=3, timeout_seconds=9).search('CVE query')
 
     url, headers, payload, timeout = calls[0]
-    assert url == 'https://api.exa.ai/search'
-    assert headers['x-api-key'] == 'exa-key'
+    assert url == 'https://api.tavily.com/search'
+    assert headers['Authorization'] == 'Bearer tavily-key'
     assert payload['query'] == 'CVE query'
-    assert payload['numResults'] == 3
-    assert payload['contents']['text']['maxCharacters'] == 60000
+    assert payload['max_results'] == 3
     assert timeout == 9
     assert results == [{
         'url': 'https://example.com/advisory',
         'title': 'Advisory',
-        'snippet': 'Patch now.',
-        'page_content': 'Full page text.',
-        'score': 0.42,
-        'source_api': 'exa',
+        'content': 'Snippet',
     }]
 
 
@@ -118,43 +111,17 @@ def test_searxng_client_skips_oversized_snippet(monkeypatch):
     assert results == []
 
 
-def test_build_search_client_uses_configured_provider_order():
+def test_build_search_client_prefers_searxng_when_configured():
     client = build_search_client({
-        'SEARCH_PROVIDER_ORDER': ['searxng', 'tavily', 'exa'],
         'SEARXNG_BASE_URL': 'https://search.example',
         'TAVILY_API_KEYS': ['tavily-key'],
-        'EXA_API_KEYS': ['exa-key'],
     })
 
-    assert [item.provider for item in client.clients] == ['searxng', 'tavily', 'exa']
+    assert client.provider == 'searxng'
 
 
-def test_failover_search_client_tries_next_provider_and_logs(monkeypatch):
-    class BrokenClient:
-        provider = 'tavily'
+def test_build_search_client_uses_first_tavily_key():
+    client = build_search_client({'TAVILY_API_KEYS': ['tavily-a', 'tavily-b']})
 
-        def search(self, query):
-            raise RuntimeError('credit limit exceeded')
-
-    class WorkingClient:
-        provider = 'exa'
-
-        def search(self, query):
-            return [{'url': 'https://example.com'}]
-
-    log_messages = []
-
-    class FakeLogger:
-        def info(self, message, *args):
-            log_messages.append(message % args)
-
-        def warning(self, message, *args):
-            log_messages.append(message % args)
-
-    monkeypatch.setattr(tavily_client, 'logger', FakeLogger())
-
-    results = FailoverSearchClient([BrokenClient(), WorkingClient()]).search('query')
-
-    assert results == [{'url': 'https://example.com'}]
-    assert 'search failed provider=tavily key_index=1 disabled=True error=credit limit exceeded' in log_messages
-    assert 'search success provider=exa key_index=2 results=1' in log_messages
+    assert client.provider == 'tavily'
+    assert client.api_key == 'tavily-a'

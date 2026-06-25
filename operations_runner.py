@@ -358,22 +358,30 @@ def start_scheduler(app, database_factory):
             time.sleep(CHECK_SECONDS)
             with app.app_context():
                 try:
-                    tick_scheduler(database_factory())
+                    tick_scheduler(database_factory(), app)
                 except Exception:
                     pass
 
     threading.Thread(target=loop, daemon=True).start()
 
 
-def tick_scheduler(database):
+def tick_scheduler(database, app=None):
+    did_work = False
+    if app is not None:
+        try:
+            from subscription_scheduler import tick_retention, tick_scheduled_reports
+            did_work = bool(tick_scheduled_reports(app, database)) or did_work
+            did_work = tick_retention(database) is not None or did_work
+        except Exception:
+            pass
     config = load_config(database)
     catch_up = config['catch_up']
     if not catch_up.get('periodic_enabled'):
-        return False
+        return did_work
     next_run = _parse_time(catch_up.get('next_run_at'))
     if next_run and datetime.now(timezone.utc) < next_run:
-        return False
+        return did_work
     if _active_run(database, 'catch_up'):
-        return False
+        return did_work
     start_operation(database, 'catch_up', scheduled=True)
     return True

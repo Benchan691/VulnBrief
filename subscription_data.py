@@ -30,6 +30,7 @@ VALID_SEVERITIES = {'', 'Critical', 'High', 'Medium', 'Low'}
 VALID_WINDOWS = {'all', 'daily', 'week', 'custom'}
 VALID_GENERATION_MODES = {'template', 'enriched_weekly'}
 VALID_LANGUAGES = {'en', 'zh', 'ch'}
+VALID_WEEKDAYS = {'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'}
 
 DEFAULT_FILTERS = {
     'collections': [],
@@ -50,6 +51,7 @@ DEFAULT_FILTERS = {
     'end': '',
     'source_timestamp': {},
     'report_scope': {},
+    'cpe_pairs': [],
 }
 DEFAULT_NEWSLETTER_PROFILE = {
     'enabled': False,
@@ -60,6 +62,9 @@ DEFAULT_REPORT_PROFILE = {
     'filters': DEFAULT_FILTERS,
     'generation_mode': 'template',
     'report_language': 'en',
+    'schedule_enabled': False,
+    'schedule_weekday': 'mon',
+    'schedule_time': '09:00',
 }
 
 
@@ -178,6 +183,23 @@ def validate_filters(database, value):
     if 'kev_only' in report_scope:
         report_scope['kev_only'] = bool(report_scope['kev_only'])
     filters['report_scope'] = report_scope
+    cpe_pairs = value.get('cpe_pairs') or []
+    if not isinstance(cpe_pairs, list):
+        raise ValueError('CPE filters must be a list.')
+    normalized_pairs = []
+    seen_pairs = set()
+    for item in cpe_pairs:
+        if not isinstance(item, dict):
+            raise ValueError('CPE filter entries must be objects.')
+        vendor = str(item.get('vendor') or '').strip()
+        product = str(item.get('product') or '').strip()
+        if not vendor or not product:
+            raise ValueError('CPE filter entries require vendor and product.')
+        key = (vendor.lower(), product.lower())
+        if key not in seen_pairs:
+            seen_pairs.add(key)
+            normalized_pairs.append({'vendor': vendor, 'product': product})
+    filters['cpe_pairs'] = normalized_pairs
     return filters
 
 
@@ -206,6 +228,19 @@ def validate_profile(database, value, profile_type):
             if collections and collections != ['cve_review']:
                 raise ValueError('enriched_weekly report profiles only support cve_review.')
             profile['filters']['collections'] = ['cve_review']
+        profile['schedule_enabled'] = bool(value.get('schedule_enabled', default.get('schedule_enabled', False)))
+        profile['schedule_weekday'] = str(value.get('schedule_weekday') or default.get('schedule_weekday', 'mon')).strip().lower()
+        profile['schedule_time'] = str(value.get('schedule_time') or default.get('schedule_time', '09:00')).strip()
+        if profile['schedule_weekday'] not in VALID_WEEKDAYS:
+            raise ValueError('Invalid report schedule weekday.')
+        if not re.match(r'^\d{2}:\d{2}$', profile['schedule_time']):
+            raise ValueError('Invalid report schedule time.')
+        hour, minute = [int(part) for part in profile['schedule_time'].split(':')]
+        if hour > 23 or minute > 59:
+            raise ValueError('Invalid report schedule time.')
+        for field in ('next_run_at', 'last_run_at', 'last_job_id', 'last_error', 'last_match_count'):
+            if field in value:
+                profile[field] = value[field]
     return profile
 
 
@@ -378,6 +413,17 @@ def build_match_filter(filters, now=None):
         value = filters.get(parameter, '')
         if value:
             clauses.append({'$or': [{field: _regex(value)} for field in fields]})
+    cpe_pairs = filters.get('cpe_pairs') or []
+    if cpe_pairs:
+        vendor_fields = mapping['target_vendor']
+        product_fields = mapping['target_product']
+        pair_clauses = []
+        for pair in cpe_pairs:
+            pair_clauses.append({'$and': [
+                {'$or': [{field: _regex(pair['vendor'])} for field in vendor_fields]},
+                {'$or': [{field: _regex(pair['product'])} for field in product_fields]},
+            ]})
+        clauses.append(pair_clauses[0] if len(pair_clauses) == 1 else {'$or': pair_clauses})
     status = filters.get('status', '')
     include_unknown = filters.get('include_unknown', False)
     severity_clause = build_severity_filter(status, include_unknown)

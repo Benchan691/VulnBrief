@@ -4,7 +4,6 @@ bleach>=6,<7
 beautifulsoup4>=4.12
 ddddocr>=1.5
 gunicorn>=21,<24
-httpx>=0.27
 json-repair>=0,<1
 jsonschema>=4,<5
 lxml>=5
