@@ -440,7 +440,7 @@ def test_subscription_rejects_invalid_severity_choice(client):
     assert response.get_json()['error'].startswith('Severity/status must be')
 
 
-def test_report_profile_accepts_schedule_and_cpe_pairs(client):
+def test_report_profile_accepts_schedule_and_keywords(client):
     authenticate(client)
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
@@ -453,7 +453,7 @@ def test_report_profile_accepts_schedule_and_cpe_pairs(client):
             'schedule_weekday': 'fri',
             'schedule_time': '14:30',
             'filters': {
-                'cpe_pairs': [{'vendor': 'Red Hat', 'product': 'Enterprise Linux'}],
+                'keywords': [' Red Hat ', 'redhat', 'Enterprise Linux'],
             },
         },
     })
@@ -464,12 +464,10 @@ def test_report_profile_accepts_schedule_and_cpe_pairs(client):
     assert item['report_profile']['schedule_weekday'] == 'fri'
     assert item['report_profile']['schedule_time'] == '14:30'
     assert item['report_profile']['next_run_at']
-    assert item['report_profile']['filters']['cpe_pairs'] == [
-        {'vendor': 'Red Hat', 'product': 'Enterprise Linux'},
-    ]
+    assert item['report_profile']['filters']['keywords'] == ['Red Hat', 'Enterprise Linux']
 
 
-def test_report_profile_rejects_invalid_schedule_and_cpe(client):
+def test_report_profile_rejects_invalid_schedule_and_keywords(client):
     authenticate(client)
     bad_schedule = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
@@ -478,33 +476,12 @@ def test_report_profile_rejects_invalid_schedule_and_cpe(client):
     })
     assert bad_schedule.status_code == 400
 
-    bad_cpe = client.post('/api/subscriptions', json={
+    bad_keywords = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
-        'report_profile': {'filters': {'cpe_pairs': [{'product': 'Only Product'}]}},
+        'report_profile': {'filters': {'keywords': 'redhat'}},
     })
-    assert bad_cpe.status_code == 400
-
-
-def test_cpe_search_endpoint(client):
-    authenticate(client)
-    response = client.get('/api/cpes?q=redhat')
-
-    assert response.status_code == 200
-    body = response.get_json()
-    assert len(body['data']) <= 50
-    assert any('redhat' in item['label'].lower() for item in body['data'])
-
-    vendors = client.get('/api/cpes?type=vendor&q=redhat').get_json()['data']
-    assert vendors[0] == {'vendor': 'redhat', 'label': 'redhat'}
-
-    products = client.get('/api/cpes?type=product&vendor=redhat&q=linux').get_json()['data']
-    assert products
-    assert all(item['vendor'] == 'redhat' and 'linux' in item['product'] for item in products)
-
-    all_products = client.get('/api/cpes?type=product&vendor=redhat&limit=5000').get_json()['data']
-    assert len(all_products) >= len(products)
-    assert all(item['vendor'] == 'redhat' for item in all_products)
+    assert bad_keywords.status_code == 400
 
 
 def _newsletter_match(document):

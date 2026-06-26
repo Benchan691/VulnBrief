@@ -11,10 +11,6 @@
         max-height: 12rem;
         overflow-y: auto;
     }
-    .cpe-options {
-        max-height: 10rem;
-        overflow-y: auto;
-    }
 </style>
 <div class="container">
     <div class="d-flex justify-content-between align-items-center mb-4">
@@ -99,7 +95,6 @@
 (function () {
     const subscriptionsUrl = {{ url_for('subscription.get_subscriptions')|tojson }};
     const previewUrl = {{ url_for('subscription.preview_subscription_report')|tojson }};
-    const cpesUrl = {{ url_for('subscription.get_cpes')|tojson }};
     const reviewsUrl = {{ url_for('review.get_review_collections')|tojson }};
     const reportJobUrlTemplate = {{ url_for('report.get_report_job', job_id='__JOB_ID__')|tojson }};
     const reportLogsUrlTemplate = {{ url_for('report.get_report_job_logs', job_id='__JOB_ID__')|tojson }};
@@ -108,7 +103,7 @@
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
     let collections = [], subscriptions = [], editingEmail = null;
-    let selectedCpes = [];
+    let reportKeywords = [];
     let previewTimer = null;
     let previewAbortController = null;
     let previewRequestId = 0;
@@ -156,7 +151,7 @@
             return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + level + '</label></div>';
         }).join('') +
         '</div><div class="form-text">Leave all unchecked to match all known severities.</div></div>' +
-        '<div class="col-12"><label class="form-label small" for="report-cpe-vendor-search">Vendor search</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-cpe-vendor-search" type="search" class="form-control" placeholder="Search vendor..." autocomplete="off"><button id="report-cpe-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-cpe-vendor-options" class="cpe-options list-group mt-1"></div><label class="form-label small mt-2" for="report-cpe-product-search">Product search</label><input id="report-cpe-product-search" type="search" class="form-control form-control-sm" placeholder="Select vendor first..." autocomplete="off" disabled><div class="d-flex gap-2 mt-2"><button id="report-cpe-clear-selected" class="btn btn-outline-secondary btn-sm" type="button">Clear selected</button></div><div id="report-cpe-help" class="form-text">Type at least 2 characters, then choose a vendor.</div><div id="report-cpe-product-options" class="cpe-options list-group mt-1"></div><div id="report-cpe-selected" class="mt-2"></div></div>' +
+        '<div class="col-12"><label class="form-label small" for="report-keyword-input">Keywords</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-keyword-input" type="search" class="form-control" placeholder="Add keyword..." autocomplete="off"><button id="report-keyword-add" class="btn btn-outline-primary" type="button">Add</button><button id="report-keyword-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-keywords" class="d-flex flex-wrap gap-1 mt-2"></div></div>' +
         '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">Include unknown severity</label></div></div>' +
         timeWindowMarkup('report') +
         '</div>';
@@ -272,132 +267,44 @@
     function isReportEnriched() {
         return document.getElementById('report-generation-mode').value === 'enriched_weekly';
     }
-    function cpeKey(pair) { return (pair.vendor || '').toLowerCase() + '\n' + (pair.product || '').toLowerCase(); }
-    function renderSelectedCpes() {
-        const box = document.getElementById('report-cpe-selected');
+    function keywordKey(value) { return String(value || '').replace(/\s+/g, '').toLowerCase(); }
+    function renderReportKeywords() {
+        const box = document.getElementById('report-keywords');
         box.replaceChildren();
-        if (!selectedCpes.length) {
+        if (!reportKeywords.length) {
             const empty = document.createElement('div');
             empty.className = 'text-muted small';
-            empty.textContent = 'No vendor or product filters selected.';
+            empty.textContent = 'No keywords selected.';
             box.append(empty);
             scheduleReportPreview();
             return;
         }
-        const grouped = {};
-        selectedCpes.forEach(function (pair, index) {
-            const key = pair.vendor;
-            if (!grouped[key]) grouped[key] = [];
-            grouped[key].push({pair: pair, index: index});
-        });
-        Object.keys(grouped).sort().forEach(function (vendor) {
-            const details = document.createElement('details');
-            details.className = 'border rounded px-3 py-2 mb-2';
-            const summary = document.createElement('summary');
-            summary.className = 'fw-semibold';
-            const productCount = grouped[vendor].filter(function (entry) { return !!entry.pair.product; }).length;
-            summary.textContent = vendor + (productCount ? (' (' + productCount + ' product' + (productCount === 1 ? '' : 's') + ')') : ' (vendor)');
-            details.append(summary);
-
-            const productList = document.createElement('div');
-            productList.className = 'd-flex flex-wrap gap-1 mt-2';
-            grouped[vendor].forEach(function (entry) {
-                const chip = document.createElement('button');
-                chip.type = 'button';
-                chip.className = 'btn btn-outline-secondary btn-sm';
-                chip.textContent = (entry.pair.product || 'Vendor keyword') + ' ×';
-                chip.onclick = function () {
-                    selectedCpes.splice(entry.index, 1);
-                    renderSelectedCpes();
-                };
-                productList.append(chip);
-            });
-            details.append(productList);
-            box.append(details);
+        reportKeywords.forEach(function (keyword, index) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'btn btn-outline-secondary btn-sm';
+            chip.textContent = keyword + ' x';
+            chip.onclick = function () {
+                reportKeywords.splice(index, 1);
+                renderReportKeywords();
+            };
+            box.append(chip);
         });
         scheduleReportPreview();
     }
-    function addCpe(pair) {
-        if (!selectedCpes.some(function (item) { return cpeKey(item) === cpeKey(pair); })) {
-            selectedCpes.push({vendor: pair.vendor, product: pair.product});
-            renderSelectedCpes();
+    function addReportKeyword(value) {
+        const keyword = String(value || '').trim();
+        if (!keyword) return;
+        const key = keywordKey(keyword);
+        if (!reportKeywords.some(function (item) { return keywordKey(item) === key; })) {
+            reportKeywords.push(keyword);
+            renderReportKeywords();
         }
+        document.getElementById('report-keyword-input').value = '';
     }
-    function setCpeStatus(text) {
-        document.getElementById('report-cpe-help').textContent = text;
-    }
-    function resetCpeProductSearch() {
-        const productSearch = document.getElementById('report-cpe-product-search');
-        productSearch.value = '';
-        productSearch.disabled = true;
-        productSearch.placeholder = 'Select vendor first...';
-        delete productSearch.dataset.vendor;
-    }
-    function resetCpeResults() {
-        document.getElementById('report-cpe-vendor-options').replaceChildren();
-        document.getElementById('report-cpe-product-options').replaceChildren();
-        resetCpeProductSearch();
-        setCpeStatus('Type at least 2 characters, then choose a vendor.');
-    }
-    function clearCpeSearch() {
-        document.getElementById('report-cpe-vendor-search').value = '';
-        resetCpeResults();
-    }
-    function searchCpeVendors() {
-        const query = document.getElementById('report-cpe-vendor-search').value.trim();
-        const options = document.getElementById('report-cpe-vendor-options');
-        if (query.length < 2) { resetCpeResults(); return; }
-        options.replaceChildren();
-        document.getElementById('report-cpe-product-options').replaceChildren();
-        setCpeStatus('Searching vendors...');
-        requestJson(cpesUrl + '?type=vendor&q=' + encodeURIComponent(query)).then(function (body) {
-            options.replaceChildren();
-            setCpeStatus(body.data.length ? 'Select a vendor to use vendor keyword search, or search for a product.' : 'No vendors found.');
-            body.data.forEach(function (item) {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'list-group-item list-group-item-action small';
-                button.textContent = item.label;
-                button.onclick = function () {
-                    addCpe({vendor: item.vendor});
-                    const productSearch = document.getElementById('report-cpe-product-search');
-                    productSearch.disabled = false;
-                    productSearch.value = '';
-                    productSearch.dataset.vendor = item.vendor;
-                    productSearch.placeholder = 'Search product for ' + item.vendor + '...';
-                    options.replaceChildren();
-                    setCpeStatus('Vendor keyword added for ' + item.vendor + '. Search product if you want to narrow it further.');
-                    productSearch.focus();
-                };
-                options.append(button);
-            });
-        }).catch(function (e) { showMessage(e.message, 'danger'); });
-    }
-    function searchCpeProducts() {
-        const input = document.getElementById('report-cpe-product-search');
-        const query = input.value.trim();
-        const vendor = input.dataset.vendor || '';
-        const options = document.getElementById('report-cpe-product-options');
-        if (!vendor || query.length < 2) { options.replaceChildren(); return; }
-        options.replaceChildren();
-        setCpeStatus('Searching products...');
-        requestJson(cpesUrl + '?type=product&vendor=' + encodeURIComponent(vendor) + '&q=' + encodeURIComponent(query)).then(function (body) {
-            options.replaceChildren();
-            setCpeStatus(body.data.length ? 'Select a product to narrow the vendor keyword search.' : 'No products found for this vendor.');
-            body.data.forEach(function (pair) {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'list-group-item list-group-item-action small';
-                button.textContent = pair.product;
-                button.onclick = function () { addCpe(pair); clearCpeSearch(); };
-                options.append(button);
-            });
-        }).catch(function (e) { showMessage(e.message, 'danger'); });
-    }
-    function clearSelectedCpes() {
-        selectedCpes = [];
-        renderSelectedCpes();
-        setCpeStatus('Cleared selected vendor and product filters.');
+    function clearReportKeywords() {
+        reportKeywords = [];
+        renderReportKeywords();
     }
 
     function renderCollections(prefix, selected) {
@@ -482,10 +389,8 @@
         filters = filters || {};
         if (prefix === 'newsletter') renderCollections(prefix, filters.collections || []);
         if (prefix === 'report') {
-            selectedCpes = (filters.cpe_pairs || []).map(function (pair) {
-                return pair.product ? {vendor: pair.vendor, product: pair.product} : {vendor: pair.vendor};
-            });
-            renderSelectedCpes();
+            reportKeywords = Array.isArray(filters.keywords) ? filters.keywords.slice() : [];
+            renderReportKeywords();
         }
         const textFields = prefix === 'report' ? [] : newsletterTextFields;
         textFields.forEach(function (field) {
@@ -510,7 +415,7 @@
             filters[field] = document.getElementById(prefix + '-' + field).value;
         });
         filters.status = readStatusFilters(prefix);
-        if (prefix === 'report') filters.cpe_pairs = selectedCpes;
+        if (prefix === 'report') filters.keywords = reportKeywords;
         filters.include_unknown = document.getElementById(prefix + '-include-unknown').checked;
         filters.time_window = document.getElementById(prefix + '-time-window').value;
         filters.start = document.getElementById(prefix + '-start').value;
@@ -616,10 +521,16 @@
     wireCollectionsDropdown('newsletter');
     document.getElementById('newsletter-time-window').addEventListener('change', function () { toggleCustomWindow('newsletter'); });
     document.getElementById('report-time-window').addEventListener('change', function () { toggleCustomWindow('report'); });
-    document.getElementById('report-cpe-vendor-search').addEventListener('input', searchCpeVendors);
-    document.getElementById('report-cpe-product-search').addEventListener('input', searchCpeProducts);
-    document.getElementById('report-cpe-clear').addEventListener('click', clearCpeSearch);
-    document.getElementById('report-cpe-clear-selected').addEventListener('click', clearSelectedCpes);
+    document.getElementById('report-keyword-add').addEventListener('click', function () {
+        addReportKeyword(document.getElementById('report-keyword-input').value);
+    });
+    document.getElementById('report-keyword-input').addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            addReportKeyword(event.target.value);
+        }
+    });
+    document.getElementById('report-keyword-clear').addEventListener('click', clearReportKeywords);
     document.getElementById('send-email-log-modal').addEventListener('hidden.bs.modal', stopSendEmailPolling);
     document.getElementById('report-enabled').addEventListener('change', refreshReportPreview);
     document.getElementById('report-generation-mode').addEventListener('change', scheduleReportPreview);

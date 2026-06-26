@@ -1,6 +1,5 @@
 import socket
 import threading
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
@@ -70,14 +69,6 @@ def due_scheduled_subscriptions(web_database, vuln_database, now=None):
         except ValueError:
             continue
     return due
-
-
-def force_week_window(profile):
-    profile = deepcopy(profile)
-    profile['filters']['time_window'] = 'week'
-    profile['filters']['start'] = ''
-    profile['filters']['end'] = ''
-    return profile
 
 
 def _claim(collection, subscription, now):
@@ -283,7 +274,7 @@ def run_scheduled_report(app, subscription_id):
             return
         try:
             subscription = normalize_subscription(vuln_database, raw)
-            profile = force_week_window(subscription['report_profile'])
+            profile = subscription['report_profile']
             update = {
                 'report_profile.last_run_at': now,
                 'report_profile.next_run_at': next_weekly_run(profile, now),

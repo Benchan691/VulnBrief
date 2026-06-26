@@ -24,7 +24,16 @@ def ensure_sub_account_collection():
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')
 FILTER_TEXT_FIELDS = (
     'search', 'code', 'title', 'impact', 'affected', 'source',
-    'target_vendor', 'target_product', 'affected_product_name',
+)
+KEYWORD_SEARCH_FIELDS = (
+    'code', 'cve', 'title', 'description', 'impacts', 'affected',
+    'recommendation', 'related_link', 'status', 'source_provider',
+    'classification.best_vendor', 'classification.vendor',
+    'classification.candidate.vendor', 'details.cve.affected.vendor',
+    'details.cve.affected_products.vendor', 'vendor',
+    'classification.best_product', 'classification.product',
+    'classification.candidate.product', 'details.cve.affected.product',
+    'details.cve.affected_products.product', 'affected_products',
 )
 VALID_SEVERITIES = {'', 'Critical', 'High', 'Medium', 'Low'}
 VALID_WINDOWS = {'all', 'daily', 'week', 'custom'}
@@ -43,15 +52,12 @@ DEFAULT_FILTERS = {
     'severity_threshold': '',
     'include_unknown': False,
     'source': '',
-    'target_vendor': '',
-    'target_product': '',
-    'affected_product_name': '',
+    'keywords': [],
     'time_window': 'all',
     'start': '',
     'end': '',
     'source_timestamp': {},
     'report_scope': {},
-    'cpe_pairs': [],
 }
 DEFAULT_NEWSLETTER_PROFILE = {
     'enabled': False,
@@ -183,26 +189,18 @@ def validate_filters(database, value):
     if 'kev_only' in report_scope:
         report_scope['kev_only'] = bool(report_scope['kev_only'])
     filters['report_scope'] = report_scope
-    cpe_pairs = value.get('cpe_pairs') or []
-    if not isinstance(cpe_pairs, list):
-        raise ValueError('CPE filters must be a list.')
-    normalized_pairs = []
-    seen_pairs = set()
-    for item in cpe_pairs:
-        if not isinstance(item, dict):
-            raise ValueError('CPE filter entries must be objects.')
-        vendor = str(item.get('vendor') or '').strip()
-        product = str(item.get('product') or '').strip()
-        if not vendor:
-            raise ValueError('CPE filter entries require a vendor.')
-        key = (vendor.lower(), product.lower())
-        if key not in seen_pairs:
-            seen_pairs.add(key)
-            normalized = {'vendor': vendor}
-            if product:
-                normalized['product'] = product
-            normalized_pairs.append(normalized)
-    filters['cpe_pairs'] = normalized_pairs
+    keywords = value.get('keywords') or []
+    if not isinstance(keywords, list):
+        raise ValueError('Keywords must be a list.')
+    seen_keywords = set()
+    for item in keywords:
+        if not isinstance(item, str):
+            raise ValueError('Keywords must be text.')
+        keyword = item.strip()
+        key = re.sub(r'\s+', '', keyword).lower()
+        if keyword and key not in seen_keywords:
+            seen_keywords.add(key)
+            filters['keywords'].append(keyword)
     return filters
 
 
@@ -400,6 +398,14 @@ def _broad_text_clause(value, fields):
     }
 
 
+def _keyword_clause(value):
+    compact = re.sub(r'\s+', '', str(value or '')).lower()
+    if not compact:
+        return None
+    pattern = r'\s*'.join(re.escape(char) for char in compact)
+    return {'$or': [{field: {'$regex': pattern, '$options': 'i'}} for field in KEYWORD_SEARCH_FIELDS]}
+
+
 def build_match_filter(filters, now=None):
     clauses = []
     mapping = {
@@ -410,38 +416,17 @@ def build_match_filter(filters, now=None):
         'impact': ('impacts',),
         'affected': ('affected',),
         'source': ('source_provider',),
-        'target_vendor': (
-            'classification.best_vendor', 'classification.vendor',
-            'classification.candidate.vendor', 'details.cve.affected.vendor',
-            'details.cve.affected_products.vendor', 'vendor',
-        ),
-        'target_product': (
-            'classification.best_product', 'classification.product',
-            'classification.candidate.product', 'details.cve.affected.product',
-            'details.cve.affected_products.product', 'affected', 'affected_products',
-        ),
-        'affected_product_name': (
-            'classification.best_product', 'classification.candidate.product',
-            'details.cve.affected.product', 'details.cve.affected_products.product',
-            'affected', 'affected_products',
-        ),
     }
     for parameter, fields in mapping.items():
         value = filters.get(parameter, '')
         if value:
             clauses.append(_broad_text_clause(value, fields))
-    cpe_pairs = filters.get('cpe_pairs') or []
-    if cpe_pairs:
-        search_fields = mapping['search'] + mapping['target_vendor'] + mapping['target_product']
-        pair_clauses = []
-        for pair in cpe_pairs:
-            clause_value = pair['vendor']
-            if pair.get('product'):
-                clause_value += f" {pair['product']}"
-            clause = _broad_text_clause(clause_value, search_fields)
-            if clause:
-                pair_clauses.append(clause)
-        clauses.append(pair_clauses[0] if len(pair_clauses) == 1 else {'$or': pair_clauses})
+    keyword_clauses = [
+        clause for clause in (_keyword_clause(keyword) for keyword in filters.get('keywords', []))
+        if clause
+    ]
+    if keyword_clauses:
+        clauses.append(keyword_clauses[0] if len(keyword_clauses) == 1 else {'$or': keyword_clauses})
     status = filters.get('status', '')
     include_unknown = filters.get('include_unknown', False)
     severity_clause = build_severity_filter(status, include_unknown)

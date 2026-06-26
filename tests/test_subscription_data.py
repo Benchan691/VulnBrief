@@ -121,10 +121,9 @@ def test_enriched_weekly_profile_forces_cve_review_only():
         }, 'report')
 
 
-def test_enriched_filters_include_target_fields_threshold_and_scope_limit():
+def test_enriched_filters_include_keywords_threshold_and_scope_limit():
     filters = validate_filters(FakeDatabase(), {
-        'target_vendor': 'Acme',
-        'target_product': 'Widget',
+        'keywords': ['Acme Widget'],
         'severity_threshold': 'High',
         'report_scope': {'max_count': 3, 'kev_only': True},
     })
@@ -141,9 +140,19 @@ def test_enriched_filters_include_target_fields_threshold_and_scope_limit():
     assert query_profile_matches(FakeDatabase(), profile, limit=10) == []
 
 
-def test_cpe_pairs_use_broad_keyboard_style_search_clauses():
+def test_keywords_deduplicate_blanks_and_legacy_cpe_pairs_are_ignored():
     filters = validate_filters(FakeDatabase(), {
-        'cpe_pairs': [{'vendor': 'Red Hat', 'product': 'Enterprise Linux'}],
+        'keywords': [' Red Hat ', 'redhat', '', 'Enterprise Linux'],
+        'cpe_pairs': [{'product': 'Only Product'}],
+    })
+
+    assert filters['keywords'] == ['Red Hat', 'Enterprise Linux']
+    assert 'cpe_pairs' not in filters
+
+
+def test_keywords_use_or_logic_and_case_space_insensitive_regex():
+    filters = validate_filters(FakeDatabase(), {
+        'keywords': ['Red Hat', 'Enterprise Linux'],
     })
     mongo_filter = build_match_filter({
         **filters,
@@ -151,49 +160,27 @@ def test_cpe_pairs_use_broad_keyboard_style_search_clauses():
     })
 
     assert '$and' in mongo_filter
-    clause_text = str(mongo_filter['$and'])
+    assert '$or' in mongo_filter['$and'][0]
+    assert len(mongo_filter['$and'][0]['$or']) == 2
+    clause_text = str(mongo_filter)
     assert 'classification.best_vendor' in clause_text
     assert 'classification.best_product' in clause_text
     assert 'description' in clause_text
-    assert 'Red' in clause_text
-    assert 'Hat' in clause_text
-    assert 'Enterprise' in clause_text
-    assert 'Linux' in clause_text
+    assert 'r\\\\s*e\\\\s*d\\\\s*h\\\\s*a\\\\s*t' in clause_text
+    assert 'e\\\\s*n\\\\s*t\\\\s*e\\\\s*r\\\\s*p\\\\s*r\\\\s*i\\\\s*s\\\\s*e' in clause_text
 
 
-def test_vendor_only_cpe_filter_uses_vendor_keyword_search():
-    filters = validate_filters(FakeDatabase(), {
-        'cpe_pairs': [{'vendor': 'Red Hat'}],
-    })
+def test_keyword_filter_combines_with_other_filters():
     mongo_filter = build_match_filter({
-        **filters,
+        'keywords': ['Red Hat', 'Acme'],
+        'status': ['High'],
         'time_window': 'all',
     })
 
     assert '$and' in mongo_filter
-    clause_text = str(mongo_filter['$and'])
-    assert 'classification.best_vendor' in clause_text
-    assert 'classification.best_product' in clause_text
-    assert 'Red' in clause_text
-    assert 'Hat' in clause_text
-    assert 'Enterprise' not in clause_text
-    assert 'Linux' not in clause_text
-
-
-def test_multiple_cpe_pairs_combine_with_or():
-    mongo_filter = build_match_filter({
-        'cpe_pairs': [
-            {'vendor': 'Red Hat'},
-            {'vendor': 'Red Hat', 'product': 'Enterprise Linux'},
-            {'vendor': 'Acme', 'product': 'Widget'},
-        ],
-        'time_window': 'all',
-    })
-
-    assert '$and' in mongo_filter
-    cpe_clause = mongo_filter['$and'][0]
-    assert '$or' in cpe_clause
-    assert len(cpe_clause['$or']) == 3
+    keyword_clause = mongo_filter['$and'][0]
+    assert '$or' in keyword_clause
+    assert len(keyword_clause['$or']) == 2
 
 
 def test_ensure_sub_account_collection_creates_empty_collection():

@@ -5,7 +5,7 @@ from bson import ObjectId
 import subscription_scheduler
 from app import app
 from mongo import get_web_database
-from subscription_scheduler import force_week_window, next_weekly_run, run_scheduled_report
+from subscription_scheduler import next_weekly_run, run_scheduled_report
 from subscription_scheduler import purge_old_data
 
 
@@ -18,19 +18,9 @@ def test_next_weekly_run_uses_hong_kong_time():
     assert run_at.isoformat() == '2026-06-26T01:30:00+00:00'
 
 
-def test_force_week_window_ignores_saved_window():
-    profile = {'filters': {'time_window': 'all', 'start': 'x', 'end': 'y'}}
-
-    forced = force_week_window(profile)
-
-    assert forced['filters']['time_window'] == 'week'
-    assert forced['filters']['start'] == ''
-    assert forced['filters']['end'] == ''
-    assert profile['filters']['time_window'] == 'all'
-
-
 def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
     sent = {}
+    queried_profiles = []
     with app.app_context():
         web = get_web_database()
         subscription_id = ObjectId()
@@ -46,7 +36,7 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
                 'schedule_enabled': True,
                 'schedule_weekday': 'fri',
                 'schedule_time': '09:30',
-                'filters': {'time_window': 'all'},
+                'filters': {'time_window': 'all', 'start': 'x', 'end': 'y'},
             },
         })
 
@@ -55,9 +45,10 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
             **raw,
             'report_profile': raw['report_profile'],
         })
-        monkeypatch.setattr(subscription_scheduler, 'query_profile_matches', lambda database, profile: [
-            {'collection': 'cve_review', 'source_collection': 'cve', 'selection_id': 'cve:1'},
-        ])
+        def fake_query_profile_matches(database, profile):
+            queried_profiles.append(profile)
+            return [{'collection': 'cve_review', 'source_collection': 'cve', 'selection_id': 'cve:1'}]
+        monkeypatch.setattr(subscription_scheduler, 'query_profile_matches', fake_query_profile_matches)
         def fake_run_job(app_obj, job_id):
             web['report_jobs'].update_one(
                 {'_id': ObjectId(job_id)},
@@ -87,6 +78,9 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
         assert stored['report_profile']['last_job_id']
         assert stored['report_profile']['last_match_count'] == 1
         assert stored['report_profile']['next_run_at']
+        assert queried_profiles[0]['filters']['time_window'] == 'all'
+        assert queried_profiles[0]['filters']['start'] == 'x'
+        assert queried_profiles[0]['filters']['end'] == 'y'
         assert sent['to'] == 'scheduled@example.com'
         assert sent['html'] == '<h1>Report</h1>'
 

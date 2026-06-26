@@ -1,12 +1,9 @@
-import os
 import threading
 from datetime import datetime, timezone
 
 from flask import abort, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from bootstrap import BASE_DIR
-from cpe_store import search_cpe_pairs, search_cpe_products, search_cpe_vendors
 from mailer import send_html_email
 from mongo import get_vulnerabilities_database
 from selection_scorer import rank_scored_selections, score_review_document
@@ -148,26 +145,6 @@ def get_subscriptions():
         return jsonify({'data': data})
     except (PyMongoError, ValueError):
         return jsonify({'error': 'Unable to load subscriptions.'}), 503
-
-
-@subscription_blueprint.route('/api/cpes')
-@login_required
-def get_cpes():
-    try:
-        path = os.path.join(BASE_DIR, 'cpes.csv')
-        kind = request.args.get('type', 'pair')
-        limit = min(max(int(request.args.get('limit', 50)), 1), 5000)
-        if kind == 'vendor':
-            data = search_cpe_vendors(path, request.args.get('q', ''), limit=limit)
-        elif kind == 'product':
-            data = search_cpe_products(path, request.args.get('vendor', ''), request.args.get('q', ''), limit=limit)
-        else:
-            data = search_cpe_pairs(path, request.args.get('q', ''), limit=limit)
-        return jsonify({
-            'data': data,
-        })
-    except (OSError, ValueError):
-        return jsonify({'error': 'Unable to load CPE data.'}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions', methods=['POST'])
