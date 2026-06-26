@@ -891,6 +891,7 @@ def test_rendered_enriched_report_uses_cards_and_short_summary():
 
         assert '<h2>Vulnerability Cards</h2>' in html
         assert 'id="card-cve-2026-7000-acme-widget"' in html
+        assert '<table class="vulnerability-card"' in html
         assert 'href="#card-cve-2026-7000-acme-widget">CVE-2026-7000 | Acme | Widget</a>' in html
         assert '1 vulnerability reviewed.' in html
         assert 'Overall risk: Critical.' in html
