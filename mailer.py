@@ -1,6 +1,17 @@
 import smtplib
 from email.message import EmailMessage
 
+from premailer import transform
+
+
+def prepare_html_for_email(html):
+    return transform(
+        html,
+        keep_style_tags=False,
+        remove_classes=False,
+        strip_important=False,
+    )
+
 
 def send_html_email(config, to_address, subject, html):
     host = config.get('SMTP_HOST')
@@ -12,7 +23,7 @@ def send_html_email(config, to_address, subject, html):
     message['To'] = to_address
     message['Subject'] = subject
     message.set_content('Open this email in an HTML-capable mail client.')
-    message.add_alternative(html, subtype='html')
+    message.add_alternative(prepare_html_for_email(html), subtype='html')
     port = int(config.get('SMTP_PORT') or 587)
     smtp_class = smtplib.SMTP_SSL if config.get('SMTP_USE_SSL') else smtplib.SMTP
     with smtp_class(host, port, timeout=30) as smtp:
