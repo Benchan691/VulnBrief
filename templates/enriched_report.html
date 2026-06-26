@@ -39,9 +39,9 @@
             <td>
                 <h3><a href="#{{ card_anchor }}">{{ row.cve_id }} | {{ row.vendor or 'Unknown vendor' }} | {{ row.product or 'Unknown product' }}</a></h3>
                 <p class="meta">{{ labels.severity }}: {{ row.severity or '' }}</p>
-                <p class="field"><strong>{{ labels.vulnerability_overview }}</strong>{{ row.what_happened }}</p>
-                <p class="field"><strong>{{ labels.risk_and_impact }}</strong>{{ row.why_matters }}</p>
-                <p class="field"><strong>{{ labels.remediation_guidance }}</strong>{{ row.how_to_respond }}</p>
+                <p class="field"><strong>{{ labels.vulnerability_overview }}</strong><br>{{ row.what_happened|nl2br }}</p>
+                <p class="field"><strong>{{ labels.risk_and_impact }}</strong><br>{{ row.why_matters|nl2br }}</p>
+                <p class="field"><strong>{{ labels.remediation_guidance }}</strong><br>{{ row.how_to_respond|nl2br }}</p>
                 {% if row.source_urls %}
                 <div class="field small">
                     <strong>{{ labels.source_references }}</strong>

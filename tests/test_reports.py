@@ -876,7 +876,7 @@ def test_rendered_enriched_report_uses_cards_and_short_summary():
                     'severity': 'Critical',
                     'priority_score': 99,
                     'patch_priority': 'Critical',
-                    'what_happened': 'Acme Widget has a remote code execution vulnerability.',
+                    'what_happened': 'Acme Widget has a remote code execution vulnerability.\nSecond paragraph.',
                     'why_matters': 'Remote code execution can affect internet-facing systems.',
                     'how_to_respond': 'Upgrade to version 2.0.',
                     'source_urls': ['https://acme.example/advisory'],
@@ -892,6 +892,8 @@ def test_rendered_enriched_report_uses_cards_and_short_summary():
         assert '<h2>Vulnerability Cards</h2>' in html
         assert 'id="card-cve-2026-7000-acme-widget"' in html
         assert '<table class="vulnerability-card"' in html
+        assert '<br>' in html
+        assert 'Second paragraph.' in html
         assert 'href="#card-cve-2026-7000-acme-widget">CVE-2026-7000 | Acme | Widget</a>' in html
         assert '1 vulnerability reviewed.' in html
         assert 'Overall risk: Critical.' in html

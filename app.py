@@ -7,6 +7,7 @@ from routes.review import review_blueprint
 from routes.report import report_blueprint
 from routes.operations import operations_blueprint
 from bootstrap import BASE_DIR, configure_application
+from jinja_filters import register_template_filters
 from mongo import get_web_database
 from operations_runner import start_scheduler
 
@@ -16,6 +17,7 @@ def create_app():
     application.config.update(configure_application(BASE_DIR))
     application.config['TEMPLATES_AUTO_RELOAD'] = True
     application.permanent_session_lifetime = timedelta(hours=12)
+    register_template_filters(application)
 
     @application.route('/')
     def home():
