@@ -86,34 +86,36 @@ def _report_preview(matches, count=None):
 
 def _send_subscription_report_background(app, raw_id, subscription, profile, job_id, match_count):
     try:
-        deliver_subscription_report_job(
-            app,
-            subscription,
-            profile,
-            job_id,
-            match_count=match_count,
-        )
-        get_collection().update_one(
-            {'_id': raw_id},
-            {'$set': {
-                'report_profile.last_run_at': datetime.now(timezone.utc),
-                'report_profile.last_match_count': match_count,
-                'report_profile.last_job_id': job_id,
-                'report_profile.last_error': '',
-                'updated_at': datetime.now(timezone.utc),
-            }},
-        )
+        with app.app_context():
+            deliver_subscription_report_job(
+                app,
+                subscription,
+                profile,
+                job_id,
+                match_count=match_count,
+            )
+            get_collection().update_one(
+                {'_id': raw_id},
+                {'$set': {
+                    'report_profile.last_run_at': datetime.now(timezone.utc),
+                    'report_profile.last_match_count': match_count,
+                    'report_profile.last_job_id': job_id,
+                    'report_profile.last_error': '',
+                    'updated_at': datetime.now(timezone.utc),
+                }},
+            )
     except Exception as exc:
-        get_collection().update_one(
-            {'_id': raw_id},
-            {'$set': {
-                'report_profile.last_run_at': datetime.now(timezone.utc),
-                'report_profile.last_match_count': match_count or 0,
-                'report_profile.last_job_id': job_id,
-                'report_profile.last_error': str(exc),
-                'updated_at': datetime.now(timezone.utc),
-            }},
-        )
+        with app.app_context():
+            get_collection().update_one(
+                {'_id': raw_id},
+                {'$set': {
+                    'report_profile.last_run_at': datetime.now(timezone.utc),
+                    'report_profile.last_match_count': match_count or 0,
+                    'report_profile.last_job_id': job_id,
+                    'report_profile.last_error': str(exc),
+                    'updated_at': datetime.now(timezone.utc),
+                }},
+            )
 
 
 @subscription_blueprint.route('/subscriptions')

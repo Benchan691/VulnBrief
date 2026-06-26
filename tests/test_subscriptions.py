@@ -360,6 +360,34 @@ def test_send_subscription_report_generates_job_and_emails(client, monkeypatch):
     assert body['job_id'] == 'job-123'
 
 
+def test_send_subscription_report_background_has_app_context(monkeypatch):
+    import routes.subscription as subscription_routes
+    from flask import current_app
+
+    updates = []
+
+    class FakeCollection:
+        def update_one(self, *args, **kwargs):
+            updates.append((args, kwargs))
+
+    def fake_deliver(app_obj, subscription, profile, job_id, **kwargs):
+        assert current_app._get_current_object() is app
+
+    monkeypatch.setattr(subscription_routes, 'get_collection', lambda: FakeCollection())
+    monkeypatch.setattr(subscription_routes, 'deliver_subscription_report_job', fake_deliver)
+
+    subscription_routes._send_subscription_report_background(
+        app,
+        'raw-id',
+        {'email': TEST_EMAIL},
+        {'generation_mode': 'template'},
+        'job-123',
+        1,
+    )
+
+    assert updates
+
+
 def test_send_subscription_report_returns_no_match_error(client, monkeypatch):
     authenticate(client)
     assert client.post('/api/subscriptions', json={
