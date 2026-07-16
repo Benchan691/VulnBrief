@@ -11,10 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bootstrap import BASE_DIR, configure_application
-from mongo import get_config, get_vulnerabilities_database
-from review_data import review_views
-from subscription_data import get_sub_account_collection, validate_profile
+from core.bootstrap import BASE_DIR, configure_application
+from core.database import get_config, get_vulnerabilities_database
+from reviews.repository import review_views
+from subscriptions.profiles import get_sub_account_collection, validate_profile
 
 
 LEGACY_ALIASES = {

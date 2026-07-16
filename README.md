@@ -5,7 +5,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 ## Features
 
 - **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from MongoDB records
-- **Subscriptions** — manage independent newsletter and report profiles with shared collection, severity/status, text, source, affected-system, and time filters
+- **Subscriptions** — manage collection-based newsletter feeds and independently filtered report profiles
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
 - **Reports** — generate structured reports with **Enriched Weekly** (Tavily/Exa + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
 
@@ -55,7 +55,7 @@ Minimum `.env` for local web:
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly) |
 | `SEARXNG_BASE_URL` | Optional self-hosted SearXNG search (Enriched Weekly) |
 
-See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full setup and troubleshooting.
+See **[docs/LOCAL_DEPLOY.md](docs/LOCAL_DEPLOY.md)** for full setup and troubleshooting.
 
 TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them local if your deployment uses them.
 
@@ -77,7 +77,7 @@ docker compose up -d --build
 
 ## Quick start (local Python)
 
-See **[LOCAL_DEPLOY.md](LOCAL_DEPLOY.md)** for full virtual-environment setup (MongoDB, `.env`, TLS certs, and troubleshooting).
+See **[docs/LOCAL_DEPLOY.md](docs/LOCAL_DEPLOY.md)** for full virtual-environment setup (MongoDB, `.env`, TLS certs, and troubleshooting).
 
 ```sh
 python3 -m venv .venv
@@ -100,14 +100,15 @@ Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`)
 | Path | Description |
 |------|-------------|
 | `config/config.json` | Non-sensitive application settings (enriched, report, search limits) |
-| `newsletter_store.py` | Newsletter normalization, sanitization, live rendering, and live feed queries |
-| `report_harness.py` | Report generation pipeline |
-| `enriched_report/` | Enriched Weekly search + llama-server pipeline |
-| `routes/` | HTTP blueprints (auth, newsletter, subscription, review, report) |
-| `templates/` | Jinja HTML templates |
-| `tests/` | Pytest suite |
-| `AI_HARNESS.md` | Detailed report behavior and configuration |
-| `LOCAL_DEPLOY.md` | Step-by-step local virtual-environment deployment |
+| `core/` | Flask setup, configuration, MongoDB, authentication guard, and templating |
+| `auth/`, `newsletters/`, `reviews/`, `subscriptions/` | Domain routes and business logic |
+| `reports/` | Report jobs, rendering, translation, runners, and Enriched Weekly pipeline |
+| `operations/` | Operations routes and process scheduler |
+| `integrations/` | External integrations such as SMTP email |
+| `templates/`, `static/` | Domain-grouped Jinja views and frontend assets |
+| `tests/` | Domain-grouped Pytest suite |
+| `docs/AI_HARNESS.md` | Detailed report behavior and configuration |
+| `docs/LOCAL_DEPLOY.md` | Step-by-step local virtual-environment deployment |
 
 ## Security notes
 

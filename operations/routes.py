@@ -1,0 +1,124 @@
+from flask import Blueprint, jsonify, render_template, request
+from pymongo.errors import PyMongoError
+
+from core.auth import login_required
+from core.database import get_web_database
+from operations.service import (
+    clear_runs,
+    list_runs,
+    load_config,
+    reset_config,
+    run_logs,
+    save_config,
+    start_catch_up_schedule,
+    start_operation,
+    stop_catch_up_schedule,
+    stop_run,
+)
+
+
+operations_blueprint = Blueprint('operations', __name__)
+
+
+@operations_blueprint.route('/operations')
+@login_required
+def operations():
+    return render_template('operations/index.html')
+
+
+@operations_blueprint.route('/api/operations/config')
+@login_required
+def get_operations_config():
+    try:
+        return jsonify(load_config(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to load operations config.'}), 503
+
+
+@operations_blueprint.route('/api/operations/config', methods=['PUT'])
+@login_required
+def update_operations_config():
+    try:
+        return jsonify(save_config(get_web_database(), request.get_json(silent=True) or {}))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to save operations config.'}), 503
+
+
+@operations_blueprint.route('/api/operations/config', methods=['DELETE'])
+@login_required
+def reset_operations_config():
+    try:
+        return jsonify(reset_config(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to reset operations config.'}), 503
+
+
+@operations_blueprint.route('/api/operations/runs')
+@login_required
+def get_operations_runs():
+    try:
+        return jsonify({'data': list_runs(get_web_database())})
+    except PyMongoError:
+        return jsonify({'error': 'Unable to load operation runs.'}), 503
+
+
+@operations_blueprint.route('/api/operations/runs', methods=['DELETE'])
+@login_required
+def clear_operations_runs():
+    try:
+        return jsonify(clear_runs(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to clear operation runs.'}), 503
+
+
+@operations_blueprint.route('/api/operations/run/<operation>', methods=['POST'])
+@login_required
+def run_operation(operation):
+    try:
+        return jsonify(start_operation(get_web_database(), operation)), 202
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to start operation.'}), 503
+
+
+@operations_blueprint.route('/api/operations/schedule/catch_up/start', methods=['POST'])
+@login_required
+def start_catch_up_schedule_route():
+    try:
+        return jsonify(start_catch_up_schedule(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to start catch-up schedule.'}), 503
+
+
+@operations_blueprint.route('/api/operations/schedule/catch_up/stop', methods=['POST'])
+@login_required
+def stop_catch_up_schedule_route():
+    try:
+        return jsonify(stop_catch_up_schedule(get_web_database()))
+    except PyMongoError:
+        return jsonify({'error': 'Unable to stop catch-up schedule.'}), 503
+
+
+@operations_blueprint.route('/api/operations/stop/<run_id>', methods=['POST'])
+@login_required
+def stop_operation(run_id):
+    try:
+        return jsonify(stop_run(get_web_database(), run_id))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': 'Unable to stop operation.'}), 503
+
+
+@operations_blueprint.route('/api/operations/runs/<run_id>/logs')
+@login_required
+def get_operation_logs(run_id):
+    try:
+        return jsonify(run_logs(get_web_database(), run_id))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except PyMongoError:
+        return jsonify({'error': 'Unable to load operation logs.'}), 503

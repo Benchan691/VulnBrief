@@ -1,0 +1,9 @@
+#feed-collections-toggle.dropdown-toggle::after {
+    margin-left: auto;
+    float: right;
+}
+
+#feed-collections-options {
+    max-height: 12rem;
+    overflow-y: auto;
+}

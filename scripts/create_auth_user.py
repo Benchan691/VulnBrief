@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from auth_store import upsert_user
-from bootstrap import BASE_DIR, configure_application
+from auth.store import upsert_user
+from core.bootstrap import BASE_DIR, configure_application
 
 
 def main():

@@ -1,0 +1,94 @@
+(function () {
+    class CollectionPicker {
+        constructor(prefix) {
+            this.prefix = prefix;
+        }
+
+        element(suffix) {
+            return document.getElementById(this.prefix + '-collections-' + suffix);
+        }
+
+        checkboxes() {
+            return Array.from(this.element('options').querySelectorAll('input[type="checkbox"]'));
+        }
+
+        selectedValues() {
+            return this.checkboxes()
+                .filter(function (input) { return input.checked; })
+                .map(function (input) { return input.value; });
+        }
+
+        filter() {
+            const query = this.element('search').value.trim().toLowerCase();
+            this.element('options').querySelectorAll('.form-check').forEach(function (wrap) {
+                const name = wrap.querySelector('input').value.toLowerCase();
+                wrap.classList.toggle('d-none', query !== '' && !name.includes(query));
+            });
+        }
+
+        clearSearch() {
+            this.element('search').value = '';
+            this.filter();
+        }
+
+        updateLabel() {
+            const checked = this.checkboxes().filter(function (input) { return input.checked; });
+            const toggle = this.element('toggle');
+            toggle.textContent = checked.length === 0
+                ? 'All collections'
+                : checked.length === 1 ? checked[0].value : checked.length + ' collections';
+        }
+
+        render(collections, selected) {
+            const options = this.element('options');
+            options.replaceChildren();
+            collections.forEach((name) => {
+                const wrap = document.createElement('div');
+                wrap.className = 'form-check mb-1';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.className = 'form-check-input collection-picker-checkbox';
+                input.id = this.prefix + '-collection-' + name.replace(/[^a-zA-Z0-9_-]/g, '_');
+                input.value = name;
+                input.checked = selected.includes(name);
+                const label = document.createElement('label');
+                label.className = 'form-check-label small';
+                label.htmlFor = input.id;
+                label.textContent = name;
+                wrap.append(input, label);
+                options.append(wrap);
+            });
+            this.clearSearch();
+            this.updateLabel();
+        }
+
+        wire() {
+            const search = this.element('search');
+            const options = this.element('options');
+            search.addEventListener('input', () => this.filter());
+            search.addEventListener('click', function (event) { event.stopPropagation(); });
+            search.addEventListener('keydown', function (event) { event.stopPropagation(); });
+            options.addEventListener('change', () => this.updateLabel());
+            this.element('menu').addEventListener('click', (event) => {
+                const action = event.target.closest('.collections-action');
+                if (!action) return;
+                event.preventDefault();
+                const checkboxes = action.dataset.action === 'all'
+                    ? this.checkboxes().filter(function (input) {
+                        return !input.closest('.form-check').classList.contains('d-none');
+                    })
+                    : this.checkboxes();
+                checkboxes.forEach(function (input) {
+                    input.checked = action.dataset.action === 'all';
+                });
+                this.updateLabel();
+            });
+            this.element('toggle').addEventListener('shown.bs.dropdown', () => {
+                this.clearSearch();
+                search.focus();
+            });
+        }
+    }
+
+    window.CollectionPicker = CollectionPicker;
+})();

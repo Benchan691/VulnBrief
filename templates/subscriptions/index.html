@@ -1,0 +1,76 @@
+{% extends 'layouts/base.html' %}
+{% block title %}Subscriptions{% endblock %}
+{% block styles %}<link href="{{ url_for('static', filename='css/subscriptions.css') }}" rel="stylesheet">{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-1"><i class="bi bi-people me-2"></i>Subscription Management</h2>
+            <p class="text-muted mb-0">Manage independent newsletter feeds and report profiles.</p>
+        </div>
+        <button id="add-btn" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add Subscription</button>
+    </div>
+    <div id="message" class="alert d-none"></div>
+    <div class="card shadow-sm border-0 overflow-hidden">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-dark"><tr><th>Email / Team</th><th>Newsletter</th><th>Report</th><th>Actions</th></tr></thead>
+                <tbody id="rows"></tbody>
+            </table>
+        </div>
+        <div id="loading" class="text-center text-muted py-5">Loading subscriptions...</div>
+        <div id="empty" class="text-center text-muted py-5 d-none">No subscriptions yet.</div>
+    </div>
+</div>
+
+<div class="modal fade" id="subscription-modal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <form id="subscription-form" class="modal-content">
+            <div class="modal-header"><h5 id="modal-title" class="modal-title">Add Subscription</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6"><label class="form-label">Email</label><input id="email" type="email" class="form-control" required></div>
+                    <div class="col-md-6"><label class="form-label">Team</label><input id="team" class="form-control" required></div>
+                </div>
+                <div class="row g-4">
+                    <div class="col-lg-6">
+                        <div class="card h-100"><div class="card-body">
+                            <div class="form-check form-switch mb-3"><input id="newsletter-enabled" class="form-check-input" type="checkbox"><label class="form-check-label fw-semibold" for="newsletter-enabled">Newsletter feed enabled</label></div>
+                            <div id="newsletter-fields"></div>
+                        </div></div>
+                    </div>
+                    <div class="col-lg-6">
+                        <div class="card h-100"><div class="card-body">
+                            <div class="form-check form-switch mb-3"><input id="report-enabled" class="form-check-input" type="checkbox" checked><label class="form-check-label fw-semibold" for="report-enabled">Report profile enabled</label></div>
+                            <div id="report-fields"></div>
+                            <div id="report-preview" class="alert alert-light border small mt-3 mb-0">
+                                <div class="fw-semibold mb-1">Report Preview</div>
+                                <div id="report-preview-summary" class="text-muted">Adjust report filters to preview matches.</div>
+                            </div>
+                            <hr>
+                            <div class="row g-2">
+                                <div class="col-md-6"><label class="form-label small">Generation mode</label><select id="report-generation-mode" class="form-select"><option value="enriched_weekly">Enriched Weekly</option><option value="template">Fixed Template</option></select></div>
+                                <div class="col-md-6"><label class="form-label small">Language</label><select id="report-language" class="form-select"><option value="en">English</option><option value="zh">Traditional Chinese</option><option value="ch">Simplified Chinese</option></select></div>
+                                <div class="col-12"><div class="form-check form-switch"><input id="report-schedule-enabled" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-schedule-enabled">Weekly email schedule enabled</label></div></div>
+                                <div class="col-md-6"><label class="form-label small">Weekday (HKT)</label><select id="report-schedule-weekday" class="form-select form-select-sm"><option value="mon">Monday</option><option value="tue">Tuesday</option><option value="wed">Wednesday</option><option value="thu">Thursday</option><option value="fri">Friday</option><option value="sat">Saturday</option><option value="sun">Sunday</option></select></div>
+                                <div class="col-md-6"><label class="form-label small">Time (HKT)</label><input id="report-schedule-time" type="time" class="form-control form-control-sm" value="09:00"></div>
+                            </div>
+                        </div></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-secondary" data-bs-dismiss="modal" type="button">Cancel</button><button class="btn btn-primary" type="submit">Save</button></div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block script %}
+<script id="page-config" type="application/json">{{ {
+    'subscriptionsUrl': url_for('subscription.get_subscriptions'),
+    'previewUrl': url_for('subscription.preview_subscription_report'),
+    'reviewsUrl': url_for('review.get_review_collections'),
+}|tojson }}</script>
+<script src="{{ url_for('static', filename='js/shared/collection-picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/subscriptions/index.js') }}"></script>
+{% endblock %}

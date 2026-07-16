@@ -1,0 +1,70 @@
+{% extends "layouts/base.html" %}
+{% block title %}Operations{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h3 mb-0">Operations</h1>
+        <button class="btn btn-outline-secondary btn-sm" id="refresh-btn"><i class="bi bi-arrow-clockwise"></i></button>
+    </div>
+
+    <ul class="nav nav-tabs mb-3" role="tablist">
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#config-tab" type="button">Config</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#run-tab" type="button">Run</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#history-tab" type="button">History</button></li>
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="config-tab">
+            <p class="text-muted small mb-3">AVD paths and database are read from <code>config/config.json</code>.</p>
+            <form id="config-form" class="row g-3">
+                <div class="col-md-2"><label class="form-label">Catch-up limit</label><input class="form-control" name="catch_up.limit" type="number" min="1"></div>
+                <div class="col-md-2"><label class="form-label">Batch size</label><input class="form-control" name="catch_up.batch_size" type="number" min="1"></div>
+                <div class="col-md-2"><label class="form-label">Max runs</label><input class="form-control" name="catch_up.max_runs_per_provider" type="number" min="1"></div>
+                <div class="col-md-2"><label class="form-label">Interval hours</label><input class="form-control" name="catch_up.interval_hours" type="number" min="1"></div>
+                <div class="col-md-4"><label class="form-label">Review providers</label><input class="form-control" name="review.providers" placeholder="blank = all"></div>
+                <div class="col-md-2 d-flex align-items-end"><div class="form-check"><input class="form-check-input" name="catch_up.periodic_enabled" type="checkbox"><label class="form-check-label">Periodic catch-up</label></div></div>
+                <div class="col-12 d-flex flex-wrap gap-2">
+                    <button class="btn btn-primary" type="submit"><i class="bi bi-save me-1"></i>Save</button>
+                    <button class="btn btn-outline-secondary" type="button" id="reset-config-btn">Reset to defaults</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="tab-pane fade" id="run-tab">
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary op-run" data-op="catch_up"><i class="bi bi-play-fill me-1"></i>Catch-up</button>
+                <button class="btn btn-outline-success" id="start-schedule-btn" type="button"><i class="bi bi-calendar-check me-1"></i>Start schedule</button>
+                <button class="btn btn-outline-warning" id="stop-schedule-btn" type="button"><i class="bi bi-calendar-x me-1"></i>Stop schedule</button>
+                <button class="btn btn-primary op-run" data-op="review"><i class="bi bi-play-fill me-1"></i>Review</button>
+            </div>
+            <div class="text-muted small mb-3" id="schedule-status"></div>
+            <div class="alert alert-info py-2" id="message" style="display:none"></div>
+        </div>
+
+        <div class="tab-pane fade" id="history-tab">
+            <div class="d-flex justify-content-end mb-2">
+                <button class="btn btn-outline-danger btn-sm" id="clear-history-btn" type="button"><i class="bi bi-trash me-1"></i>Clear history</button>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead><tr><th>Operation</th><th>Status</th><th>Started</th><th>Command</th><th></th></tr></thead>
+                    <tbody id="runs-body"></tbody>
+                </table>
+            </div>
+            <pre class="bg-dark text-light p-3 small" id="log-box" style="min-height:220px;white-space:pre-wrap"></pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block script %}
+<script id="page-config" type="application/json">{{ {
+    'configUrl': url_for('operations.get_operations_config'),
+    'runsUrl': url_for('operations.get_operations_runs'),
+    'runUrlTemplate': url_for('operations.run_operation', operation='__OPERATION__'),
+    'stopUrlTemplate': url_for('operations.stop_operation', run_id='__RUN_ID__'),
+    'logsUrlTemplate': url_for('operations.get_operation_logs', run_id='__RUN_ID__'),
+    'startScheduleUrl': url_for('operations.start_catch_up_schedule_route'),
+    'stopScheduleUrl': url_for('operations.stop_catch_up_schedule_route')
+} | tojson }}</script>
+<script src="{{ url_for('static', filename='js/operations/index.js') }}"></script>
+{% endblock %}

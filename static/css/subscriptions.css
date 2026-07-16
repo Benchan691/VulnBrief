@@ -1,0 +1,9 @@
+.subscription-collections-toggle.dropdown-toggle::after {
+    margin-left: auto;
+    float: right;
+}
+
+.subscription-collections-options {
+    max-height: 12rem;
+    overflow-y: auto;
+}

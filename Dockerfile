@@ -11,7 +11,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -m playwright install --with-deps chromium
 
 COPY . .
-RUN chmod +x docker-entrypoint.sh
 
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["gunicorn", "-c", "gunicorn_config.py", "app:app"]
