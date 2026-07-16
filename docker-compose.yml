@@ -18,7 +18,7 @@ services:
     container_name: webserver-web
     restart: unless-stopped
     ports:
-      - "6767:6767"
+      - "9100:9100"
     env_file:
       - .env
     environment:

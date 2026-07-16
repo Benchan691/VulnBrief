@@ -13,7 +13,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 
 ```mermaid
 flowchart LR
-  Browser --> Web["Flask web :6767"]
+  Browser --> Web["Flask web :9100"]
   Web --> LocalMongo["Local MongoDB"]
   Web --> Search["Tavily / Exa API"]
   Web --> Llama["llama-server enriched.llm_base_url"]
@@ -71,7 +71,7 @@ mongosh "mongodb://localhost:27017/" --eval 'db.runCommand({ ping: 1 })'
 docker compose up -d --build
 ```
 
-- Web UI: http://localhost:6767
+- Web UI: http://localhost:9100
 - Local MongoDB on the host (port 27017) hosts both `web` and `vulnerabilities` databases; Docker `web` connects via `host.docker.internal`.
 - Service: `webserver-web`
 
@@ -87,7 +87,7 @@ python3 -m venv .venv
 .venv/bin/python app.py
 ```
 
-Production-style local run uses Gunicorn on port **6767** (`gunicorn_config.py`).
+Production-style local run uses Gunicorn on port **9100** (`gunicorn_config.py`).
 
 ## Tests
 

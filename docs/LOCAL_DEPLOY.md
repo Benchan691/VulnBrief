@@ -7,7 +7,7 @@ Python virtual environment. For Docker-based deployment, see [README.md](../READ
 
 | Process | Command | Purpose |
 |---------|---------|---------|
-| Web UI | `app.py` or Gunicorn | Flask app on port **6767** |
+| Web UI | `app.py` or Gunicorn | Flask app on port **9100** |
 
 All processes read the same **`.env`** file (loaded automatically on startup).
 The web UI is usable for browsing newsletters and reviews with only MongoDB
@@ -145,7 +145,7 @@ openssl req -x509 -newkey rsa:2048 \
 
 Your browser will warn about the self-signed certificate; that is expected.
 
-**Gunicorn** (recommended below) serves plain HTTP on port 6767 and does not
+**Gunicorn** (recommended below) serves plain HTTP on port 9100 and does not
 require these files.
 
 ## 7. Run the application
@@ -155,21 +155,21 @@ the `.venv/bin/python` paths shown).
 
 ### Web server
 
-**Development (Flask built-in server, HTTPS on 6767)**
+**Development (Flask built-in server, HTTPS on 9100)**
 
 ```sh
 .venv/bin/python app.py
 ```
 
-Open: **https://localhost:6767**
+Open: **https://localhost:9100**
 
-**Production-style (Gunicorn, HTTP on 6767)**
+**Production-style (Gunicorn, HTTP on 9100)**
 
 ```sh
 .venv/bin/gunicorn -c gunicorn_config.py app:app
 ```
 
-Open: **http://localhost:6767**
+Open: **http://localhost:9100**
 
 ## 8. Sign in
 
@@ -185,7 +185,7 @@ Change the password after first login, or create another user:
 
 | Check | How |
 |-------|-----|
-| Web UI loads | Open http(s)://localhost:6767 and sign in |
+| Web UI loads | Open http(s)://localhost:9100 and sign in |
 | Local MongoDB | User appears under the `web` database `auth` collection |
 | Tests | `.venv/bin/python -m pytest` |
 
@@ -237,7 +237,7 @@ Check `TAVILY_API_KEYS` or `SEARXNG_BASE_URL` in `.env` and `enriched.llm_base_u
 `config/config.json`. The llama-server endpoint must accept OpenAI-compatible
 `/v1/chat/completions` requests.
 
-**Port 6767 already in use**
+**Port 9100 already in use**
 
 Stop the other process or change the bind address in `gunicorn_config.py` /
 `app.py`.
