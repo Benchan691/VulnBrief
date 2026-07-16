@@ -300,6 +300,7 @@ def query_newsletter_feed(email):
             return jsonify({'error': 'Newsletter feed is disabled for this subscription.'}), 400
         filters = validate_filters(database, {
             'collections': (data.get('filters') or {}).get('collections', []),
+            'include_unknown': True,
         })
         items, count = filter_newsletter_feed(database, email, filters)
         return jsonify({'data': items, 'count': count})

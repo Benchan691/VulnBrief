@@ -540,7 +540,7 @@ def test_newsletter_feed_query_rejects_disabled_profile(client):
     assert response.get_json()['error'] == 'Newsletter feed is disabled for this subscription.'
 
 
-def test_newsletter_feed_query_uses_collections_only(client):
+def test_newsletter_feed_query_uses_collections_only(client, monkeypatch):
     authenticate(client)
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
@@ -548,7 +548,15 @@ def test_newsletter_feed_query_uses_collections_only(client):
         'newsletter_profile': {'enabled': True, 'filters': {}},
     }).status_code == 201
 
+    captured = {}
+    monkeypatch.setattr(
+        'subscriptions.routes.filter_newsletter_feed',
+        lambda database, email, filters: (captured.setdefault('filters', filters) and [], 0),
+    )
+
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
         'filters': {'status': 'Urgent'},
     })
     assert response.status_code == 200
+    assert captured['filters']['collections'] == []
+    assert captured['filters']['include_unknown'] is True
