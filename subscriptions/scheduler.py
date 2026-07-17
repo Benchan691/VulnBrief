@@ -117,6 +117,7 @@ def _placeholder_job(profile, now):
         'effective_generation_mode': generation_mode,
         'report_language': 'en',
         'effective_report_language': 'en',
+        'search_prompt': (profile.get('search_prompt') or '') if generation_mode == 'enriched_weekly' else '',
         'input_source': 'review_selections',
         'source_count': 0,
         'processed_count': 0,

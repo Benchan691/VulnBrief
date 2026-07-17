@@ -79,6 +79,12 @@
     function isReportEnriched() {
         return document.getElementById('report-generation-mode').value === 'enriched_weekly';
     }
+    function updateReportSearchPromptVisibility() {
+        const wrap = document.getElementById('report-search-prompt-wrap');
+        if (wrap) {
+            wrap.classList.toggle('d-none', !isReportEnriched());
+        }
+    }
     function keywordKey(value) { return String(value || '').replace(/\s+/g, '').toLowerCase(); }
     function renderReportKeywords() {
         const box = document.getElementById('report-keywords');
@@ -173,7 +179,7 @@
         return filters;
     }
     function buildReportProfilePayload() {
-        return {
+        const payload = {
             report_profile: {
                 enabled: document.getElementById('report-enabled').checked,
                 filters: readFilters('report'),
@@ -184,6 +190,10 @@
                 schedule_time: document.getElementById('report-schedule-time').value
             }
         };
+        if (isReportEnriched()) {
+            payload.report_profile.search_prompt = (document.getElementById('report-search-prompt').value || '').trim();
+        }
+        return payload;
     }
     function refreshReportPreview() {
         if (!document.getElementById('report-enabled').checked) {
@@ -224,9 +234,11 @@
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
         document.getElementById('report-generation-mode').value = report.generation_mode;
         document.getElementById('report-language').value = report.report_language;
+        document.getElementById('report-search-prompt').value = report.search_prompt || '';
         document.getElementById('report-schedule-enabled').checked = report.schedule_enabled === true;
         document.getElementById('report-schedule-weekday').value = report.schedule_weekday || 'mon';
         document.getElementById('report-schedule-time').value = report.schedule_time || '09:00';
+        updateReportSearchPromptVisibility();
         refreshReportPreview();
         modal.show();
     }
@@ -270,7 +282,10 @@
     });
     document.getElementById('report-keyword-clear').addEventListener('click', clearReportKeywords);
     document.getElementById('report-enabled').addEventListener('change', refreshReportPreview);
-    document.getElementById('report-generation-mode').addEventListener('change', scheduleReportPreview);
+    document.getElementById('report-generation-mode').addEventListener('change', function () {
+        updateReportSearchPromptVisibility();
+        scheduleReportPreview();
+    });
     document.getElementById('report-language').addEventListener('change', scheduleReportPreview);
     document.getElementById('report-schedule-enabled').addEventListener('change', scheduleReportPreview);
     document.getElementById('report-schedule-weekday').addEventListener('change', scheduleReportPreview);

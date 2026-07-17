@@ -57,10 +57,11 @@ class SearchTaskError(RuntimeError):
 def _execute_one(client, task, max_retries):
     attempts = 0
     last_error = None
+    include_domains = task.get('include_domains') or None
     for _ in range(max_retries + 1):
         attempts += 1
         try:
-            return task, client.search(task['query']), attempts
+            return task, client.search(task['query'], include_domains=include_domains), attempts
         except Exception as exc:
             last_error = exc
     raise SearchTaskError(task, attempts, last_error)

@@ -69,7 +69,7 @@ def _result_collection():
     return get_web_database()['report_job_results']
 
 
-def create_job(inputs, input_source, generation_mode='enriched_weekly', report_language='en'):
+def create_job(inputs, input_source, generation_mode='enriched_weekly', report_language='en', search_prompt=''):
     if not inputs:
         raise ValueError('At least one vulnerability record is required.')
     generation_mode = LEGACY_GENERATION_MODES.get(generation_mode, generation_mode)
@@ -78,6 +78,8 @@ def create_job(inputs, input_source, generation_mode='enriched_weekly', report_l
     if report_language not in REPORT_LANGUAGES:
         raise ValueError('Report language must be "en", "zh", or "ch".')
     report_language = 'en'
+    from reports.enriched.search_tasks import sanitize_search_prompt
+    search_prompt = sanitize_search_prompt(search_prompt) if generation_mode == 'enriched_weekly' else ''
     if len(inputs) > MAX_EXPORT_SELECTIONS:
         raise ValueError(f'Reports are limited to {MAX_EXPORT_SELECTIONS} vulnerability records.')
     queued_inputs = []
@@ -121,6 +123,7 @@ def create_job(inputs, input_source, generation_mode='enriched_weekly', report_l
         'effective_generation_mode': generation_mode,
         'report_language': report_language,
         'effective_report_language': report_language,
+        'search_prompt': search_prompt,
         'input_source': input_source,
         'source_count': len(inputs),
         'processed_count': 0,

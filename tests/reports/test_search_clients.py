@@ -34,6 +34,46 @@ def test_tavily_client_rotates_keys_per_search(monkeypatch):
     ]
 
 
+def test_tavily_client_sends_advanced_chunks_and_include_domains(monkeypatch):
+    payloads = []
+
+    def fake_post(_url, headers, json, timeout):
+        payloads.append(json)
+        return FakeResponse()
+
+    monkeypatch.setattr('requests.post', fake_post)
+    client = TavilyClient(
+        ['tavily-a'],
+        search_depth='advanced',
+        max_results=8,
+        chunks_per_source=3,
+    )
+
+    client.search('CVE-2026-1 advisory', include_domains=['acme.example'])
+
+    assert payloads[0]['search_depth'] == 'advanced'
+    assert payloads[0]['max_results'] == 8
+    assert payloads[0]['chunks_per_source'] == 3
+    assert payloads[0]['include_raw_content'] is True
+    assert payloads[0]['include_domains'] == ['acme.example']
+
+
+def test_tavily_client_omits_chunks_for_basic_depth(monkeypatch):
+    payloads = []
+
+    def fake_post(_url, headers, json, timeout):
+        payloads.append(json)
+        return FakeResponse()
+
+    monkeypatch.setattr('requests.post', fake_post)
+    client = TavilyClient(['tavily-a'], search_depth='basic')
+
+    client.search('CVE-2026-1')
+
+    assert 'chunks_per_source' not in payloads[0]
+    assert 'include_domains' not in payloads[0]
+
+
 def test_tavily_client_rotates_keys_safely_with_concurrent_searches(monkeypatch):
     keys = []
     lock = threading.Lock()
@@ -65,3 +105,6 @@ def test_build_search_client_uses_all_tavily_keys():
 
     assert client.provider == 'tavily'
     assert client.api_keys == ['tavily-a', 'tavily-b']
+    assert client.search_depth == 'advanced'
+    assert client.max_results == 8
+    assert client.chunks_per_source == 3

@@ -43,6 +43,10 @@
         purgeEvidenceCacheButton.classList.toggle('d-none', !isEnriched);
         purgeSearchCacheButton.classList.toggle('d-none', !isEnriched);
         enrichedCacheHelp.classList.toggle('d-none', !isEnriched);
+        const searchPromptWrap = document.getElementById('search-prompt-wrap');
+        if (searchPromptWrap) {
+            searchPromptWrap.classList.toggle('d-none', !isEnriched);
+        }
     }
     function purgeSearchCache() {
         if (!confirm('Purge all cached enriched search results? The next enriched weekly run will call Tavily again.')) {
@@ -390,20 +394,28 @@
             }
         }
         button.disabled = true;
+        const searchPrompt = (document.getElementById('search-prompt') || {}).value || '';
         let options;
         if (file) {
             const form = new FormData();
             form.append('generation_mode', mode);
             form.append('json_file', file);
+            if (mode === 'enriched_weekly' && searchPrompt.trim()) {
+                form.append('search_prompt', searchPrompt.trim());
+            }
             options = { method: 'POST', body: form };
         } else {
+            const payload = {
+                generation_mode: mode,
+                selections: selected
+            };
+            if (mode === 'enriched_weekly' && searchPrompt.trim()) {
+                payload.search_prompt = searchPrompt.trim();
+            }
             options = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    generation_mode: mode,
-                    selections: selected
-                })
+                body: JSON.stringify(payload)
             };
         }
         requestJson(jobsUrl, options)

@@ -67,6 +67,7 @@ DEFAULT_REPORT_PROFILE = {
     'filters': DEFAULT_FILTERS,
     'generation_mode': 'template',
     'report_language': 'en',
+    'search_prompt': '',
     'schedule_enabled': False,
     'schedule_weekday': 'mon',
     'schedule_time': '09:00',
@@ -232,6 +233,11 @@ def validate_profile(database, value, profile_type):
             if collections and collections != ['cve_review']:
                 raise ValueError('enriched_weekly report profiles only support cve_review.')
             profile['filters']['collections'] = ['cve_review']
+        from reports.enriched.search_tasks import sanitize_search_prompt
+        if profile['generation_mode'] == 'enriched_weekly':
+            profile['search_prompt'] = sanitize_search_prompt(value.get('search_prompt', ''))
+        else:
+            profile['search_prompt'] = ''
         profile['schedule_enabled'] = bool(value.get('schedule_enabled', default.get('schedule_enabled', False)))
         profile['schedule_weekday'] = str(value.get('schedule_weekday') or default.get('schedule_weekday', 'mon')).strip().lower()
         profile['schedule_time'] = str(value.get('schedule_time') or default.get('schedule_time', '09:00')).strip()

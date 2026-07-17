@@ -10,7 +10,7 @@ from reports.harness import create_job
 
 
 class FakeTavilyClient:
-    def search(self, query):
+    def search(self, query, *, include_domains=None):
         return [{
             'url': 'https://acme.example/advisory',
             'title': query,

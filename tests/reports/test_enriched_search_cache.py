@@ -93,7 +93,7 @@ class FakeDatabase:
 class TrackingTavilyClient:
     calls = 0
 
-    def search(self, query):
+    def search(self, query, *, include_domains=None):
         type(self).calls += 1
         return [{
             'url': 'https://acme.example/advisory',

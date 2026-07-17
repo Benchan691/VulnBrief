@@ -167,13 +167,20 @@ def load_application_config(base_dir):
             'TAVILY_SEARCH_DEPTH',
             file_config,
             ('tavily', 'search_depth'),
-            'basic',
+            'advanced',
         ),
         'TAVILY_MAX_RESULTS': _resolve(
             'TAVILY_MAX_RESULTS',
             file_config,
             ('tavily', 'max_results'),
-            5,
+            8,
+            int,
+        ),
+        'TAVILY_CHUNKS_PER_SOURCE': _resolve(
+            'TAVILY_CHUNKS_PER_SOURCE',
+            file_config,
+            ('tavily', 'chunks_per_source'),
+            3,
             int,
         ),
         'TAVILY_REQUEST_TIMEOUT_SECONDS': _resolve(

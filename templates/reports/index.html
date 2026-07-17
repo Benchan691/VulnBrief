@@ -26,6 +26,11 @@
                         <input id="json-file" type="file" class="form-control" accept=".json,application/json">
                         <div class="form-text">Leave empty to use current Vulnerability Reviews selections.</div>
                     </div>
+                    <div class="col-12" id="search-prompt-wrap">
+                        <label for="search-prompt" class="form-label">Enrichment search hint (optional)</label>
+                        <textarea id="search-prompt" class="form-control" rows="2" maxlength="200" placeholder="e.g. Exchange Server RCE patch guidance"></textarea>
+                        <div class="form-text">Applied to each selected CVE during Tavily enrichment. Does not discover new CVEs. Max 200 characters.</div>
+                    </div>
                 </div>
                 <div class="d-flex justify-content-between align-items-center mt-3">
                     <span id="selection-count" class="text-muted small">0 review selections available</span>

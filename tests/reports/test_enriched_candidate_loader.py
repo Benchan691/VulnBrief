@@ -177,7 +177,7 @@ def test_dedupe_keeps_distinct_cves_when_cve_codes_lists_overlap():
     ])
 
     assert len(candidates) == 3
-    assert len(build_search_tasks('run-1', candidates)) == 6
+    assert len(build_search_tasks('run-1', candidates)) == 12
 
 
 def test_dedupe_keeps_distinct_cves_with_shared_catalog_source_url():
@@ -201,7 +201,7 @@ def test_dedupe_keeps_distinct_cves_with_shared_catalog_source_url():
     ])
 
     assert len(candidates) == 3
-    assert len(build_search_tasks('run-1', candidates)) == 6
+    assert len(build_search_tasks('run-1', candidates)) == 12
     assert all(
         candidate.get('vendor_official_domain') == ''
         for candidate in candidates

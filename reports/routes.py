@@ -103,6 +103,7 @@ def create_report_job():
     else:
         generation_mode = request.form.get('generation_mode') or data.get('generation_mode') or 'enriched_weekly'
     report_language = request.form.get('report_language') or data.get('report_language') or 'en'
+    search_prompt = request.form.get('search_prompt') or data.get('search_prompt') or ''
     input_source = None
     inputs = None
 
@@ -121,7 +122,13 @@ def create_report_job():
             input_source = 'review_selections'
             inputs = resolve_review_selections(data.get('selections'))
 
-        job_id = create_job(inputs, input_source, generation_mode, report_language)
+        job_id = create_job(
+            inputs,
+            input_source,
+            generation_mode,
+            report_language,
+            search_prompt=search_prompt,
+        )
         start_job(current_app._get_current_object(), job_id)
         status = 'running' if generation_mode == 'template' else 'queued'
         return jsonify({'id': job_id, 'status': status}), 202

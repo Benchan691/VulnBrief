@@ -202,7 +202,12 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 return
             _stage(job_object_id, 'creating_search_tasks', {'processed_count': 0})
             progress.step(3, 'Creating search tasks', 'Creating search tasks.')
-            write_search_tasks(web_database, run_id, candidates)
+            write_search_tasks(
+                web_database,
+                run_id,
+                candidates,
+                search_prompt=job.get('search_prompt') or '',
+            )
             tavily_total = collection(web_database, 'search_enrichment_tasks').count_documents({'run_id': run_id})
             progress.set_tavily_total(tavily_total)
 

@@ -21,6 +21,14 @@ remain English.
 mode force `filters.collections = ['cve_review']`, and manual report generation
 rejects non-`cve_review` selections or uploaded JSON. Search APIs are used only after
 MongoDB has produced a known CVE candidate; it must not discover or add new CVEs.
+
+For each known CVE, enrichment builds focused Tavily sub-queries (advisory/patch,
+optional vendor-domain filter via `include_domains`, NVD/CVSS, CISA/KEV, and
+exploit/PoC). An optional job/profile `search_prompt` (max 200 characters) adds
+one extra `{cve_id} {hint}` query per candidate; it never invents CVE IDs.
+Default Tavily settings use `search_depth=advanced`, `max_results=8`, and
+`chunks_per_source=3` (advanced search uses more Tavily credits than basic).
+
 The pipeline stores run-scoped artifacts in the local `web` database under
 `candidate_vulnerability_items`, `search_enrichment_tasks`,
 `search_enrichment_results`, `filtered_enrichment_results`,
@@ -50,6 +58,9 @@ Common tunables:
 
 | Setting | Purpose |
 |---------|---------|
+| `TAVILY_SEARCH_DEPTH` | Prefer `advanced` for richer enrichment snippets (costs more credits) |
+| `TAVILY_MAX_RESULTS` | Results returned per Tavily query |
+| `TAVILY_CHUNKS_PER_SOURCE` | Chunks per source when depth is `advanced` |
 | `ENRICHED_LLM_MODEL` | Model name sent to llama-server |
 | `ENRICHED_LLM_TIMEOUT_SECONDS` | Request timeout |
 | `ENRICHED_LLM_MAX_OUTPUT_TOKENS` | Default max output tokens |
@@ -57,7 +68,7 @@ Common tunables:
 | `ENRICHED_LLM_REPORT_MAX_OUTPUT_TOKENS` | Report section cap |
 | `ENRICHED_LLM_CONNECTION_RETRIES` | Connection retry count |
 | `ENRICHED_LLM_PAGE_CHARS` | Max chars per fetched page |
-| `ENRICHED_RESULTS_PER_TASK` | Search results per CVE |
+| `ENRICHED_RESULTS_PER_TASK` | Ranked search results kept per CVE |
 | `ENRICHED_EVIDENCE_CACHE_ENABLED` | Toggle evidence cache |
 | `ENRICHED_EVIDENCE_CACHE_VERSION` | Cache invalidation version |
 
