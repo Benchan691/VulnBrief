@@ -278,6 +278,33 @@ def test_similar_source_shapes_are_mapped_without_flattening_metadata():
     assert github['recommendations'] == ['2.0']
 
 
+def test_cve_v5_cna_fields_populate_the_newsletter():
+    newsletter = normalize_newsletter({
+        'title': 'CVE-2026-8616',
+        'details': {
+            'cve': {
+                'containers': {
+                    'cna': {
+                        'title': 'Fense Proxy & VPN Blocker vulnerability',
+                        'descriptions': [{'lang': 'en', 'value': 'Missing authorization permits unauthenticated option deletion.'}],
+                        'affected': [{
+                            'vendor': 'devozon',
+                            'product': 'Fense Proxy & VPN Blocker',
+                            'versions': [{'version': '0', 'lessThanOrEqual': '3.0.1'}],
+                        }],
+                        'references': [{'url': 'https://example.test/advisory'}],
+                    },
+                },
+            },
+        },
+    }, 'cve')
+
+    assert newsletter['title'] == 'Fense Proxy & VPN Blocker vulnerability'
+    assert str(newsletter['overview']) == 'Missing authorization permits unauthenticated option deletion.'
+    assert newsletter['affected'] == ['devozon Fense Proxy & VPN Blocker <= 3.0.1']
+    assert newsletter['references'] == ['https://example.test/advisory']
+
+
 def test_generated_newsletter_preview_route_renders_latest_source(monkeypatch):
     client = app.test_client()
     with client.session_transaction() as session:

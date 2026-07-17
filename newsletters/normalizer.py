@@ -232,6 +232,26 @@ def _nested_values(values, field):
     return result
 
 
+def _cve_affected(values):
+    result = []
+    for item in values or []:
+        if not isinstance(item, dict):
+            continue
+        versions = item.get('versions') or [{}]
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            version_text = (
+                f"<= {version['lessThanOrEqual']}" if version.get('lessThanOrEqual')
+                else f"< {version['lessThan']}" if version.get('lessThan')
+                else version.get('version') if version.get('version') not in {'', '0'} else ''
+            )
+            value = _parts(item.get('vendor'), item.get('product'), version_text)
+            if value and value not in result:
+                result.append(value)
+    return result
+
+
 def _path(value, *fields):
     for field in fields:
         if not isinstance(value, dict):
@@ -317,10 +337,15 @@ def _cnnvd_source_fields(fields, document, details):
 
 
 def _cve_source_fields(fields, document, details):
-    fields['title'] = details.get('title') or fields['title']
-    fields['overview'] = _first({}, {'values': _nested_values(details.get('descriptions'), 'value')}, 'values')
-    fields['affected'] = _values(details.get('affected_products'))
-    fields['reference_values'] = _nested_values(details.get('references'), 'url')
+    cna = _path(details, 'containers', 'cna') or _path(document, 'containers', 'cna') or {}
+    fields['title'] = details.get('title') or cna.get('title') or fields['title']
+    fields['overview'] = (
+        _first({}, {'values': _nested_values(details.get('descriptions'), 'value')}, 'values')
+        or _first({}, {'values': _nested_values(cna.get('descriptions'), 'value')}, 'values')
+        or fields['overview']
+    )
+    fields['affected'] = _values(details.get('affected_products')) or _cve_affected(cna.get('affected'))
+    fields['reference_values'] = _nested_values(details.get('references'), 'url') or _nested_values(cna.get('references'), 'url')
 
 
 def _github_advisory_source_fields(fields, document, details):
