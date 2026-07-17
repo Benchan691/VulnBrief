@@ -476,6 +476,7 @@ def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypa
             },
         ],
     )
+    monkeypatch.setattr('newsletters.feed.resolve_vulnerability_document', lambda *args: document)
 
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
         'filters': {'collections': ['avd_review']},

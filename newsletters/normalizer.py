@@ -30,6 +30,7 @@ ENGLISH_LABELS = {
     'recommendations': 'Recommendations:',
     'references': 'References:',
     'related_links': 'Related Links:',
+    'database': 'Source database:',
     'not_specified': 'Not specified',
     'default_recommendation': 'Refer to the vendor guidance and apply available fixes.',
     'footer': 'Should you have any queries, please contact the Security Operation Centre. Thank you.',
@@ -44,6 +45,7 @@ CHINESE_LABELS = {
     'recommendations': '建议：',
     'references': '参考资料：',
     'related_links': '相关链接：',
+    'database': '来源数据库：',
     'not_specified': '未说明',
     'default_recommendation': '请参考供应商指南并应用可用修复。',
     'footer': '如有任何疑问，请联系安全运营中心。谢谢。',
@@ -99,6 +101,23 @@ def _all(details, document, *fields):
                     seen.add(key)
                     result.append(value)
     return result
+
+
+def _nested_field_values(value, fields):
+    values = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in fields:
+                values.extend(_values(item))
+            values.extend(_nested_field_values(item, fields))
+    elif isinstance(value, list):
+        for item in value:
+            values.extend(_nested_field_values(item, fields))
+    return list(dict.fromkeys(values))
+
+
+def _with_nested_fallback(values, details, document, fields):
+    return values or _nested_field_values(details, fields) or _nested_field_values(document, fields)
 
 
 def _safe_html(value):
@@ -441,23 +460,41 @@ SEVERITY_DOCUMENT_SOURCES = {
 
 
 def _default_source_fields(document, details):
+    overview = _first(details, document, 'intro', 'summary', 'description', 'vulDesc', 'productDesc')
     return {
         'title': _first({}, document, 'title') or _first(details, {}, 'title', 'advisory_title', 'vulName'),
-        'overview': _first(details, document, 'intro', 'summary', 'description', 'vulDesc', 'productDesc'),
-        'impacts': _all(details, document, 'impact', 'impacts', 'severity'),
-        'affected': _all(
+        'overview': overview or (_nested_field_values(
+            details, ('intro', 'summary', 'description', 'overview', 'vulDesc', 'productDesc')
+        ) or [''])[0],
+        'impacts': _with_nested_fallback(
+            _all(details, document, 'impact', 'impacts', 'severity'), details, document,
+            ('impact', 'impacts', 'severity'),
+        ),
+        'affected': _with_nested_fallback(_all(
             details, document, 'systems_affected', 'affected_systems', 'affected',
             'affected_products', 'affectedSystem', 'affectedProduct', 'product_names',
-        ),
-        'recommendations': _all(
+        ), details, document, (
+            'systems_affected', 'affected_systems', 'affected', 'affected_products',
+            'affectedSystem', 'affectedProduct', 'product_names',
+        )),
+        'recommendations': _with_nested_fallback(_all(
             details, document, 'solutions', 'solution', 'recommendation', 'recommendations',
             'patch', 'mitigation', 'remediation',
-        ),
-        'reference_values': _all(
+        ), details, document, (
+            'solutions', 'solution', 'recommendation', 'recommendations', 'patch',
+            'mitigation', 'remediation',
+        )),
+        'reference_values': _with_nested_fallback(_all(
             details, document, 'references', 'reference_links', 'referUrl', 'publication_url',
             'solution_links', 'more_information_links',
+        ), details, document, (
+            'references', 'reference_links', 'referUrl', 'publication_url', 'solution_links',
+            'more_information_links',
+        )),
+        'related_values': _with_nested_fallback(
+            _all(details, document, 'related_links', 'related_link'), details, document,
+            ('related_links', 'related_link'),
         ),
-        'related_values': _all(details, document, 'related_links', 'related_link'),
         'show_impacts': True,
         'show_affected': True,
         'affected_table': None,
@@ -484,7 +521,7 @@ def _source_fields(document, source_collection, details):
     return fields
 
 
-def normalize_newsletter(document, source_collection):
+def normalize_newsletter(document, source_collection, database_name='vulnerabilities'):
     details = _details(document, source_collection)
     fields = _source_fields(document, source_collection, details)
     references = _links(fields['reference_values'])
@@ -508,6 +545,7 @@ def normalize_newsletter(document, source_collection):
         'language': 'zh-Hans' if is_chinese else 'en',
         'labels': CHINESE_LABELS if is_chinese else ENGLISH_LABELS,
         'title': fields['title'] or 'Security Advisory',
+        'database': database_name,
         'overview': _safe_html(fields['overview'] or 'No overview was provided in the source record.'),
         'severity': severity,
         'impacts': impacts,
@@ -527,6 +565,6 @@ def normalize_newsletter(document, source_collection):
     return result
 
 
-def render_newsletter(document, source_collection):
-    newsletter = normalize_newsletter(document, source_collection)
+def render_newsletter(document, source_collection, database_name='vulnerabilities'):
+    newsletter = normalize_newsletter(document, source_collection, database_name)
     return render_template('newsletters/generated.html', newsletter=newsletter), newsletter

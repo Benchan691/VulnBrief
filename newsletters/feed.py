@@ -49,9 +49,7 @@ def filter_newsletter_feed(database, email, filters, limit=DEFAULT_FEED_LIMIT, o
     for match in matches:
         source_collection = match['source_collection']
         selection_id = match['selection_id']
-        document = match.get('document')
-        if document is None:
-            document = resolve_vulnerability_document(database, source_collection, selection_id)
+        document = resolve_vulnerability_document(database, source_collection, selection_id)
         if document is None:
             continue
         normalized = normalize_newsletter(document, source_collection)

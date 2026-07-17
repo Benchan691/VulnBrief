@@ -226,6 +226,11 @@ def test_deliver_pending_newsletters_initializes_cursor_without_sending(monkeypa
                 },
             }],
         )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'resolve_vulnerability_document',
+            lambda *args: document,
+        )
 
         now = datetime(2026, 7, 16, 3, 0, tzinfo=timezone.utc)
         result = deliver_pending_newsletters(
@@ -306,8 +311,13 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
         )
         monkeypatch.setattr(
             subscriptions.scheduler,
+            'resolve_vulnerability_document',
+            lambda *args: document,
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
             'render_newsletter',
-            lambda document, source_collection: (
+                lambda document, source_collection, database_name='vulnerabilities': (
                 '<p>newsletter</p>',
                 {'title': 'New advisory'},
             ),

@@ -16,6 +16,8 @@
     <h1><b>{{ newsletter.title }}</b></h1>
     {% block greeting %}<p>{{ newsletter.labels.greeting }}</p>{% endblock %}
 
+    <p><b>{{ newsletter.labels.database }}</b> {{ newsletter.database }}</p>
+
     <p><b>{{ newsletter.labels.overview }}</b></p>
     <div class="indent">{{ newsletter.overview }}</div>
 

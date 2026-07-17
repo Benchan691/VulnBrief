@@ -11,7 +11,7 @@ from integrations.email import Mailer
 from newsletters.normalizer import render_newsletter
 from reports.progress import append_job_log
 from reports.harness import _render_job_html, run_job
-from reviews.repository import review_views
+from reviews.repository import resolve_vulnerability_document, review_views
 from subscriptions.profiles import HONG_KONG, normalize_subscription
 from subscriptions.query import query_profile_matches
 
@@ -534,7 +534,12 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
         for scraped_at, match, document in pending:
             source_collection = match['source_collection']
             selection_id = match['selection_id']
-            html, newsletter = render_newsletter(document, source_collection)
+            source_document = resolve_vulnerability_document(
+                vuln_database, source_collection, selection_id,
+            )
+            if source_document is None:
+                continue
+            html, newsletter = render_newsletter(source_document, source_collection, database_name)
             title = newsletter.get('title') or selection_id
             mailer.send_email(subscription['email'], {
                 'subject': f'Security newsletter: {title}',

@@ -29,7 +29,7 @@ def test_generic_newsletter_has_required_sections_and_sanitizes_source_html():
     assert '<script>' not in html
     assert 'alert(1)' in html
     for section in (
-        'Overview:', 'Severity:', 'Affected system:', 'Recommendations:',
+        'Source database:', 'Overview:', 'Severity:', 'Affected system:', 'Recommendations:',
         'References:', 'Related Links:',
     ):
         assert section in html
@@ -305,6 +305,27 @@ def test_cve_v5_cna_fields_populate_the_newsletter():
     assert newsletter['references'] == ['https://example.test/advisory']
 
 
+def test_nested_source_fields_populate_generic_newsletters():
+    newsletter = normalize_newsletter({
+        'details': {
+            'msrc': {
+                'advisory': {
+                    'description': 'A remote attacker can disclose information.',
+                    'affected_products': ['Windows Media Player'],
+                    'recommendation': 'Install the security update.',
+                    'references': ['https://example.test/msrc'],
+                },
+            },
+        },
+    }, 'msrc', 'production-vulnerabilities')
+
+    assert str(newsletter['overview']) == 'A remote attacker can disclose information.'
+    assert newsletter['affected'] == ['Windows Media Player']
+    assert newsletter['recommendations'] == ['Install the security update.']
+    assert newsletter['references'] == ['https://example.test/msrc']
+    assert newsletter['database'] == 'production-vulnerabilities'
+
+
 def test_generated_newsletter_preview_route_renders_latest_source(monkeypatch):
     client = app.test_client()
     with client.session_transaction() as session:
@@ -358,6 +379,7 @@ def test_filter_newsletter_feed_builds_live_results_from_atlas_matches(monkeypat
 
     monkeypatch.setattr('newsletters.feed.query_profile_matches', fake_query)
     monkeypatch.setattr('newsletters.feed.validate_filters', lambda database, value: value or {})
+    monkeypatch.setattr('newsletters.feed.resolve_vulnerability_document', lambda *args: source)
 
     items, count = filter_newsletter_feed(None, 'test@example.com', {})
     assert count == 1
@@ -375,3 +397,26 @@ def test_filter_newsletter_feed_builds_live_results_from_atlas_matches(monkeypat
     items, count = filter_newsletter_feed(None, 'test@example.com', {'keyword': 'unrelated'})
     assert count == 0
     assert items == []
+
+
+def test_filter_newsletter_feed_uses_the_raw_source_document(monkeypatch):
+    raw_source = {
+        '_id': 'msrc-1',
+        'title': 'Windows Media Information Disclosure Vulnerability',
+        'details': {'msrc': {'description': 'Source-only overview text.'}},
+    }
+    monkeypatch.setattr(
+        'newsletters.feed.query_profile_matches',
+        lambda *args, **kwargs: [{
+            'source_collection': 'msrc',
+            'selection_id': 'msrc-1',
+            'document': {'title': 'View projection without details'},
+        }],
+    )
+    monkeypatch.setattr('newsletters.feed.validate_filters', lambda database, value: value or {})
+    monkeypatch.setattr('newsletters.feed.resolve_vulnerability_document', lambda *args: raw_source)
+
+    items, count = filter_newsletter_feed(None, 'test@example.com', {'keyword': 'source-only'})
+
+    assert count == 1
+    assert items[0]['title'] == 'Windows Media Information Disclosure Vulnerability'
