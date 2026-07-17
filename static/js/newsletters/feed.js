@@ -8,6 +8,7 @@
     const loading = document.getElementById('loading');
     const empty = document.getElementById('empty');
     const resultSummary = document.getElementById('result-summary');
+    const keyword = document.getElementById('feed-keyword');
     const previewModal = new bootstrap.Modal(document.getElementById('preview-modal'));
     const collectionPicker = new CollectionPicker('feed');
     let collections = [];
@@ -53,11 +54,13 @@
     function setFilters(filters) {
         filters = filters || {};
         collectionPicker.render(collections, filters.collections || []);
+        keyword.value = filters.keyword || '';
     }
 
     function readFilters() {
         const filters = {
             collections: collectionPicker.selectedValues(),
+            keyword: keyword.value.trim(),
         };
         return filters;
     }

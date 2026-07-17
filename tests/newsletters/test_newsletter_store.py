@@ -367,3 +367,11 @@ def test_filter_newsletter_feed_builds_live_results_from_atlas_matches(monkeypat
     assert items[0]['selection_id'] == 'avd-1'
     assert items[0]['id'] == _record_id('avd', 'avd-1')
     assert items[0]['generated_at'] == '2026-06-15T12:00:00+00:00'
+
+    items, count = filter_newsletter_feed(None, 'test@example.com', {'keyword': 'live summary'})
+    assert count == 1
+    assert len(items) == 1
+
+    items, count = filter_newsletter_feed(None, 'test@example.com', {'keyword': 'unrelated'})
+    assert count == 0
+    assert items == []

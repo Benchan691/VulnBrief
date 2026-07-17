@@ -302,6 +302,7 @@ def query_newsletter_feed(email):
             'collections': (data.get('filters') or {}).get('collections', []),
             'include_unknown': True,
         })
+        filters['keyword'] = str((data.get('filters') or {}).get('keyword') or '').strip()
         items, count = filter_newsletter_feed(database, email, filters)
         return jsonify({'data': items, 'count': count})
     except ValueError as exc:
