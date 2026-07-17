@@ -539,7 +539,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
             )
             if source_document is None:
                 continue
-            html, newsletter = render_newsletter(source_document, source_collection, database_name)
+            html, newsletter = render_newsletter(source_document, source_collection)
             title = newsletter.get('title') or selection_id
             mailer.send_email(subscription['email'], {
                 'subject': f'Security newsletter: {title}',

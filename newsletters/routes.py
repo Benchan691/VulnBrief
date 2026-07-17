@@ -4,7 +4,7 @@ from flask import Blueprint, Response, current_app, jsonify, render_template, re
 from pymongo.errors import PyMongoError
 
 from core.auth import login_required
-from core.database import get_config, get_vulnerabilities_database
+from core.database import get_vulnerabilities_database
 from newsletters.normalizer import render_newsletter
 from reviews.repository import resolve_vulnerability_document
 
@@ -58,9 +58,7 @@ def generated_newsletter_preview(source_collection, selection_id):
         )
         if document is None:
             return jsonify({'error': 'Newsletter source document not found.'}), 404
-        rendered, _ = render_newsletter(
-            document, source_collection, get_config()['VULNERABILITIES_DATABASE'],
-        )
+        rendered, _ = render_newsletter(document, source_collection)
         return Response(rendered, content_type='text/html; charset=utf-8')
     except PyMongoError:
         return jsonify({'error': 'Unable to render generated newsletter.'}), 503

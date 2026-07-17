@@ -317,7 +317,7 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
         monkeypatch.setattr(
             subscriptions.scheduler,
             'render_newsletter',
-                lambda document, source_collection, database_name='vulnerabilities': (
+                lambda document, source_collection: (
                 '<p>newsletter</p>',
                 {'title': 'New advisory'},
             ),

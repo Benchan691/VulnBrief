@@ -29,7 +29,7 @@ def test_generic_newsletter_has_required_sections_and_sanitizes_source_html():
     assert '<script>' not in html
     assert 'alert(1)' in html
     for section in (
-        'Source database:', 'Overview:', 'Severity:', 'Affected system:', 'Recommendations:',
+        'Source collection:', 'Overview:', 'Severity:', 'Affected system:', 'Recommendations:',
         'References:', 'Related Links:',
     ):
         assert section in html
@@ -317,13 +317,13 @@ def test_nested_source_fields_populate_generic_newsletters():
                 },
             },
         },
-    }, 'msrc', 'production-vulnerabilities')
+    }, 'msrc')
 
     assert str(newsletter['overview']) == 'A remote attacker can disclose information.'
     assert newsletter['affected'] == ['Windows Media Player']
     assert newsletter['recommendations'] == ['Install the security update.']
     assert newsletter['references'] == ['https://example.test/msrc']
-    assert newsletter['database'] == 'production-vulnerabilities'
+    assert newsletter['collection'] == 'msrc'
 
 
 def test_generated_newsletter_preview_route_renders_latest_source(monkeypatch):

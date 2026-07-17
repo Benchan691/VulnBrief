@@ -30,7 +30,7 @@ ENGLISH_LABELS = {
     'recommendations': 'Recommendations:',
     'references': 'References:',
     'related_links': 'Related Links:',
-    'database': 'Source database:',
+    'collection': 'Source collection:',
     'not_specified': 'Not specified',
     'default_recommendation': 'Refer to the vendor guidance and apply available fixes.',
     'footer': 'Should you have any queries, please contact the Security Operation Centre. Thank you.',
@@ -45,7 +45,7 @@ CHINESE_LABELS = {
     'recommendations': '建议：',
     'references': '参考资料：',
     'related_links': '相关链接：',
-    'database': '来源数据库：',
+    'collection': '来源集合：',
     'not_specified': '未说明',
     'default_recommendation': '请参考供应商指南并应用可用修复。',
     'footer': '如有任何疑问，请联系安全运营中心。谢谢。',
@@ -521,7 +521,7 @@ def _source_fields(document, source_collection, details):
     return fields
 
 
-def normalize_newsletter(document, source_collection, database_name='vulnerabilities'):
+def normalize_newsletter(document, source_collection):
     details = _details(document, source_collection)
     fields = _source_fields(document, source_collection, details)
     references = _links(fields['reference_values'])
@@ -545,7 +545,7 @@ def normalize_newsletter(document, source_collection, database_name='vulnerabili
         'language': 'zh-Hans' if is_chinese else 'en',
         'labels': CHINESE_LABELS if is_chinese else ENGLISH_LABELS,
         'title': fields['title'] or 'Security Advisory',
-        'database': database_name,
+        'collection': source_collection,
         'overview': _safe_html(fields['overview'] or 'No overview was provided in the source record.'),
         'severity': severity,
         'impacts': impacts,
@@ -565,6 +565,6 @@ def normalize_newsletter(document, source_collection, database_name='vulnerabili
     return result
 
 
-def render_newsletter(document, source_collection, database_name='vulnerabilities'):
-    newsletter = normalize_newsletter(document, source_collection, database_name)
+def render_newsletter(document, source_collection):
+    newsletter = normalize_newsletter(document, source_collection)
     return render_template('newsletters/generated.html', newsletter=newsletter), newsletter
