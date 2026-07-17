@@ -163,11 +163,163 @@ def test_new_subscription_sends_confirmation_email(client, monkeypatch):
     assert response.status_code == 201
     assert sent['receiver'] == TEST_EMAIL
     assert sent['email']['subject'] == 'Subscription confirmed'
-    assert 'Newsletter feed: enabled' in sent['email']['text']
+    assert 'Newsletter Feed: enabled' in sent['email']['text']
     assert 'Collections: avd_review' in sent['email']['text']
     assert 'Keywords: Apache' in sent['email']['text']
     assert 'Minimum severity: High' in sent['email']['text']
+    assert 'Security Portal' in sent['email']['html']
+    assert 'badge-confirmed' in sent['email']['html']
+    assert 'Manage or cancel subscription' in sent['email']['html']
     assert 'https://example.com/cancel' in sent['email']['html']
+
+
+def test_subscription_update_sends_branded_change_notification(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'subscriptions': ['avd_review'],
+    }).status_code == 201
+    sent = {}
+
+    class RecordingMailer:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def send_email(self, receiver, email):
+            sent['receiver'] = receiver
+            sent['email'] = email
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', RecordingMailer)
+    monkeypatch.setitem(
+        app.config, 'SUBSCRIPTION_CONFIRMATION_CANCEL_URL', 'https://example.com/cancel',
+    )
+
+    response = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {'collections': ['avd_review'], 'keywords': ['Apache']},
+        },
+    })
+
+    assert response.status_code == 200
+    assert sent['receiver'] == TEST_EMAIL
+    assert sent['email']['subject'] == 'Subscription updated'
+    assert 'What changed:' in sent['email']['text']
+    assert '- Newsletter Feed status' in sent['email']['text']
+    assert '- Newsletter Feed filters' in sent['email']['text']
+    assert 'Current subscription details:' in sent['email']['text']
+    assert 'badge-updated' in sent['email']['html']
+    assert 'Manage or cancel subscription' in sent['email']['html']
+
+
+def test_unchanged_subscription_update_does_not_send_email(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'subscriptions': ['avd_review'],
+    }).status_code == 201
+    sent = []
+
+    class RecordingMailer:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def send_email(self, receiver, email):
+            sent.append((receiver, email))
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', RecordingMailer)
+
+    response = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={'team': 'Test'})
+
+    assert response.status_code == 200
+    assert sent == []
+
+
+def test_subscription_cancellation_sends_branded_confirmation(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'subscriptions': ['avd_review'],
+    }).status_code == 201
+    sent = {}
+
+    class RecordingMailer:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def send_email(self, receiver, email):
+            sent['receiver'] = receiver
+            sent['email'] = email
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', RecordingMailer)
+
+    response = client.delete(f'/api/subscriptions/{TEST_EMAIL}')
+
+    assert response.status_code == 200
+    assert sent['receiver'] == TEST_EMAIL
+    assert sent['email']['subject'] == 'Subscription cancelled'
+    assert 'Future Security Portal newsletter and report deliveries have stopped.' in sent['email']['text']
+    assert 'badge-cancelled' in sent['email']['html']
+    assert 'Manage or cancel subscription' not in sent['email']['html']
+
+
+def test_update_and_cancellation_keep_changes_when_notification_email_fails(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'subscriptions': ['avd_review'],
+    }).status_code == 201
+
+    class FailingMailer:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            raise OSError('SMTP unavailable')
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', FailingMailer)
+
+    updated = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={'team': 'Updated team'})
+    assert updated.status_code == 503
+    assert updated.get_json()['error'] == (
+        'Subscription was updated, but the notification email could not be sent.'
+    )
+    with app.app_context():
+        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+    assert stored['team'] == 'Updated team'
+
+    cancelled = client.delete(f'/api/subscriptions/{TEST_EMAIL}')
+    assert cancelled.status_code == 503
+    assert cancelled.get_json()['error'] == (
+        'Subscription was cancelled, but the notification email could not be sent.'
+    )
+    with app.app_context():
+        assert get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL}) is None
 
 
 def test_new_subscription_keeps_record_when_confirmation_email_fails(client, monkeypatch):

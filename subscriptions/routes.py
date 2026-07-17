@@ -1,5 +1,5 @@
+from copy import deepcopy
 from datetime import datetime, timezone
-from html import escape
 
 from flask import Blueprint, abort, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
@@ -111,35 +111,113 @@ def _profile_confirmation_summary(name, profile):
     return f"{name}: enabled; {'; '.join(_filter_summary(profile['filters']))}"
 
 
-def subscription_confirmation_email(subscription, cancellation_url):
-    summaries = [
-        _profile_confirmation_summary('Newsletter feed', subscription['newsletter_profile']),
-        _profile_confirmation_summary('Scheduled report', subscription['report_profile']),
-    ]
-    text_lines = [
-        'Your subscription has been confirmed.',
-        '',
-        'Subscription details:',
-        *[f'- {summary}' for summary in summaries],
-    ]
-    html_items = ''.join(f'<li>{escape(summary)}</li>' for summary in summaries)
-    html = (
-        '<p>Your subscription has been confirmed.</p>'
-        '<p><strong>Subscription details</strong></p>'
-        f'<ul>{html_items}</ul>'
-    )
-    if cancellation_url:
-        text_lines.extend(['', f'To cancel this subscription, visit: {cancellation_url}'])
-        safe_url = escape(cancellation_url, quote=True)
-        html += (
-            '<p>To cancel this subscription, visit '
-            f'<a href="{safe_url}">{safe_url}</a>.</p>'
-        )
+def _profile_notification_card(name, profile):
+    enabled = bool(profile.get('enabled'))
     return {
-        'subject': 'Subscription confirmed',
-        'text': '\n'.join(text_lines),
-        'html': html,
+        'name': name,
+        'enabled': enabled,
+        'status': 'Enabled' if enabled else 'Disabled',
+        'summary_lines': _filter_summary(profile['filters']) if enabled else [],
     }
+
+
+def _subscription_notification_email(kind, subscription, cancellation_url='', changes=None):
+    details = {
+        'confirmed': {
+            'subject': 'Subscription confirmed',
+            'badge': 'Confirmed',
+            'heading': 'Your subscription is active',
+            'intro': 'We will send updates that match the preferences below.',
+            'footer': 'You are receiving this email because a Security Portal subscription was created for you.',
+        },
+        'updated': {
+            'subject': 'Subscription updated',
+            'badge': 'Updated',
+            'heading': 'Your subscription has been updated',
+            'intro': 'Your latest notification preferences are shown below.',
+            'footer': 'You are receiving this email because a Security Portal subscription was updated for you.',
+        },
+        'cancelled': {
+            'subject': 'Subscription cancelled',
+            'badge': 'Cancelled',
+            'heading': 'Your subscription has been cancelled',
+            'intro': 'Future Security Portal newsletter and report deliveries have stopped.',
+            'footer': 'This is a confirmation that your Security Portal subscription was cancelled.',
+        },
+    }[kind]
+    cards = [
+        _profile_notification_card('Newsletter Feed', subscription['newsletter_profile']),
+        _profile_notification_card('Scheduled Report', subscription['report_profile']),
+    ]
+    summaries = [_profile_confirmation_summary(card['name'], profile) for card, profile in zip(
+        cards,
+        (subscription['newsletter_profile'], subscription['report_profile']),
+    )]
+    text_lines = [
+        details['heading'] + '.',
+        '',
+        details['intro'],
+    ]
+    if changes:
+        text_lines.extend(['', 'What changed:', *[f'- {change}' for change in changes]])
+    if kind != 'cancelled':
+        text_lines.extend(['', 'Current subscription details:', *[f'- {summary}' for summary in summaries]])
+    if cancellation_url and kind != 'cancelled':
+        text_lines.extend(['', f'Manage or cancel your subscription: {cancellation_url}'])
+    text_lines.extend(['', details['footer']])
+    return {
+        'subject': details['subject'],
+        'text': '\n'.join(text_lines),
+        'html': render_template(
+            'subscriptions/notification_email.html',
+            kind=kind,
+            details=details,
+            cards=cards,
+            changes=changes or [],
+            cancellation_url=cancellation_url if kind != 'cancelled' else '',
+        ),
+    }
+
+
+def subscription_confirmation_email(subscription, cancellation_url):
+    return _subscription_notification_email('confirmed', subscription, cancellation_url)
+
+
+def _admin_profile_settings(profile, profile_type):
+    fields = ['enabled', 'filters']
+    if profile_type == 'report':
+        fields.extend([
+            'generation_mode', 'report_language', 'search_prompt',
+            'schedule_enabled', 'schedule_weekday', 'schedule_time',
+        ])
+    return {field: deepcopy(profile.get(field)) for field in fields}
+
+
+def _subscription_setting_changes(current, updated):
+    changes = []
+    if current.get('team') != updated.get('team'):
+        changes.append('Team')
+    current_newsletter = _admin_profile_settings(current['newsletter_profile'], 'newsletter')
+    updated_newsletter = _admin_profile_settings(updated['newsletter_profile'], 'newsletter')
+    if current_newsletter['enabled'] != updated_newsletter['enabled']:
+        changes.append('Newsletter Feed status')
+    if current_newsletter['filters'] != updated_newsletter['filters']:
+        changes.append('Newsletter Feed filters')
+    current_report = _admin_profile_settings(current['report_profile'], 'report')
+    updated_report = _admin_profile_settings(updated['report_profile'], 'report')
+    if current_report['enabled'] != updated_report['enabled']:
+        changes.append('Scheduled Report status')
+    if current_report['filters'] != updated_report['filters']:
+        changes.append('Scheduled Report filters')
+    if any(current_report[field] != updated_report[field] for field in (
+        'generation_mode', 'report_language', 'search_prompt',
+    )):
+        changes.append('Scheduled Report format')
+    if any(current_report[field] != updated_report[field] for field in (
+        'schedule_enabled', 'schedule_weekday', 'schedule_time',
+    )):
+        changes.append('Scheduled Report schedule')
+    return changes
 
 
 def _report_preview(matches, count=None):
@@ -267,17 +345,44 @@ def edit_subscription(email):
             data['newsletter_profile'] = newsletter_value
         newsletter_profile, report_profile = _profiles(database, data)
         report_profile = _with_next_run(report_profile)
+        team = (data.get('team') or '').strip() or current.get('team', '')
+        updated_subscription = {
+            'email': email,
+            'team': team,
+            'newsletter_profile': newsletter_profile,
+            'report_profile': report_profile,
+        }
+        changes = _subscription_setting_changes(current, updated_subscription)
         update = {
             'newsletter_profile': newsletter_profile,
             'report_profile': report_profile,
             'updated_at': datetime.now(timezone.utc),
         }
-        if (data.get('team') or '').strip():
-            update['team'] = data['team'].strip()
+        if team != current.get('team', ''):
+            update['team'] = team
         get_collection().update_one(
             {'email': email},
             {'$set': update, '$unset': {'subscriptions': '', **TOP_LEVEL_SCHEDULE_FIELD_UNSET}},
         )
+        if changes:
+            try:
+                with Mailer(current_app.config) as mailer:
+                    mailer.send_email(
+                        email,
+                        _subscription_notification_email(
+                            'updated',
+                            updated_subscription,
+                            current_app.config.get('SUBSCRIPTION_CONFIRMATION_CANCEL_URL', ''),
+                            changes,
+                        ),
+                    )
+            except Exception:
+                current_app.logger.exception(
+                    'Subscription update email could not be sent to %s.', email,
+                )
+                return jsonify({
+                    'error': 'Subscription was updated, but the notification email could not be sent.',
+                }), 503
         return jsonify({'success': True})
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
@@ -289,9 +394,27 @@ def edit_subscription(email):
 @login_required
 def remove_subscription(email):
     try:
+        database = get_vulnerabilities_database()
+        raw = get_collection().find_one({'email': email})
+        if raw is None:
+            return jsonify({'error': 'Subscription not found.'}), 404
+        subscription = normalize_subscription(database, raw)
         result = get_collection().delete_one({'email': email})
         if not result.deleted_count:
             return jsonify({'error': 'Subscription not found.'}), 404
+        try:
+            with Mailer(current_app.config) as mailer:
+                mailer.send_email(
+                    email,
+                    _subscription_notification_email('cancelled', subscription),
+                )
+        except Exception:
+            current_app.logger.exception(
+                'Subscription cancellation email could not be sent to %s.', email,
+            )
+            return jsonify({
+                'error': 'Subscription was cancelled, but the notification email could not be sent.',
+            }), 503
         return jsonify({'success': True})
     except PyMongoError:
         return jsonify({'error': 'Unable to remove subscription.'}), 503
