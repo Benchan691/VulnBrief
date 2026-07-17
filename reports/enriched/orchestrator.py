@@ -129,8 +129,8 @@ def _cancelled(job_id):
 
 def _require_config(config):
     missing = []
-    if not (config.get('TAVILY_API_KEYS') or config.get('TAVILY_API_KEY')) and not config.get('SEARXNG_BASE_URL'):
-        missing.append('TAVILY_API_KEYS or SEARXNG_BASE_URL')
+    if not (config.get('TAVILY_API_KEYS') or config.get('TAVILY_API_KEY')):
+        missing.append('TAVILY_API_KEYS or TAVILY_API_KEY')
     if not config.get('ENRICHED_LLM_BASE_URL'):
         missing.append('ENRICHED_LLM_BASE_URL')
     if missing:
@@ -147,7 +147,8 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
         vulnerability_database = get_vulnerabilities_database()
         config = app.config
         log_handler = JobLogHandler(job_id)
-        enriched_logger = logging.getLogger('enriched_report')
+        enriched_logger = logging.getLogger(__package__)
+        enriched_logger.setLevel(logging.INFO)
         enriched_logger.addHandler(log_handler)
         progress = _EnrichedProgress(job_id)
         try:

@@ -3,14 +3,30 @@ import logging
 from datetime import datetime, timezone
 
 from .evidence_cache import lookup_cached_payload, store_cached_payload
+from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
 from core.prompts import resolve_prompt
 from .pipeline_collections import collection
-from .schemas import TASK_TYPES, validate_source_evidence_card
+from .reference_urls import canonical_catalog_reference_url, filter_reference_urls, is_generic_reference_url
+from .schemas import validate_source_evidence_card
 
 logger = logging.getLogger(__name__)
 
 _UNCONFIRMED_PREFIX = 'not confirmed'
+_PLACEHOLDER_VALUES = frozenset({
+    '',
+    'n/a',
+    'na',
+    'none',
+    'null',
+    'unknown',
+    'tbd',
+    '...',
+    '…',
+    '.',
+    '-',
+    '--',
+})
 
 
 def _is_unconfirmed(value):
@@ -18,7 +34,11 @@ def _is_unconfirmed(value):
         return True
     if isinstance(value, str):
         normalized = value.strip().lower()
-        return not normalized or normalized == 'n/a' or normalized.startswith(_UNCONFIRMED_PREFIX)
+        return (
+            normalized in _PLACEHOLDER_VALUES
+            or normalized.startswith(_UNCONFIRMED_PREFIX)
+            or set(normalized) <= {'.', '…', ' '}
+        )
     return False
 
 
@@ -83,10 +103,8 @@ def _prompt(result, candidate, page_char_limit, config=None):
     # Avoid duplicating search snippet when full page_content is already present.
     if not result.get('page_content') and result.get('snippet'):
         source['snippet'] = page_content
-    task_type = result['task_type']
     system = resolve_prompt(config or {}, 'evidence_extraction_system')
     user = {
-        'task_type': task_type,
         'cve_id': candidate['cve_id'],
         'candidate': {
             'vendor': candidate.get('vendor'),
@@ -98,16 +116,36 @@ def _prompt(result, candidate, page_char_limit, config=None):
     return system, json.dumps(user, ensure_ascii=False, default=str)
 
 
-def _parse_text_response(text, task_type):
-    if task_type not in TASK_TYPES:
+def _parse_json_response(text):
+    try:
+        parsed = extract_json(text)
+    except EnrichedLLMError:
         return {}
-    cleaned = (text or '').strip()
-    if not cleaned or cleaned.upper() == 'NULL':
+    if not isinstance(parsed, dict):
         return {}
-    return {
-        task_type: cleaned,
-        'confidence': 'medium',
-    }
+    output = {}
+    for field in (
+        'what_happened',
+        'why_matters',
+        'how_to_respond',
+        'title',
+        'confidence',
+        'affected_versions',
+        'fixed_versions',
+        'cvss_score',
+        'cvss_vector',
+        'exploit_status',
+        'cisa_kev',
+        'epss',
+        'business_impact',
+        'references',
+    ):
+        if field in parsed:
+            output[field] = parsed[field]
+    if output.get('confidence') not in {'high', 'medium', 'low'}:
+        if any(output.get(field) for field in ('what_happened', 'why_matters', 'how_to_respond')):
+            output['confidence'] = 'medium'
+    return output
 
 
 def _unwrap_card_payload(raw):
@@ -149,7 +187,6 @@ def _normalize_card(raw, result):
         'candidate_id': result['candidate_id'],
         'cve_id': result['cve_id'],
         'task_type': result['task_type'],
-        'source_url': result.get('url') or card.get('source_url') or '',
         'extracted_at': card.get('extracted_at') or _now_iso(),
         'title': _nullable_string(card.get('title')),
         'what_happened': _nullable_string(card.get('what_happened')),
@@ -162,11 +199,17 @@ def _normalize_card(raw, result):
         'epss': _nullable_number(card.get('epss')),
         'business_impact': _nullable_string(card.get('business_impact')),
     })
+    cve_id = result.get('cve_id')
+    raw_source_url = result.get('url') or card.get('source_url') or ''
+    card['source_url'] = canonical_catalog_reference_url(raw_source_url, cve_id) or raw_source_url
     if card.get('confidence') not in {'high', 'medium', 'low'}:
         card['confidence'] = 'low'
     card['affected_versions'] = _list(card.get('affected_versions'))
     card['fixed_versions'] = _list(card.get('fixed_versions'))
-    card['references'] = _list(card.get('references')) or [card['source_url']]
+    raw_refs = _list(card.get('references'))
+    if not raw_refs and card.get('source_url') and not is_generic_reference_url(card['source_url'], cve_id):
+        raw_refs = [card['source_url']]
+    card['references'] = filter_reference_urls(raw_refs, cve_id)
     return validate_source_evidence_card(card)
 
 
@@ -223,9 +266,9 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
                 prompt,
                 max_output_tokens=client.evidence_max_output_tokens,
             )
-            raw = _parse_text_response(text, result['task_type'])
+            raw = _parse_json_response(text)
             card = _normalize_card(raw, result)
-            extracted = True
+            extracted = bool(raw)
         except EnrichedLLMError as exc:
             logger.warning(
                 'enriched llm evidence failed cve=%s task_type=%s url=%s error=%s',

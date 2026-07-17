@@ -28,13 +28,6 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
         TAVILY_MAX_RESULTS='7',
         TAVILY_REQUEST_TIMEOUT_SECONDS='31',
         TAVILY_MAX_CONCURRENT_REQUESTS='2',
-        SEARXNG_BASE_URL='https://search.example',
-        SEARXNG_MAX_RESULTS='6',
-        SEARXNG_REQUEST_TIMEOUT_SECONDS='12',
-        SEARXNG_FETCH_TIMEOUT_SECONDS='13',
-        SEARXNG_MAX_SNIPPET_CHARS='9000',
-        SEARXNG_COMPRESSION_CHUNK_CHARS='4000',
-        SEARXNG_COMPRESSION_FAN_IN='3',
         ENRICHED_VENDOR_DOMAIN_MAP='{"Acme":"acme.example"}',
         ENRICHED_RESULTS_PER_TASK='5',
         ENRICHED_LLM_BASE_URL='https://llama.example/v1',
@@ -59,13 +52,6 @@ def test_settings_load_from_environment(tmp_path, monkeypatch):
     assert loaded['TAVILY_MAX_RESULTS'] == 7
     assert loaded['TAVILY_REQUEST_TIMEOUT_SECONDS'] == 31
     assert loaded['TAVILY_MAX_CONCURRENT_REQUESTS'] == 2
-    assert loaded['SEARXNG_BASE_URL'] == 'https://search.example'
-    assert loaded['SEARXNG_MAX_RESULTS'] == 6
-    assert loaded['SEARXNG_REQUEST_TIMEOUT_SECONDS'] == 12
-    assert loaded['SEARXNG_FETCH_TIMEOUT_SECONDS'] == 13
-    assert loaded['SEARXNG_MAX_SNIPPET_CHARS'] == 9000
-    assert loaded['SEARXNG_COMPRESSION_CHUNK_CHARS'] == 4000
-    assert loaded['SEARXNG_COMPRESSION_FAN_IN'] == 3
     assert loaded['ENRICHED_VENDOR_DOMAIN_MAP'] == {'Acme': 'acme.example'}
     assert loaded['ENRICHED_RESULTS_PER_TASK'] == 5
     assert loaded['ENRICHED_LLM_BASE_URL'] == 'https://llama.example/v1'

@@ -1,4 +1,5 @@
 from .cache_store import cache_key, mark_cache_hit, normalize_url, upsert_cache_payload
+from .reference_urls import filter_reference_urls
 
 
 def evidence_cache_key(cve_id, task_type, source_url, content_hash, cache_version='1'):
@@ -62,6 +63,11 @@ def store_cached_payload(web_database, result, card, cache_version='1'):
         result.get('content_hash'),
         cache_version,
     )
+    payload = _payload_from_card(card)
+    payload['references'] = filter_reference_urls(
+        payload.get('references') or [],
+        result.get('cve_id'),
+    )
     upsert_cache_payload(
         web_database['source_evidence_cache'],
         cache_key,
@@ -72,5 +78,5 @@ def store_cached_payload(web_database, result, card, cache_version='1'):
             'source_url': result.get('url') or '',
             'content_hash': result.get('content_hash') or '',
         },
-        _payload_from_card(card),
+        payload,
     )

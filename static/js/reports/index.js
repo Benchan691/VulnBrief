@@ -45,7 +45,7 @@
         enrichedCacheHelp.classList.toggle('d-none', !isEnriched);
     }
     function purgeSearchCache() {
-        if (!confirm('Purge all cached enriched search results? The next enriched weekly run will call Tavily/Exa again.')) {
+        if (!confirm('Purge all cached enriched search results? The next enriched weekly run will call Tavily again.')) {
             return;
         }
         purgeSearchCacheButton.disabled = true;

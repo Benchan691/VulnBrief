@@ -1,3 +1,5 @@
+import logging
+
 from reports.enriched.search_executor import execute_pending_search_tasks
 from reports.enriched.search_results_cache import (
     lookup_cached_results,
@@ -102,25 +104,13 @@ class TrackingTavilyClient:
         }]
 
 
-class SearXNGSearchClient:
-    def search(self, query):
-        return [{
-            'url': 'https://acme.example/advisory',
-            'title': 'Advisory',
-            'snippet': 'Snippet',
-            'page_content': 'Snippet',
-            'score': 0.9,
-            'source_api': 'searxng',
-        }]
-
-
 def _sample_task():
     return {
         '_id': 'task-1',
         'run_id': 'run-a',
         'candidate_id': 'candidate-1',
         'cve_id': 'CVE-2026-7000',
-        'task_type': 'what_happened',
+        'task_type': 'enrichment',
         'query': 'CVE-2026-7000 vulnerability advisory',
         'query_hash': 'query-hash-1',
         'status': 'pending',
@@ -172,7 +162,8 @@ def test_purge_search_cache_deletes_all_entries():
     assert database['search_enrichment_cache'].docs == {}
 
 
-def test_execute_pending_search_tasks_reuses_cached_results_without_calling_tavily():
+def test_execute_pending_search_tasks_reuses_cached_results_without_calling_tavily(caplog):
+    caplog.set_level(logging.INFO, logger='reports.enriched.search_executor')
     TrackingTavilyClient.calls = 0
     task = _sample_task()
     results = FakeResultsCollection()
@@ -206,6 +197,7 @@ def test_execute_pending_search_tasks_reuses_cached_results_without_calling_tavi
     assert results.documents[0]['run_id'] == 'run-a'
     assert results.documents[0]['title'] == 'Cached advisory'
     assert tasks_collection.tasks[0]['status'] == 'completed'
+    assert 'enriched search cache hit cve=CVE-2026-7000 task_type=enrichment results=1' in caplog.text
 
 
 def test_execute_pending_search_tasks_stores_results_for_reuse_on_miss():
@@ -254,30 +246,6 @@ def test_execute_pending_search_tasks_stores_results_for_reuse_on_miss():
     assert TrackingTavilyClient.calls == 0
     assert len(second_results.documents) == 1
     assert second_results.documents[0]['run_id'] == 'run-b'
-
-
-def test_execute_pending_search_tasks_stores_searxng_snippet_without_compression():
-    task = _sample_task()
-    results = FakeResultsCollection()
-    cache = FakeSearchCacheCollection()
-    database = FakeDatabase({
-        'search_enrichment_tasks': FakeTasksCollection([dict(task)]),
-        'search_enrichment_results': results,
-        'search_enrichment_cache': cache,
-    })
-
-    completed = execute_pending_search_tasks(
-        database,
-        'run-a',
-        {},
-        client=SearXNGSearchClient(),
-    )
-
-    assert completed == 1
-    assert results.documents[0]['source_api'] == 'searxng'
-    assert results.documents[0]['snippet'] == 'Snippet'
-    assert results.documents[0]['page_content'] == 'Snippet'
-    assert list(cache.docs.values())[0]['payload']['page_content'] == 'Snippet'
 
 
 def test_execute_pending_search_tasks_does_not_compress_tavily_page_content():

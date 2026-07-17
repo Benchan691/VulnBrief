@@ -11,7 +11,7 @@ Python virtual environment. For Docker-based deployment, see [README.md](../READ
 
 All processes read the same **`.env`** file (loaded automatically on startup).
 The web UI is usable for browsing newsletters and reviews with only MongoDB
-configured. Enriched Weekly reports additionally need Tavily or Exa and llama-server.
+configured. Enriched Weekly reports additionally need Tavily and llama-server.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ Install on your machine:
 
 - **Python 3.11+** (`python3 --version`)
 - **Local MongoDB** with vulnerability source collections/review views (`vulnerabilities` DB) and application data (`web` DB)
-- **Tavily or Exa API key** (for Enriched Weekly reports)
+- **Tavily API key** (for Enriched Weekly reports)
 - **llama-server** OpenAI-compatible endpoint (for Enriched Weekly; see `enriched.llm_base_url` in `config/config.json`)
 
 Optional:
@@ -127,7 +127,7 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `mongodb.*` | Database names |
 | `report.*` | Report compaction settings |
 | `enriched.*` | Enriched Weekly llama-server tuning |
-| `tavily.*` / `exa.*` | Search defaults |
+| `tavily.*` | Search defaults |
 
 See [`.env.example`](../.env.example), [`config/config.json`](../config/config.json),
 and [`core/config.py`](../core/config.py) for every supported setting.
@@ -205,7 +205,7 @@ MongoDB.
 | Browse newsletters / reviews | Web + local MongoDB (`vulnerabilities` DB) |
 | Subscriptions and auth | Web + local MongoDB (`web` DB) |
 | Fixed Template reports | Web + local MongoDB |
-| Enriched Weekly reports | Web + local MongoDB + Tavily or Exa + llama-server |
+| Enriched Weekly reports | Web + local MongoDB + Tavily + llama-server |
 
 ## Troubleshooting
 
@@ -233,7 +233,7 @@ not a separate unpublished compose Mongo container.
 
 **Enriched Weekly report fails**
 
-Check `TAVILY_API_KEYS` or `SEARXNG_BASE_URL` in `.env` and `enriched.llm_base_url` in
+Check `TAVILY_API_KEYS` in `.env` and `enriched.llm_base_url` in
 `config/config.json`. The llama-server endpoint must accept OpenAI-compatible
 `/v1/chat/completions` requests.
 

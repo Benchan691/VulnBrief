@@ -88,12 +88,20 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
 
     cache_version = '1'
     client = client or build_search_client(config)
+    provider = getattr(client, 'provider', type(client).__name__)
     concurrency = max(1, int(config.get('TAVILY_MAX_CONCURRENT_REQUESTS', 4)))
     max_retries = max(0, int(config.get('TAVILY_MAX_RETRIES', 1)))
     total_tasks = len(tasks)
     completed = 0
     cache_hits = 0
     pending_tavily = []
+    logger.info(
+        'enriched search starting run=%s provider=%s tasks=%d concurrency=%d',
+        run_id,
+        provider,
+        total_tasks,
+        concurrency,
+    )
 
     for task in tasks:
         cached_payloads = lookup_cached_results(web_database, task, cache_version)
@@ -106,6 +114,12 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
             ]
             _complete_task(tasks_collection, results_collection, task, documents, 0)
             completed += 1
+            logger.info(
+                'enriched search cache hit cve=%s task_type=%s results=%d',
+                task.get('cve_id'),
+                task.get('task_type'),
+                len(documents),
+            )
             if progress_callback is not None:
                 progress_callback(
                     completed,
@@ -141,6 +155,13 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                 if documents:
                     store_cached_results(web_database, task, documents, cache_version)
                 completed += 1
+                logger.info(
+                    'enriched search completed cve=%s task_type=%s results=%d attempts=%d',
+                    task.get('cve_id'),
+                    task.get('task_type'),
+                    len(documents),
+                    attempts,
+                )
                 if progress_callback is not None:
                     progress_callback(
                         completed,

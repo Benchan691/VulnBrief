@@ -1,127 +1,67 @@
-from reports.enriched.tavily_client import SearXNGClient, TavilyClient, build_search_client
+import threading
+
+import pytest
+
+from reports.enriched.tavily_client import TavilyClient, build_search_client
 
 
 class FakeResponse:
-    def __init__(self, body, text=''):
-        self.body = body
-        self.text = text
-
     def raise_for_status(self):
-        return None
+        pass
 
     def json(self):
-        return self.body
+        return {'results': [{'url': 'https://example.com/advisory'}]}
 
 
-def test_tavily_client_posts_search_request(monkeypatch):
-    calls = []
+def test_tavily_client_rotates_keys_per_search(monkeypatch):
+    keys = []
 
-    def fake_post(url, headers, json, timeout):
-        calls.append((url, headers, json, timeout))
-        return FakeResponse({
-            'results': [{
-                'url': 'https://example.com/advisory',
-                'title': 'Advisory',
-                'content': 'Snippet',
-            }],
-        })
+    def fake_post(_url, headers, json, timeout):
+        keys.append((headers['Authorization'], json['api_key'], timeout))
+        return FakeResponse()
 
     monkeypatch.setattr('requests.post', fake_post)
+    client = TavilyClient(['tavily-a', 'tavily-b'], timeout_seconds=9)
 
-    results = TavilyClient('tavily-key', max_results=3, timeout_seconds=9).search('CVE query')
+    client.search('first')
+    client.search('second')
+    client.search('third')
 
-    url, headers, payload, timeout = calls[0]
-    assert url == 'https://api.tavily.com/search'
-    assert headers['Authorization'] == 'Bearer tavily-key'
-    assert payload['query'] == 'CVE query'
-    assert payload['max_results'] == 3
-    assert timeout == 9
-    assert results == [{
-        'url': 'https://example.com/advisory',
-        'title': 'Advisory',
-        'content': 'Snippet',
-    }]
+    assert keys == [
+        ('Bearer tavily-a', 'tavily-a', 9),
+        ('Bearer tavily-b', 'tavily-b', 9),
+        ('Bearer tavily-a', 'tavily-a', 9),
+    ]
 
 
-def test_searxng_client_uses_snippet_only_without_page_fetch(monkeypatch):
-    calls = []
+def test_tavily_client_rotates_keys_safely_with_concurrent_searches(monkeypatch):
+    keys = []
+    lock = threading.Lock()
 
-    def fake_get(url, params=None, headers=None, timeout=None):
-        calls.append((url, params, headers, timeout))
-        return FakeResponse({
-            'results': [{
-                'url': 'https://example.com/advisory',
-                'title': 'Advisory',
-                'content': 'Snippet',
-                'score': 3,
-            }],
-        })
+    def fake_post(_url, headers, json, timeout):
+        with lock:
+            keys.append(json['api_key'])
+        return FakeResponse()
 
-    monkeypatch.setattr('requests.get', fake_get)
+    monkeypatch.setattr('requests.post', fake_post)
+    client = TavilyClient(['tavily-a', 'tavily-b'])
+    workers = [threading.Thread(target=client.search, args=(str(index),)) for index in range(20)]
 
-    results = SearXNGClient('https://search.example', max_results=1, timeout_seconds=7).search('CVE query')
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
 
-    assert len(calls) == 1
-    assert calls[0][0] == 'https://search.example/search'
-    assert calls[0][1] == {'q': 'CVE query', 'format': 'json'}
-    assert calls[0][3] == 7
-    assert results == [{
-        'url': 'https://example.com/advisory',
-        'title': 'Advisory',
-        'snippet': 'Snippet',
-        'page_content': 'Snippet',
-        'score': 3,
-        'source_api': 'searxng',
-    }]
+    assert keys.count('tavily-a') == keys.count('tavily-b') == 10
 
 
-def test_searxng_client_skips_empty_snippet(monkeypatch):
-    def fake_get(url, params=None, headers=None, timeout=None):
-        return FakeResponse({
-            'results': [{
-                'url': 'https://example.com/advisory',
-                'title': 'Advisory',
-                'content': '',
-                'score': 3,
-            }],
-        })
-
-    monkeypatch.setattr('requests.get', fake_get)
-
-    results = SearXNGClient('https://search.example').search('CVE query')
-
-    assert results == []
+def test_build_search_client_requires_tavily_key():
+    with pytest.raises(ValueError, match='TAVILY_API_KEYS'):
+        build_search_client({})
 
 
-def test_searxng_client_skips_oversized_snippet(monkeypatch):
-    def fake_get(url, params=None, headers=None, timeout=None):
-        return FakeResponse({
-            'results': [{
-                'url': 'https://example.com/advisory',
-                'title': 'Advisory',
-                'content': 'x' * 9,
-                'score': 3,
-            }],
-        })
-
-    monkeypatch.setattr('requests.get', fake_get)
-
-    results = SearXNGClient('https://search.example', max_snippet_chars=8).search('CVE query')
-
-    assert results == []
-
-
-def test_build_search_client_prefers_searxng_when_configured():
-    client = build_search_client({
-        'SEARXNG_BASE_URL': 'https://search.example',
-        'TAVILY_API_KEYS': ['tavily-key'],
-    })
-
-    assert client.provider == 'searxng'
-
-
-def test_build_search_client_uses_first_tavily_key():
+def test_build_search_client_uses_all_tavily_keys():
     client = build_search_client({'TAVILY_API_KEYS': ['tavily-a', 'tavily-b']})
 
     assert client.provider == 'tavily'
-    assert client.api_key == 'tavily-a'
+    assert client.api_keys == ['tavily-a', 'tavily-b']

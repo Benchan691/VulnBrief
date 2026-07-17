@@ -14,6 +14,28 @@ from reviews.repository import MAX_EXPORT_SELECTIONS, resolve_vulnerability_docu
 from subscriptions.query import build_match_filter, severity_projection_fields
 
 from .pipeline_collections import collection
+from .reference_urls import filter_reference_urls
+
+
+# Hosts that host CVE catalog/metadata, not vendor advisories.
+_CATALOG_SOURCE_DOMAINS = frozenset({
+    'github.com',
+    'www.github.com',
+    'raw.githubusercontent.com',
+    'nvd.nist.gov',
+    'cve.mitre.org',
+    'cveawg.mitre.org',
+    'cwe.mitre.org',
+})
+
+
+def _is_catalog_source_domain(host):
+    normalized = (host or '').lower().strip('.')
+    if not normalized:
+        return False
+    if normalized in _CATALOG_SOURCE_DOMAINS:
+        return True
+    return normalized.endswith('.githubusercontent.com')
 
 
 def _now_iso():
@@ -89,7 +111,8 @@ def _references(document):
             if text:
                 refs.append(text)
     seen = set()
-    return [ref for ref in refs if ref and not (ref in seen or seen.add(ref))]
+    unique_refs = [ref for ref in refs if ref and not (ref in seen or seen.add(ref))]
+    return filter_reference_urls(unique_refs, extract_document_cve_id(document))
 
 
 def _content_hash(document):
@@ -140,7 +163,10 @@ def _vendor_domain(source_url, vendor, domain_map=None):
     if vendor and vendor.lower() in domain_map:
         return domain_map[vendor.lower()]
     host = urlparse(source_url or '').hostname or ''
-    return host.lower()
+    normalized = host.lower()
+    if _is_catalog_source_domain(normalized):
+        return ''
+    return normalized
 
 
 def normalize_candidate(document, run_id, position=0, domain_map=None):

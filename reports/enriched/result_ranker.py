@@ -1,8 +1,14 @@
+import hashlib
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from .pipeline_collections import collection
+from .reference_urls import (
+    filter_reference_urls,
+    is_generic_reference_url,
+    is_low_value_reference_url,
+)
 
 
 SOURCE_PRIORITIES = {
@@ -14,6 +20,7 @@ SOURCE_PRIORITIES = {
     'release_notes': 65,
     'research_blog': 50,
     'news': 30,
+    'candidate_reference': 95,
     'other': 10,
 }
 
@@ -68,9 +75,14 @@ def _result_text(result):
 
 
 def is_relevant(result, candidate):
+    url = result.get('url') or ''
+    cve_id = candidate.get('cve_id')
+    if is_generic_reference_url(url, cve_id) or is_low_value_reference_url(url, cve_id):
+        return False
+    if result.get('cve_id') == cve_id:
+        return True
     text = _result_text(result)
-    cve_id = candidate['cve_id'].lower()
-    if cve_id in text:
+    if (cve_id or '').lower() in text:
         return True
     vendor = (candidate.get('vendor') or '').lower()
     product = (candidate.get('product') or '').lower()
@@ -78,13 +90,13 @@ def is_relevant(result, candidate):
 
 
 def result_score(result, candidate):
-    source_type = classify_source_type(
+    source_type = result.get('source_type') or classify_source_type(
         result.get('url'),
         result.get('title') or '',
         candidate.get('vendor_official_domain') or '',
     )
     text = _result_text(result)
-    score = SOURCE_PRIORITIES[source_type]
+    score = SOURCE_PRIORITIES.get(source_type, SOURCE_PRIORITIES['other'])
     if candidate['cve_id'].lower() in text:
         score += 25
     if (candidate.get('vendor') or '').lower() in text:
@@ -103,12 +115,50 @@ def _dedupe_key(result):
     return normalized_url.lower(), result.get('content_hash')
 
 
+def _content_hash(*parts):
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(str(part or '').encode('utf-8'))
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def _candidate_seed_results(candidate, run_id):
+    summary = (candidate.get('summary') or '').strip()
+    title = candidate.get('title') or candidate.get('cve_id') or ''
+    urls = filter_reference_urls(
+        candidate.get('references') or [],
+        candidate.get('cve_id'),
+        candidate.get('vendor_official_domain') or '',
+    )
+    seeds = []
+    for url in urls:
+        page_content = summary or f'{candidate.get("cve_id")} {title}'.strip()
+        seeds.append({
+            'run_id': run_id,
+            'candidate_id': candidate['candidate_id'],
+            'cve_id': candidate['cve_id'],
+            'task_type': 'enrichment',
+            'url': url,
+            'title': title,
+            'snippet': page_content[:500],
+            'page_content': page_content[:60000],
+            'score': 1.0,
+            'content_hash': _content_hash('candidate-ref', candidate['cve_id'], url, page_content),
+            'source_type': 'candidate_reference',
+        })
+    return seeds
+
+
 def rank_results_for_run(web_database, run_id, top_n=4):
     candidates = {
         item['candidate_id']: item
         for item in collection(web_database, 'candidate_vulnerability_items').find({'run_id': run_id})
     }
     raw_results = list(collection(web_database, 'search_enrichment_results').find({'run_id': run_id}))
+    for candidate in candidates.values():
+        raw_results.extend(_candidate_seed_results(candidate, run_id))
+
     grouped = {}
     seen = set()
     for result in raw_results:
@@ -116,9 +166,9 @@ def rank_results_for_run(web_database, run_id, top_n=4):
         if candidate is None or not is_relevant(result, candidate):
             continue
         url_key, content_hash = _dedupe_key(result)
-        scope = (result.get('candidate_id'), result.get('task_type'))
-        url_seen_key = (*scope, 'url', url_key)
-        hash_seen_key = (*scope, 'hash', content_hash)
+        candidate_id = result.get('candidate_id')
+        url_seen_key = (candidate_id, 'url', url_key)
+        hash_seen_key = (candidate_id, 'hash', content_hash)
         if url_seen_key in seen or (content_hash and hash_seen_key in seen):
             continue
         seen.add(url_seen_key)
@@ -129,7 +179,7 @@ def rank_results_for_run(web_database, run_id, top_n=4):
         ranked['rank_score'] = score
         ranked['source_type'] = source_type
         ranked['ranked_at'] = _now_iso()
-        grouped.setdefault((result['candidate_id'], result['task_type']), []).append(ranked)
+        grouped.setdefault(candidate_id, []).append(ranked)
 
     filtered = []
     for items in grouped.values():

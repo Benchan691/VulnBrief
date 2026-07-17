@@ -5,20 +5,11 @@ from string import Template
 DEFAULT_PROMPTS = {
     'evidence_extraction_system': (
         'You extract cybersecurity evidence from one source page. Use only the supplied page '
-        'content. Do not infer or invent facts. Answer only the requested task_type in plain text. '
-        'Write 2-4 sentences maximum. If the page does not support an answer, return exactly: NULL. '
-        'Do not return JSON, markdown, bullet lists, or field labels.'
-    ),
-    'searxng_page_compression_system': (
-        'Compress one fetched web page chunk for cybersecurity evidence extraction. '
-        'Use only the supplied page_content. Keep facts relevant to the query, cve_id, and task_type. '
-        'Preserve CVE IDs, product names, versions, exploit status, patches, mitigations, CVSS, EPSS, and CISA KEV facts. '
-        'Return plain text only. Do not add markdown or invented facts. Return NULL if nothing is relevant.'
-    ),
-    'searxng_page_compression_merge_system': (
-        'Merge compressed web page chunks for cybersecurity evidence extraction. '
-        'Use only partial_contents. Deduplicate repeated facts, preserve useful source facts, and keep the result compact. '
-        'Return plain text only. Do not add markdown or invented facts. Return NULL if nothing is relevant.'
+        'content. Do not infer or invent facts. Return only valid JSON with these keys: '
+        'what_happened, why_matters, how_to_respond, and optional confidence, title, '
+        'affected_versions, fixed_versions, cvss_score, cvss_vector, exploit_status, cisa_kev, '
+        'epss, business_impact, references. Use null for unsupported fields. Write 2-4 sentences '
+        'per populated field. Do not return markdown or explanations outside the JSON object.'
     ),
     'report_section_system': (
         'You write one section of an enriched weekly cybersecurity report. '

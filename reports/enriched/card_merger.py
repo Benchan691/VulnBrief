@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
 from .pipeline_collections import collection
-from .schemas import TASK_TYPES, validate_vulnerability_card
+from .reference_urls import filter_reference_urls
+from .schemas import validate_vulnerability_card
 
 
 CONFIDENCE_SCORE = {'high': 3, 'medium': 2, 'low': 1}
@@ -11,20 +12,42 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+_PLACEHOLDER_VALUES = frozenset({
+    '',
+    'not confirmed',
+    'none',
+    'null',
+    'n/a',
+    'na',
+    'unknown',
+    'tbd',
+    '...',
+    '…',
+    '.',
+    '-',
+    '--',
+})
+
+
 def _confirmed(value):
     if value is None:
         return ''
     text = str(value).strip()
-    if not text or text.lower() in {'not confirmed', 'none', 'null'}:
+    normalized = text.lower()
+    if (
+        not text
+        or normalized in _PLACEHOLDER_VALUES
+        or normalized.startswith('not confirmed')
+        or set(normalized) <= {'.', '…', ' '}
+    ):
         return ''
     return text
 
 
-def _pick_text(cards, task_type):
-    field = task_type
+def _pick_text(cards, field):
     options = [
         card for card in cards
-        if card.get('task_type') == task_type and _confirmed(card.get(field))
+        if _confirmed(card.get(field))
     ]
     if not options:
         return ''
@@ -54,7 +77,13 @@ def _source_references(candidate, cards):
     for card in cards:
         refs.append(card.get('source_url'))
         refs.extend(card.get('references') or [])
-    return _unique(refs)
+    merged = _unique(refs)
+    cve_id = candidate.get('cve_id')
+    return filter_reference_urls(
+        merged,
+        cve_id,
+        candidate.get('vendor_official_domain') or '',
+    )
 
 
 def _best_value(cards, key):

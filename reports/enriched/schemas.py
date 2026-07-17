@@ -1,7 +1,7 @@
 from jsonschema import validate
 
 
-TASK_TYPES = ('what_happened', 'why_matters', 'how_to_respond')
+TASK_TYPES = ('enrichment',)
 CONFIDENCE_VALUES = ('high', 'medium', 'low')
 
 

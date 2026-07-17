@@ -146,6 +146,17 @@ def test_extract_document_cve_id_prefers_document_code_over_shared_cve_codes():
     assert extract_document_cve_id(document) == 'CVE-2026-12007'
 
 
+def test_normalize_candidate_skips_catalog_source_domain_for_vendor_site():
+    candidate = normalize_candidate({
+        'code': 'CVE-2026-9072',
+        'title': 'CVE-2026-9072',
+        'source_url': 'https://github.com/CVEProject/cvelistV5',
+        'details': {'cve': {'descriptions': [{'value': 'Issue in product.'}]}},
+    }, 'run-1', 0)
+
+    assert candidate['vendor_official_domain'] == ''
+
+
 def test_dedupe_keeps_distinct_cves_when_cve_codes_lists_overlap():
     from reports.enriched.search_tasks import build_search_tasks
 
@@ -166,7 +177,7 @@ def test_dedupe_keeps_distinct_cves_when_cve_codes_lists_overlap():
     ])
 
     assert len(candidates) == 3
-    assert len(build_search_tasks('run-1', candidates)) == 54
+    assert len(build_search_tasks('run-1', candidates)) == 6
 
 
 def test_dedupe_keeps_distinct_cves_with_shared_catalog_source_url():
@@ -190,4 +201,8 @@ def test_dedupe_keeps_distinct_cves_with_shared_catalog_source_url():
     ])
 
     assert len(candidates) == 3
-    assert len(build_search_tasks('run-1', candidates)) == 54
+    assert len(build_search_tasks('run-1', candidates)) == 6
+    assert all(
+        candidate.get('vendor_official_domain') == ''
+        for candidate in candidates
+    )

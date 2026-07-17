@@ -37,7 +37,7 @@ def test_rank_results_dedupes_and_prioritizes_vendor_sources():
                 'run_id': 'run',
                 'candidate_id': 'candidate',
                 'cve_id': 'CVE-2026-3000',
-                'task_type': 'what_happened',
+                'task_type': 'enrichment',
                 'url': 'https://blog.example/post',
                 'title': 'CVE-2026-3000 Acme Widget analysis',
                 'snippet': 'CVE-2026-3000 affects Acme Widget.',
@@ -48,7 +48,7 @@ def test_rank_results_dedupes_and_prioritizes_vendor_sources():
                 'run_id': 'run',
                 'candidate_id': 'candidate',
                 'cve_id': 'CVE-2026-3000',
-                'task_type': 'what_happened',
+                'task_type': 'enrichment',
                 'url': 'https://acme.example/advisory',
                 'title': 'Acme advisory CVE-2026-3000',
                 'snippet': 'CVE-2026-3000 affects Acme Widget.',
@@ -59,7 +59,7 @@ def test_rank_results_dedupes_and_prioritizes_vendor_sources():
                 'run_id': 'run',
                 'candidate_id': 'candidate',
                 'cve_id': 'CVE-2026-3000',
-                'task_type': 'what_happened',
+                'task_type': 'enrichment',
                 'url': 'https://acme.example/advisory/',
                 'title': 'Duplicate URL',
                 'snippet': 'CVE-2026-3000 affects Acme Widget.',
@@ -70,7 +70,7 @@ def test_rank_results_dedupes_and_prioritizes_vendor_sources():
                 'run_id': 'run',
                 'candidate_id': 'candidate',
                 'cve_id': 'CVE-2026-3000',
-                'task_type': 'what_happened',
+                'task_type': 'enrichment',
                 'url': 'https://irrelevant.example',
                 'title': 'Unrelated',
                 'snippet': 'No matching identifier.',
@@ -87,4 +87,57 @@ def test_rank_results_dedupes_and_prioritizes_vendor_sources():
         'https://blog.example/post',
     ]
     assert database['filtered_enrichment_results'].documents == ranked
+
+
+def test_rank_results_excludes_generic_catalog_and_seeds_candidate_refs():
+    database = FakeDatabase({
+        'candidate_vulnerability_items': FakeCollection([{
+            'run_id': 'run',
+            'candidate_id': 'candidate',
+            'cve_id': 'CVE-2026-50100',
+            'vendor': 'Ricoh Company, Ltd.',
+            'product': 'Multiple printer drivers',
+            'title': 'Ricoh printer driver privilege escalation',
+            'summary': (
+                'Multiple printer drivers provided by Ricoh Company, Ltd. contain a '
+                'privilege escalation vulnerability.'
+            ),
+            'references': [
+                'https://www.ricoh.com/products/security/vulnerabilities/vul?id=ricoh-2025-000002',
+                'https://jvn.jp/en/jp/JVN55319858/',
+            ],
+        }]),
+        'search_enrichment_results': FakeCollection([
+            {
+                'run_id': 'run',
+                'candidate_id': 'candidate',
+                'cve_id': 'CVE-2026-50100',
+                'task_type': 'enrichment',
+                'url': 'https://nvd.nist.gov/vuln',
+                'title': 'NVD - Vulnerabilities',
+                'snippet': 'CVE defines a vulnerability as a weakness',
+                'page_content': 'CVE defines a vulnerability as a weakness',
+                'content_hash': 'nvd-home',
+            },
+            {
+                'run_id': 'run',
+                'candidate_id': 'candidate',
+                'cve_id': 'CVE-2026-50100',
+                'task_type': 'enrichment',
+                'url': 'https://app.opencve.io/',
+                'title': 'OpenCVE',
+                'snippet': 'OpenCVE dashboard',
+                'page_content': 'OpenCVE dashboard',
+                'content_hash': 'opencve-home',
+            },
+        ]),
+    })
+
+    ranked = rank_results_for_run(database, 'run', top_n=4)
+    ranked_urls = [item['url'] for item in ranked]
+
+    assert 'https://nvd.nist.gov/vuln' not in ranked_urls
+    assert 'https://app.opencve.io/' not in ranked_urls
+    assert 'https://www.ricoh.com/products/security/vulnerabilities/vul?id=ricoh-2025-000002' in ranked_urls
+    assert 'https://jvn.jp/en/jp/JVN55319858/' in ranked_urls
 

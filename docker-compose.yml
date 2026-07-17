@@ -1,18 +1,4 @@
 services:
-  searxng:
-    image: searxng/searxng
-    platform: linux/amd64
-    container_name: searxng
-    restart: unless-stopped
-    ports:
-      - "8086:8080"
-    volumes:
-      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
-    environment:
-      SEARXNG_BIND_ADDRESS: 0.0.0.0
-      SEARXNG_PORT: "8080"
-      SEARXNG_LIMITER: "false"
-
   web:
     build: .
     container_name: webserver-web
@@ -25,8 +11,6 @@ services:
       LOCAL_MONGO_URI: mongodb://host.docker.internal:27017/
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      - searxng
     volumes:
       - ./newsletters:/app/newsletters
       - ${AVD_ROOT:-/home/cpcnet/cyberclawer}:/cyberclawer

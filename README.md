@@ -7,7 +7,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 - **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from MongoDB records
 - **Subscriptions** — manage collection-based newsletter feeds and independently filtered report profiles
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
-- **Reports** — generate structured reports with **Enriched Weekly** (Tavily/Exa + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
+- **Reports** — generate structured reports with **Enriched Weekly** (Tavily + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
 
 ## Architecture
 
@@ -15,7 +15,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 flowchart LR
   Browser --> Web["Flask web :9100"]
   Web --> LocalMongo["Local MongoDB"]
-  Web --> Search["Tavily / Exa API"]
+  Web --> Search["Tavily API"]
   Web --> Llama["llama-server enriched.llm_base_url"]
 ```
 
@@ -28,7 +28,7 @@ flowchart LR
 
 - Python 3.11+
 - Local MongoDB with vulnerability source collections/review views (`vulnerabilities` DB) and application data (`web` DB)
-- Tavily or Exa API key (for Enriched Weekly reports)
+- Tavily API key (for Enriched Weekly reports)
 - llama-server OpenAI-compatible endpoint (for Enriched Weekly reports; configured in `config/config.json` under `enriched.*`)
 
 ## Configuration
@@ -53,7 +53,6 @@ Minimum `.env` for local web:
 | `MONGO_URI` | Optional alias for `LOCAL_MONGO_URI` when both are set |
 | `FLASK_SECRET_KEY` | Session signing |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly) |
-| `SEARXNG_BASE_URL` | Optional self-hosted SearXNG search (Enriched Weekly) |
 
 See **[docs/LOCAL_DEPLOY.md](docs/LOCAL_DEPLOY.md)** for full setup and troubleshooting.
 

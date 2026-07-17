@@ -11,7 +11,7 @@ from reports.enriched.evidence_cache import (
 )
 from reports.enriched.evidence_extractor import (
     _normalize_card,
-    _parse_text_response,
+    _parse_json_response,
     _prompt,
     _unwrap_card_payload,
     extract_evidence_cards,
@@ -83,20 +83,25 @@ class FakeLlamaClient:
 
     def complete_text(self, *args, **kwargs):
         type(self).calls += 1
-        return 'Fresh extraction.', {}
+        return json.dumps({
+            'what_happened': 'Fresh extraction.',
+            'why_matters': 'Risk.',
+            'how_to_respond': 'Upgrade.',
+            'confidence': 'medium',
+        }), {}
 
 
 def test_evidence_cache_key_is_stable_for_same_source():
     key_a = evidence_cache_key(
         'CVE-2026-1000',
-        'what_happened',
+        'enrichment',
         'https://example.com/advisory/',
         'abc123',
         '1',
     )
     key_b = evidence_cache_key(
         'cve-2026-1000',
-        'what_happened',
+        'enrichment',
         'https://example.com/advisory',
         'abc123',
         '1',
@@ -108,7 +113,7 @@ def test_store_and_lookup_cached_payload():
     database = FakeDatabase({'source_evidence_cache': FakeCacheCollection()})
     result = {
         'cve_id': 'CVE-2026-1000',
-        'task_type': 'what_happened',
+        'task_type': 'enrichment',
         'url': 'https://example.com/advisory',
         'content_hash': 'hash-1',
     }
@@ -129,7 +134,7 @@ def test_store_and_lookup_cached_payload():
 
     assert payload['what_happened'] == 'Cached fact.'
     assert database['source_evidence_cache'].docs[
-        evidence_cache_key('CVE-2026-1000', 'what_happened', result['url'], 'hash-1', '1')
+        evidence_cache_key('CVE-2026-1000', 'enrichment', result['url'], 'hash-1', '1')
     ]['hit_count'] == 1
 
 
@@ -137,7 +142,7 @@ def test_purge_evidence_cache_deletes_all_entries():
     database = FakeDatabase({'source_evidence_cache': FakeCacheCollection()})
     result = {
         'cve_id': 'CVE-2026-1000',
-        'task_type': 'what_happened',
+        'task_type': 'enrichment',
         'url': 'https://example.com/advisory',
         'content_hash': 'hash-1',
     }
@@ -180,7 +185,7 @@ def test_extract_evidence_cards_reuses_cache_on_second_run():
             'run_id': 'run-1',
             'candidate_id': 'candidate-1',
             'cve_id': 'CVE-2026-1000',
-            'task_type': 'what_happened',
+            'task_type': 'enrichment',
             'url': 'https://example.com/advisory',
             'content_hash': 'hash-1',
             'page_content': 'Advisory text.',
@@ -189,7 +194,7 @@ def test_extract_evidence_cards_reuses_cache_on_second_run():
     config = {
         'ENRICHED_LLM_PAGE_CHARS': 12000,
         'ENRICHED_EVIDENCE_CACHE_ENABLED': True,
-        'ENRICHED_EVIDENCE_CACHE_VERSION': '2',
+        'ENRICHED_EVIDENCE_CACHE_VERSION': '3',
     }
 
     first = extract_evidence_cards(database, 'run-1', config, FakeLlamaClient())
@@ -202,7 +207,7 @@ def test_extract_evidence_cards_reuses_cache_on_second_run():
         'run_id': 'run-2',
         'candidate_id': 'candidate-2',
         'cve_id': 'CVE-2026-1000',
-        'task_type': 'what_happened',
+        'task_type': 'enrichment',
         'url': 'https://example.com/advisory',
         'content_hash': 'hash-1',
         'page_content': 'Advisory text.',
@@ -229,7 +234,7 @@ def test_prompt_omits_snippet_when_page_content_present():
         'run_id': 'r1',
         'candidate_id': 'c1',
         'cve_id': 'CVE-2026-46847',
-        'task_type': 'why_matters',
+        'task_type': 'enrichment',
         'url': 'https://example.com',
         'title': 'Advisory',
         'snippet': 'S' * 3000,
@@ -238,24 +243,29 @@ def test_prompt_omits_snippet_when_page_content_present():
     candidate = {'cve_id': 'CVE-2026-46847', 'vendor': 'Acme', 'product': 'W', 'title': 'T'}
     system, user_json = _prompt(result, candidate, 4500)
     user = json.loads(user_json)
-    assert 'plain text' in system
-    assert 'NULL' in system
+    assert 'valid JSON' in system
+    assert 'what_happened' in system
     assert 'example_response' not in user
     assert len(user['source']['page_content']) == 4500
     assert 'snippet' not in user['source']
 
 
-def test_parse_text_response_returns_field_for_normal_text():
-    assert _parse_text_response('Confirmed issue.', 'what_happened') == {
+def test_parse_json_response_returns_all_fields():
+    parsed = _parse_json_response(json.dumps({
         'what_happened': 'Confirmed issue.',
-        'confidence': 'medium',
-    }
+        'why_matters': 'High risk.',
+        'how_to_respond': 'Patch now.',
+        'confidence': 'high',
+    }))
+    assert parsed['what_happened'] == 'Confirmed issue.'
+    assert parsed['why_matters'] == 'High risk.'
+    assert parsed['how_to_respond'] == 'Patch now.'
+    assert parsed['confidence'] == 'high'
 
 
-def test_parse_text_response_treats_null_as_empty():
-    assert _parse_text_response('NULL', 'why_matters') == {}
-    assert _parse_text_response('  null  ', 'why_matters') == {}
-    assert _parse_text_response('', 'how_to_respond') == {}
+def test_parse_json_response_treats_invalid_json_as_empty():
+    assert _parse_json_response('not json') == {}
+    assert _parse_json_response('') == {}
 
 
 def test_unwrap_card_payload_reads_nested_required_output():
@@ -273,7 +283,7 @@ def test_normalize_card_coerces_not_confirmed_cisa_kev_to_null():
         'run_id': 'run-1',
         'candidate_id': 'candidate-1',
         'cve_id': 'CVE-2026-1000',
-        'task_type': 'what_happened',
+        'task_type': 'enrichment',
         'url': 'https://example.com/advisory',
     }
     card = _normalize_card({'cisa_kev': 'Not confirmed', 'confidence': 'low'}, result)
@@ -285,7 +295,7 @@ def test_normalize_card_preserves_boolean_cisa_kev():
         'run_id': 'run-1',
         'candidate_id': 'candidate-1',
         'cve_id': 'CVE-2026-1000',
-        'task_type': 'what_happened',
+        'task_type': 'enrichment',
         'url': 'https://example.com/advisory',
     }
     card = _normalize_card({'cisa_kev': True, 'confidence': 'high'}, result)
@@ -302,7 +312,12 @@ def test_extract_evidence_cards_continues_after_llm_failure():
             if getattr(type(self), 'fail_once', False):
                 type(self).fail_once = False
                 raise EnrichedLLMError('llama-server returned an empty response.')
-            return 'Recovered.', {}
+            return json.dumps({
+                'what_happened': None,
+                'why_matters': 'Recovered.',
+                'how_to_respond': None,
+                'confidence': 'medium',
+            }), {}
 
     database = FakeDatabase({
         'source_evidence_cache': FakeCacheCollection(),
@@ -320,7 +335,7 @@ def test_extract_evidence_cards_continues_after_llm_failure():
                 'run_id': 'run-1',
                 'candidate_id': 'candidate-1',
                 'cve_id': 'CVE-2026-1000',
-                'task_type': 'what_happened',
+                'task_type': 'enrichment',
                 'url': 'https://example.com/one',
                 'content_hash': 'hash-1',
                 'page_content': 'Advisory one.',
@@ -329,7 +344,7 @@ def test_extract_evidence_cards_continues_after_llm_failure():
                 'run_id': 'run-1',
                 'candidate_id': 'candidate-1',
                 'cve_id': 'CVE-2026-1000',
-                'task_type': 'why_matters',
+                'task_type': 'enrichment',
                 'url': 'https://example.com/two',
                 'content_hash': 'hash-2',
                 'page_content': 'Advisory two.',
@@ -356,7 +371,7 @@ def test_purge_evidence_cache_route(client, monkeypatch):
     database = FakeDatabase({'source_evidence_cache': cache})
     result = {
         'cve_id': 'CVE-2026-1000',
-        'task_type': 'what_happened',
+        'task_type': 'enrichment',
         'url': 'https://example.com/advisory',
         'content_hash': 'hash-1',
     }

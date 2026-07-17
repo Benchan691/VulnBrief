@@ -43,7 +43,6 @@ def _message_text(message):
         len(content),
         len(reasoning),
     )
-    # #endregion
     if content:
         return _strip_think_blocks(content)
     if reasoning:
