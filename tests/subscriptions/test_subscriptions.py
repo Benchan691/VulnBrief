@@ -12,7 +12,21 @@ TEST_EMAIL = 'subscriptions-test@example.com'
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    class FakeMailer:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def send_email(self, receiver, email):
+            pass
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', FakeMailer)
     app.config.update(TESTING=True)
     with app.app_context():
         get_web_database()[SUB_ACCOUNT_COLLECTION].delete_many({'email': TEST_EMAIL})
@@ -108,6 +122,82 @@ def test_subscriptions_crud_validates_review_views(client):
     assert updated.status_code == 200
 
     assert client.delete(f'/api/subscriptions/{TEST_EMAIL}').status_code == 200
+
+
+def test_new_subscription_sends_confirmation_email(client, monkeypatch):
+    authenticate(client)
+    sent = {}
+
+    class FakeMailer:
+        def __init__(self, config):
+            assert config['SUBSCRIPTION_CONFIRMATION_CANCEL_URL'] == 'https://example.com/cancel'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def send_email(self, receiver, email):
+            sent['receiver'] = receiver
+            sent['email'] = email
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', FakeMailer)
+    monkeypatch.setitem(
+        app.config, 'SUBSCRIPTION_CONFIRMATION_CANCEL_URL', 'https://example.com/cancel',
+    )
+
+    response = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {'collections': ['avd_review'], 'keywords': ['Apache']},
+        },
+        'report_profile': {
+            'enabled': True,
+            'filters': {'collections': ['hkcert_review'], 'severity_threshold': 'High'},
+        },
+    })
+
+    assert response.status_code == 201
+    assert sent['receiver'] == TEST_EMAIL
+    assert sent['email']['subject'] == 'Subscription confirmed'
+    assert 'Newsletter feed: enabled' in sent['email']['text']
+    assert 'Collections: avd_review' in sent['email']['text']
+    assert 'Keywords: Apache' in sent['email']['text']
+    assert 'Minimum severity: High' in sent['email']['text']
+    assert 'https://example.com/cancel' in sent['email']['html']
+
+
+def test_new_subscription_keeps_record_when_confirmation_email_fails(client, monkeypatch):
+    authenticate(client)
+
+    class FailingMailer:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            raise OSError('SMTP unavailable')
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', FailingMailer)
+
+    response = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'subscriptions': ['avd_review'],
+    })
+
+    assert response.status_code == 503
+    assert response.get_json()['error'] == (
+        'Subscription was saved, but the confirmation email could not be sent.'
+    )
+    with app.app_context():
+        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+    assert stored is not None
 
 
 def test_subscription_report_preview_returns_count_and_top_cves(client, monkeypatch):

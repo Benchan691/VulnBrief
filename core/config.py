@@ -371,6 +371,9 @@ def load_application_config(base_dir):
             True,
             bool,
         ),
+        'SUBSCRIPTION_CONFIRMATION_CANCEL_URL': str(
+            _dig(file_config, 'subscriptions', 'confirmation_cancel_url') or '',
+        ).strip(),
         'SMTP_HOST': _resolve('SMTP_HOST', file_config, ('smtp', 'host'), ''),
         'SMTP_PORT': _resolve('SMTP_PORT', file_config, ('smtp', 'port'), 587, int),
         'SMTP_USERNAME': _resolve('SMTP_USERNAME', file_config, ('smtp', 'username'), ''),

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from html import escape
 
 from flask import Blueprint, abort, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
@@ -29,6 +30,15 @@ from subscriptions.scheduler import (
 subscription_blueprint = Blueprint('subscription', __name__)
 
 REPORT_PREVIEW_SAMPLE_LIMIT = 25
+
+FILTER_LABELS = {
+    'search': 'Search',
+    'code': 'CVE or identifier',
+    'title': 'Title',
+    'impact': 'Impact',
+    'affected': 'Affected product',
+    'source': 'Source',
+}
 
 
 def get_collection():
@@ -67,6 +77,69 @@ def _with_next_run(profile):
         profile = dict(profile)
         profile['next_run_at'] = next_weekly_run(profile)
     return profile
+
+
+def _filter_summary(filters):
+    parts = []
+    collections = filters.get('collections') or []
+    if collections:
+        parts.append(f"Collections: {', '.join(collections)}")
+    else:
+        parts.append('Collections: all collections')
+    for field, label in FILTER_LABELS.items():
+        if filters.get(field):
+            parts.append(f'{label}: {filters[field]}')
+    if filters.get('status'):
+        parts.append(f"Severity: {', '.join(filters['status'])}")
+    if filters.get('severity_threshold'):
+        parts.append(f"Minimum severity: {filters['severity_threshold']}")
+    if filters.get('include_unknown'):
+        parts.append('Include unknown severity: yes')
+    if filters.get('keywords'):
+        parts.append(f"Keywords: {', '.join(filters['keywords'])}")
+    if filters.get('time_window') and filters['time_window'] != 'all':
+        window = filters['time_window']
+        if window == 'custom':
+            window = f"custom ({filters.get('start') or 'unspecified'} to {filters.get('end') or 'unspecified'})"
+        parts.append(f'Scrape time window: {window}')
+    return parts
+
+
+def _profile_confirmation_summary(name, profile):
+    if not profile.get('enabled'):
+        return f'{name}: disabled'
+    return f"{name}: enabled; {'; '.join(_filter_summary(profile['filters']))}"
+
+
+def subscription_confirmation_email(subscription, cancellation_url):
+    summaries = [
+        _profile_confirmation_summary('Newsletter feed', subscription['newsletter_profile']),
+        _profile_confirmation_summary('Scheduled report', subscription['report_profile']),
+    ]
+    text_lines = [
+        'Your subscription has been confirmed.',
+        '',
+        'Subscription details:',
+        *[f'- {summary}' for summary in summaries],
+    ]
+    html_items = ''.join(f'<li>{escape(summary)}</li>' for summary in summaries)
+    html = (
+        '<p>Your subscription has been confirmed.</p>'
+        '<p><strong>Subscription details</strong></p>'
+        f'<ul>{html_items}</ul>'
+    )
+    if cancellation_url:
+        text_lines.extend(['', f'To cancel this subscription, visit: {cancellation_url}'])
+        safe_url = escape(cancellation_url, quote=True)
+        html += (
+            '<p>To cancel this subscription, visit '
+            f'<a href="{safe_url}">{safe_url}</a>.</p>'
+        )
+    return {
+        'subject': 'Subscription confirmed',
+        'text': '\n'.join(text_lines),
+        'html': html,
+    }
 
 
 def _report_preview(matches, count=None):
@@ -144,6 +217,27 @@ def add_subscription():
             'updated_at': now,
         })
         get_collection().update_one({'email': email}, {'$unset': SCHEDULE_FIELD_UNSET})
+        subscription = {
+            'email': email,
+            'newsletter_profile': newsletter_profile,
+            'report_profile': report_profile,
+        }
+        try:
+            with Mailer(current_app.config) as mailer:
+                mailer.send_email(
+                    email,
+                    subscription_confirmation_email(
+                        subscription,
+                        current_app.config.get('SUBSCRIPTION_CONFIRMATION_CANCEL_URL', ''),
+                    ),
+                )
+        except Exception:
+            current_app.logger.exception(
+                'Subscription confirmation email could not be sent to %s.', email,
+            )
+            return jsonify({
+                'error': 'Subscription was saved, but the confirmation email could not be sent.',
+            }), 503
         return jsonify({'success': True}), 201
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400

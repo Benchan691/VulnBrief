@@ -45,6 +45,19 @@ The app loads `.env` first, then merges `config/config.json`. Environment
 variables override JSON when both are set. Set `APP_CONFIG` to use a different
 JSON path.
 
+To add a cancellation link to new-subscription confirmation emails, set the
+following non-secret value in `config/config.json`:
+
+```json
+{
+  "subscriptions": {
+    "confirmation_cancel_url": "https://example.com/cancel-subscription"
+  }
+}
+```
+
+Leave the value empty to omit the cancellation-link section from the email.
+
 Minimum `.env` for local web:
 
 | Variable | Purpose |

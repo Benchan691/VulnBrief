@@ -200,6 +200,24 @@ def test_settings_load_from_config_json(tmp_path, monkeypatch):
     assert loaded['REPORT_MAX_DEPTH'] == 11
 
 
+def test_settings_load_subscription_cancellation_url_from_config_json(tmp_path, monkeypatch):
+    _set_required_env(monkeypatch)
+
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    (config_dir / 'config.json').write_text(
+        json.dumps({
+            'subscriptions': {
+                'confirmation_cancel_url': 'https://example.com/cancel',
+            },
+        }),
+        encoding='utf-8',
+    )
+
+    loaded = load_application_config(str(tmp_path))
+    assert loaded['SUBSCRIPTION_CONFIRMATION_CANCEL_URL'] == 'https://example.com/cancel'
+
+
 def test_single_tavily_key_backfills_key_list(tmp_path, monkeypatch):
     _set_required_env(monkeypatch, TAVILY_API_KEY='legacy-key')
     monkeypatch.delenv('TAVILY_API_KEYS', raising=False)
