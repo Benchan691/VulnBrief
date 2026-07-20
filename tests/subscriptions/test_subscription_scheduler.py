@@ -280,9 +280,10 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
             'report_profile': {'enabled': False},
         })
 
+        newsletter_title = 'Ruijie AP180 series操作系统命令注入漏洞（CNVD-2026-2825856）'
         document = {
             'scraped_at': '2026-07-10T12:00:00+00:00',
-            'title': 'New advisory',
+            'title': newsletter_title,
             'description': 'Details',
         }
 
@@ -319,7 +320,7 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
             'render_newsletter',
                 lambda document, source_collection: (
                 '<p>newsletter</p>',
-                {'title': 'New advisory'},
+                {'title': newsletter_title},
             ),
         )
 
@@ -360,9 +361,10 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
         assert second['sent'] == 0
         assert len(sent) == 1
         assert sent[0][0] == 'newsletter@example.com'
+        assert sent[0][1]['subject'] == f'Security newsletter: {newsletter_title}'
         assert stored['newsletter_profile']['delivery_cursor'] == document['scraped_at']
         assert delivery is not None
-        assert delivery['title'] == 'New advisory'
+        assert delivery['title'] == newsletter_title
 
         web['sub_account'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})

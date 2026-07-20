@@ -251,16 +251,20 @@ def test_similar_source_shapes_are_mapped_without_flattening_metadata():
         'severity': 'High',
         'details': {
             'cve': {
-                'title': 'Example vulnerability',
                 'descriptions': [{'lang': 'en', 'value': 'Useful description'}],
-                'affected_products': ['Example Product < 2.0'],
+                'affected': [{
+                    'vendor': 'Example Vendor',
+                    'product': 'Example Product',
+                    'versions': [{'lessThan': '2.0'}],
+                }],
                 'references': [{'url': 'https://example.test/cve'}],
             },
         },
     }, 'cve')
-    assert cve['title'] == 'Example vulnerability'
+    assert cve['title'] == 'CVE-2026-1000'
     assert str(cve['overview']) == 'Useful description'
-    assert cve['affected'] == ['Example Product < 2.0']
+    assert cve['affected'] == ['Example Vendor Example Product < 2.0']
+    assert cve['references'] == ['https://example.test/cve']
 
     github = normalize_newsletter({
         'severity': 'Medium',
@@ -278,31 +282,38 @@ def test_similar_source_shapes_are_mapped_without_flattening_metadata():
     assert github['recommendations'] == ['2.0']
 
 
-def test_cve_v5_cna_fields_populate_the_newsletter():
+def test_cve_details_fields_populate_the_newsletter():
     newsletter = normalize_newsletter({
         'title': 'CVE-2026-8616',
         'details': {
             'cve': {
-                'containers': {
-                    'cna': {
-                        'title': 'Fense Proxy & VPN Blocker vulnerability',
-                        'descriptions': [{'lang': 'en', 'value': 'Missing authorization permits unauthenticated option deletion.'}],
-                        'affected': [{
-                            'vendor': 'devozon',
-                            'product': 'Fense Proxy & VPN Blocker',
-                            'versions': [{'version': '0', 'lessThanOrEqual': '3.0.1'}],
-                        }],
-                        'references': [{'url': 'https://example.test/advisory'}],
-                    },
-                },
+                'descriptions': [{'lang': 'en', 'value': 'Missing authorization permits unauthenticated option deletion.'}],
+                'affected': [{
+                    'vendor': 'devozon',
+                    'product': 'Fense Proxy & VPN Blocker',
+                    'versions': [{'version': '0', 'lessThanOrEqual': '3.0.1'}],
+                }],
+                'references': [{'url': 'https://example.test/advisory'}],
             },
         },
     }, 'cve')
 
-    assert newsletter['title'] == 'Fense Proxy & VPN Blocker vulnerability'
+    assert newsletter['title'] == 'CVE-2026-8616'
     assert str(newsletter['overview']) == 'Missing authorization permits unauthenticated option deletion.'
     assert newsletter['affected'] == ['devozon Fense Proxy & VPN Blocker <= 3.0.1']
     assert newsletter['references'] == ['https://example.test/advisory']
+
+
+def test_cve_empty_affected_data_is_rendered_as_not_specified():
+    document = {
+        'title': 'CVE-2026-0001',
+        'details': {'cve': {'affected': []}},
+    }
+    with app.app_context():
+        html, newsletter = render_newsletter(document, 'cve')
+
+    assert newsletter['affected'] == []
+    assert '<li>Not specified</li>' in html
 
 
 def test_nested_source_fields_populate_generic_newsletters():

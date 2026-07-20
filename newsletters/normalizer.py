@@ -356,15 +356,11 @@ def _cnnvd_source_fields(fields, document, details):
 
 
 def _cve_source_fields(fields, document, details):
-    cna = _path(details, 'containers', 'cna') or _path(document, 'containers', 'cna') or {}
-    fields['title'] = details.get('title') or cna.get('title') or fields['title']
-    fields['overview'] = (
-        _first({}, {'values': _nested_values(details.get('descriptions'), 'value')}, 'values')
-        or _first({}, {'values': _nested_values(cna.get('descriptions'), 'value')}, 'values')
-        or fields['overview']
+    fields['overview'] = _first(
+        {}, {'values': _nested_values(details.get('descriptions'), 'value')}, 'values',
     )
-    fields['affected'] = _values(details.get('affected_products')) or _cve_affected(cna.get('affected'))
-    fields['reference_values'] = _nested_values(details.get('references'), 'url') or _nested_values(cna.get('references'), 'url')
+    fields['affected'] = _cve_affected(details.get('affected'))
+    fields['reference_values'] = _nested_values(details.get('references'), 'url')
 
 
 def _github_advisory_source_fields(fields, document, details):
