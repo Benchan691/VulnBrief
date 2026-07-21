@@ -36,6 +36,62 @@ def test_generic_newsletter_has_required_sections_and_sanitizes_source_html():
     assert 'Impacts:' not in html
 
 
+def test_github_advisory_renders_markdown_and_safe_images_for_email():
+    document = {
+        'title': 'Gogs Mirror Settings bypass',
+        'details': {
+            'github_advisory': {
+                'description': '''## Summary
+
+This is **important** and [tracked](https://github.com/gogs/gogs).
+
+* First step
+* `SaveAddress`
+
+![Migration validation](https://github.com/user-attachments/assets/secure-image)
+<img src="https://github.com/user-attachments/assets/raw-image" alt="Raw image" width="1200" height="755" onerror="alert(1)">
+<img src="http://example.test/insecure-image" alt="Insecure">
+<img src="file:///etc/passwd" alt="Local">
+<script>alert(1)</script>''',
+            },
+        },
+    }
+
+    with app.app_context():
+        html, normalized = render_newsletter(document, 'github_advisory')
+
+    assert normalized['template_key'] == 'github_advisory'
+    assert '<h2>Summary</h2>' in html
+    assert '<strong>important</strong>' in html
+    assert '<a href="https://github.com/gogs/gogs">tracked</a>' in html
+    assert '<li>First step</li>' in html
+    assert '<code>SaveAddress</code>' in html
+    assert '![Migration validation]' not in html
+    assert 'https://github.com/user-attachments/assets/secure-image' in html
+    assert 'https://github.com/user-attachments/assets/raw-image' in html
+    assert 'alt="Raw image"' in html
+    assert 'width="1200"' in html
+    assert 'height="755"' in html
+    assert 'onerror=' not in html
+    assert 'http://example.test/insecure-image' not in html
+    assert 'file:///etc/passwd' not in html
+    assert '<script>' not in html
+    assert 'alert(1)' not in html
+    assert '.indent img { max-width: 100%; height: auto; }' in html
+
+
+def test_non_github_newsletters_do_not_render_markdown_or_images():
+    newsletter = normalize_newsletter({
+        'details': {
+            'cve': {
+                'descriptions': [{'lang': 'en', 'value': '**Literal Markdown** ![image](https://example.test/image.png)'}],
+            },
+        },
+    }, 'cve')
+
+    assert str(newsletter['overview']) == '**Literal Markdown** ![image](https://example.test/image.png)'
+
+
 def test_every_active_source_has_a_dedicated_template():
     for source in SOURCE_TEMPLATE_KEYS:
         assert template_key_for_source(source) == source

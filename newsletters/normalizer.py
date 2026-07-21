@@ -2,6 +2,7 @@ import re
 from urllib.parse import urlparse
 
 import bleach
+import markdown
 from flask import render_template
 from markupsafe import Markup
 
@@ -14,6 +15,7 @@ ALLOWED_ATTRIBUTES = {
     'td': ['colspan', 'rowspan'],
     'th': ['colspan', 'rowspan'],
 }
+GITHUB_ADVISORY_IMAGE_ATTRIBUTES = {'src', 'alt', 'title', 'width', 'height'}
 SOURCE_TEMPLATE_KEYS = {
     'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'github_advisory', 'govcert',
     'hikvision', 'hkcert', 'huawei_sa', 'infosec', 'juniper', 'paloalto',
@@ -51,6 +53,9 @@ CHINESE_LABELS = {
     'footer': '如有任何疑问，请联系安全运营中心。谢谢。',
 }
 CVE_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)
+SCRIPT_OR_STYLE_PATTERN = re.compile(
+    r'<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>', re.IGNORECASE | re.DOTALL,
+)
 
 
 def _details(document, source_collection=None):
@@ -120,14 +125,37 @@ def _with_nested_fallback(values, details, document, fields):
     return values or _nested_field_values(details, fields) or _nested_field_values(document, fields)
 
 
-def _safe_html(value):
+def _is_https_url(value):
+    parsed = urlparse(str(value or ''))
+    return parsed.scheme == 'https' and bool(parsed.netloc)
+
+
+def _github_advisory_attributes(tag, name, value):
+    if tag == 'img':
+        if name == 'src':
+            return _is_https_url(value)
+        if name in {'width', 'height'}:
+            return str(value).isdigit()
+        return name in GITHUB_ADVISORY_IMAGE_ATTRIBUTES
+    return name in ALLOWED_ATTRIBUTES.get(tag, [])
+
+
+def _safe_html(value, *, allow_images=False):
+    tags = ALLOWED_TAGS | ({'img'} if allow_images else set())
+    attributes = _github_advisory_attributes if allow_images else ALLOWED_ATTRIBUTES
     return Markup(bleach.clean(
         str(value or ''),
-        tags=ALLOWED_TAGS,
-        attributes=ALLOWED_ATTRIBUTES,
+        tags=tags,
+        attributes=attributes,
         protocols={'http', 'https', 'mailto'},
         strip=True,
     ))
+
+
+def _github_advisory_overview(value):
+    source = SCRIPT_OR_STYLE_PATTERN.sub('', str(value or ''))
+    rendered = markdown.markdown(source, extensions=['extra', 'sane_lists'])
+    return _safe_html(rendered, allow_images=True)
 
 
 def _links(values):
@@ -536,13 +564,18 @@ def normalize_newsletter(document, source_collection):
         severity = _values(details.get('risk_level')) or _all({}, document, 'severity', 'status')
         impacts = fields['impacts']
         show_impacts = True
+    overview = fields['overview'] or 'No overview was provided in the source record.'
+    if source_collection == 'github_advisory':
+        overview = _github_advisory_overview(overview)
+    else:
+        overview = _safe_html(overview)
     result = {
         'template_key': template_key,
         'language': 'zh-Hans' if is_chinese else 'en',
         'labels': CHINESE_LABELS if is_chinese else ENGLISH_LABELS,
         'title': fields['title'] or 'Security Advisory',
         'collection': source_collection,
-        'overview': _safe_html(fields['overview'] or 'No overview was provided in the source record.'),
+        'overview': overview,
         'severity': severity,
         'impacts': impacts,
         'affected': fields['affected'],
