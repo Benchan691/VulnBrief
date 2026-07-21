@@ -188,6 +188,8 @@ def test_deliver_pending_newsletters_initializes_cursor_without_sending(monkeypa
         subscription_id = ObjectId()
         web['sub_account'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
+
+
         web['sub_account'].insert_one({
             '_id': subscription_id,
             'email': 'newsletter@example.com',
@@ -267,6 +269,7 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
         subscription_id = ObjectId()
         web['sub_account'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
+
         cursor = '2026-07-01T00:00:00+00:00'
         web['sub_account'].insert_one({
             '_id': subscription_id,
@@ -365,6 +368,90 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
         assert stored['newsletter_profile']['delivery_cursor'] == document['scraped_at']
         assert delivery is not None
         assert delivery['title'] == newsletter_title
+
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
+
+
+def test_deliver_pending_newsletters_skips_updated_cves(monkeypatch):
+    from subscriptions.scheduler import deliver_pending_newsletters
+
+    sent = []
+    with app.app_context():
+        web = get_web_database()
+        subscription_id = ObjectId()
+        cursor = '2026-07-01T00:00:00+00:00'
+        document = {
+            'scraped_at': '2026-07-10T12:00:00+00:00',
+            'status': 'updated',
+            'title': 'Updated CVE',
+        }
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
+        web['sub_account'].insert_one({
+            '_id': subscription_id,
+            'email': 'newsletter@example.com',
+            'newsletter_profile': {
+                'enabled': True,
+                'filters': {'collections': ['cve_review']},
+                'delivery_cursor': cursor,
+            },
+        })
+
+        class FakeMailer:
+            def __init__(self, config):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def send_email(self, receiver, email):
+                sent.append((receiver, email))
+
+        monkeypatch.setattr(subscriptions.scheduler, 'Mailer', FakeMailer)
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'query_profile_matches',
+            lambda *args, **kwargs: [{
+                'source_collection': 'cve',
+                'selection_id': 'CVE-2026-1000',
+                'document': document,
+            }],
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'resolve_vulnerability_document',
+            lambda *args: document,
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'render_newsletter',
+            lambda *args: (_ for _ in ()).throw(AssertionError('updated CVEs must not be rendered')),
+        )
+
+        result = deliver_pending_newsletters(
+            app,
+            {
+                '_id': subscription_id,
+                'email': 'newsletter@example.com',
+                'newsletter_profile': {
+                    'enabled': True,
+                    'filters': {'collections': ['cve_review']},
+                    'delivery_cursor': cursor,
+                },
+            },
+            now=datetime(2026, 7, 16, 4, 0, tzinfo=timezone.utc),
+        )
+
+        stored = web['sub_account'].find_one({'_id': subscription_id})
+        assert result['sent'] == 0
+        assert result['delivery_cursor'] == document['scraped_at']
+        assert sent == []
+        assert stored['newsletter_profile']['delivery_cursor'] == document['scraped_at']
+        assert web['newsletter_deliveries'].count_documents({'email': 'newsletter@example.com'}) == 0
 
         web['sub_account'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})

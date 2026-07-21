@@ -482,6 +482,13 @@ def _record_newsletter_delivery(web_database, *, email, database_name, source_co
         return False
 
 
+def _is_updated_cve(source_collection, document):
+    return (
+        source_collection == 'cve'
+        and str((document or {}).get('status') or '').strip().casefold() == 'updated'
+    )
+
+
 def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER_SEND_LIMIT):
     now = now or _now()
     web_database = get_web_database()
@@ -522,8 +529,6 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
             continue
         pending.append((scraped_at, match, document))
     pending.sort(key=lambda item: item[0])
-    if limit is not None:
-        pending = pending[:limit]
 
     sent = 0
     max_cursor = cursor
@@ -532,12 +537,18 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
 
     with Mailer(app.config) as mailer:
         for scraped_at, match, document in pending:
+            if limit is not None and sent >= limit:
+                break
             source_collection = match['source_collection']
             selection_id = match['selection_id']
             source_document = resolve_vulnerability_document(
                 vuln_database, source_collection, selection_id,
             )
             if source_document is None:
+                continue
+            if _is_updated_cve(source_collection, source_document):
+                if scraped_at > max_cursor:
+                    max_cursor = scraped_at
                 continue
             html, newsletter = render_newsletter(source_document, source_collection)
             title = newsletter.get('title') or selection_id
