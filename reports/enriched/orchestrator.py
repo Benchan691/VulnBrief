@@ -13,6 +13,7 @@ from reports.progress import (
 
 from .candidate_loader import load_candidates_from_inputs
 from .card_merger import merge_vulnerability_cards
+from .evidence_cache import delete_cached_payload
 from .evidence_extractor import extract_evidence_cards
 from .llama_client import EnrichedLlamaClient
 from .pipeline_collections import collection, ensure_indexes
@@ -218,13 +219,32 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
             def on_tavily_progress(completed, total, message):
                 progress.tavily_progress(completed, message)
 
-            execute_pending_search_tasks(
+            completed_searches = execute_pending_search_tasks(
                 web_database,
                 run_id,
                 config,
                 tavily_client or build_search_client(config),
                 progress_callback=on_tavily_progress,
             )
+            search_tasks = collection(web_database, 'search_enrichment_tasks')
+            failed_searches = search_tasks.count_documents({'run_id': run_id, 'status': 'failed'})
+            if completed_searches == 0:
+                failed_task = search_tasks.find_one(
+                    {'run_id': run_id, 'status': 'failed'},
+                    {'error': 1},
+                )
+                detail = (failed_task or {}).get('error') or 'unknown search provider error'
+                raise ValueError(
+                    f'All {tavily_total} Tavily search tasks failed; '
+                    f'enriched report was not generated. First error: {detail}'
+                )
+            if failed_searches:
+                logger.warning(
+                    'enriched search partial failure run=%s succeeded=%d failed=%d',
+                    run_id,
+                    completed_searches,
+                    failed_searches,
+                )
 
             if _cancelled(job_object_id):
                 return
@@ -236,6 +256,22 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
             )
             if not filtered:
                 raise ValueError('No relevant search enrichment results were found for selected CVEs.')
+            searched_candidate_ids = {
+                item.get('candidate_id')
+                for item in filtered
+                if item.get('source_type') != 'candidate_reference'
+            }
+            missing_search_evidence = [
+                candidate['cve_id']
+                for candidate in candidates
+                if candidate.get('candidate_id') not in searched_candidate_ids
+            ]
+            if missing_search_evidence:
+                raise ValueError(
+                    'No relevant Tavily search results were found for: '
+                    + ', '.join(missing_search_evidence)
+                    + '; enriched report was not generated.'
+                )
             evidence_total = len(filtered)
             progress.set_evidence_total(evidence_total)
             progress.step(
@@ -259,6 +295,50 @@ def run_enriched_pipeline(app, job_id, tavily_client=None, llama_client=None):
                 llama_client,
                 progress_callback=on_evidence_progress,
             )
+            evidence_by_candidate = {}
+            for card in evidence_cards:
+                evidence_by_candidate.setdefault(card.get('candidate_id'), []).append(card)
+            incomplete_evidence = []
+            incomplete_candidate_ids = set()
+            for candidate in candidates:
+                candidate_cards = evidence_by_candidate.get(candidate.get('candidate_id'), [])
+                missing_fields = [
+                    field
+                    for field in ('why_matters', 'how_to_respond')
+                    if not any(card.get(field) for card in candidate_cards)
+                ]
+                if missing_fields:
+                    incomplete_candidate_ids.add(candidate.get('candidate_id'))
+                    incomplete_evidence.append(
+                        f"{candidate['cve_id']} ({', '.join(missing_fields)})"
+                    )
+            if incomplete_evidence:
+                evidence_cache_version = str(
+                    config.get('ENRICHED_EVIDENCE_CACHE_VERSION', '2')
+                )
+                evicted_cache_entries = 0
+                if bool(config.get('ENRICHED_EVIDENCE_CACHE_ENABLED', True)):
+                    evicted_cache_entries = sum(
+                        delete_cached_payload(
+                            web_database,
+                            result,
+                            evidence_cache_version,
+                        )
+                        for result in filtered
+                        if result.get('candidate_id') in incomplete_candidate_ids
+                    )
+                logger.warning(
+                    'enriched evidence incomplete run=%s candidates=%d evicted_cache_entries=%d',
+                    run_id,
+                    len(incomplete_candidate_ids),
+                    evicted_cache_entries,
+                )
+                raise ValueError(
+                    'Evidence extraction did not confirm required risk/impact and remediation '
+                    'guidance for: '
+                    + '; '.join(incomplete_evidence)
+                    + '; enriched report was not generated.'
+                )
 
             if _cancelled(job_object_id):
                 return

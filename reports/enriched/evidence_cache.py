@@ -50,6 +50,18 @@ def lookup_cached_payload(web_database, result, cache_version='1'):
     return dict(entry.get('payload') or {})
 
 
+def delete_cached_payload(web_database, result, cache_version='1'):
+    cache_key = evidence_cache_key(
+        result.get('cve_id'),
+        result.get('task_type'),
+        result.get('url'),
+        result.get('content_hash'),
+        cache_version,
+    )
+    deleted = web_database['source_evidence_cache'].delete_one({'cache_key': cache_key})
+    return int(deleted.deleted_count)
+
+
 def purge_evidence_cache(web_database):
     result = web_database['source_evidence_cache'].delete_many({})
     return int(result.deleted_count)

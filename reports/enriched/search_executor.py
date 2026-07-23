@@ -94,6 +94,7 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
     max_retries = max(0, int(config.get('TAVILY_MAX_RETRIES', 1)))
     total_tasks = len(tasks)
     completed = 0
+    finished = 0
     cache_hits = 0
     pending_tavily = []
     logger.info(
@@ -115,6 +116,7 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
             ]
             _complete_task(tasks_collection, results_collection, task, documents, 0)
             completed += 1
+            finished += 1
             logger.info(
                 'enriched search cache hit cve=%s task_type=%s results=%d',
                 task.get('cve_id'),
@@ -123,9 +125,9 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
             )
             if progress_callback is not None:
                 progress_callback(
-                    completed,
+                    finished,
                     total_tasks,
-                    f'Reused cached search {completed}/{total_tasks} for {task.get("cve_id")}',
+                    f'Reused cached search {finished}/{total_tasks} for {task.get("cve_id")}',
                 )
             continue
         pending_tavily.append(task)
@@ -156,6 +158,7 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                 if documents:
                     store_cached_results(web_database, task, documents, cache_version)
                 completed += 1
+                finished += 1
                 logger.info(
                     'enriched search completed cve=%s task_type=%s results=%d attempts=%d',
                     task.get('cve_id'),
@@ -165,9 +168,9 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                 )
                 if progress_callback is not None:
                     progress_callback(
-                        completed,
+                        finished,
                         total_tasks,
-                        f'Completed search {completed}/{total_tasks} for {task.get("cve_id")}',
+                        f'Completed search {finished}/{total_tasks} for {task.get("cve_id")}',
                     )
             except SearchTaskError as exc:
                 task = exc.task
@@ -179,6 +182,21 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                         'updated_at': _now_iso(),
                     }, '$inc': {'attempts': exc.attempts}},
                 )
+                finished += 1
+                logger.warning(
+                    'enriched search failed cve=%s task_type=%s query=%s attempts=%d error=%s',
+                    task.get('cve_id'),
+                    task.get('task_type'),
+                    task.get('query'),
+                    exc.attempts,
+                    exc.error,
+                )
+                if progress_callback is not None:
+                    progress_callback(
+                        finished,
+                        total_tasks,
+                        f'Failed search {finished}/{total_tasks} for {task.get("cve_id")}: {exc.error}',
+                    )
             except Exception as exc:
                 if task is None:
                     continue
@@ -190,4 +208,25 @@ def execute_pending_search_tasks(web_database, run_id, config, client=None, prog
                         'updated_at': _now_iso(),
                     }, '$inc': {'attempts': 1}},
                 )
+                finished += 1
+                logger.warning(
+                    'enriched search failed cve=%s task_type=%s query=%s attempts=1 error=%s',
+                    task.get('cve_id'),
+                    task.get('task_type'),
+                    task.get('query'),
+                    exc,
+                )
+                if progress_callback is not None:
+                    progress_callback(
+                        finished,
+                        total_tasks,
+                        f'Failed search {finished}/{total_tasks} for {task.get("cve_id")}: {exc}',
+                    )
+    logger.info(
+        'enriched search finished run=%s succeeded=%d failed=%d cache_hits=%d',
+        run_id,
+        completed,
+        total_tasks - completed,
+        cache_hits,
+    )
     return completed

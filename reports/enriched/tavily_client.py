@@ -3,11 +3,19 @@ import threading
 import requests
 
 
+def _key_values(value):
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [key.strip() for key in value.split(',') if key.strip()]
+    return [str(key).strip() for key in value if str(key).strip()]
+
+
 def _keys(config, list_name, single_name):
-    keys = list(config.get(list_name) or [])
+    keys = _key_values(config.get(list_name))
     if not keys and config.get(single_name):
-        keys = [config[single_name]]
-    return [str(key).strip() for key in keys if str(key).strip()]
+        keys = _key_values(config[single_name])
+    return keys
 
 
 class TavilyClient:
@@ -22,9 +30,7 @@ class TavilyClient:
         chunks_per_source=3,
         endpoint='https://api.tavily.com/search',
     ):
-        if isinstance(api_keys, str):
-            api_keys = [api_keys]
-        self.api_keys = [str(key).strip() for key in api_keys if str(key).strip()]
+        self.api_keys = _key_values(api_keys)
         if not self.api_keys:
             raise ValueError('TAVILY_API_KEY must be configured for enriched_weekly reports.')
         self.search_depth = search_depth
@@ -34,12 +40,18 @@ class TavilyClient:
         self.endpoint = endpoint
         self._key_index = 0
         self._key_lock = threading.Lock()
+        self._thread_state = threading.local()
 
     def _next_key(self):
+        previous_key = getattr(self._thread_state, 'last_key', None)
         with self._key_lock:
-            key = self.api_keys[self._key_index]
-            self._key_index = (self._key_index + 1) % len(self.api_keys)
-            return key
+            for _ in range(len(self.api_keys)):
+                key = self.api_keys[self._key_index]
+                self._key_index = (self._key_index + 1) % len(self.api_keys)
+                if len(self.api_keys) == 1 or key != previous_key:
+                    break
+        self._thread_state.last_key = key
+        return key
 
     def search(self, query, *, include_domains=None):
         api_key = self._next_key()

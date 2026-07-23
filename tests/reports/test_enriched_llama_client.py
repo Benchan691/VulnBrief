@@ -104,19 +104,36 @@ def test_prepare_system_prompt_skips_duplicate_no_think():
     assert prepared == '/no_think\nReturn JSON only.'
 
 
-def test_complete_text_omits_response_format():
+def test_complete_text_enforces_json_and_disables_qwen_thinking():
     client = EnrichedLlamaClient(_config())
     response = requests.Response()
     response.status_code = 200
-    response._content = b'{"choices":[{"message":{"content":"Plain answer."}}]}'
+    response._content = b'{"choices":[{"message":{"content":"{\\"ok\\": true}"}}]}'
 
     with patch('reports.enriched.llama_client._http_post') as post:
         post.return_value = response
         text, _ = client.complete_text('system', 'user')
 
-    assert text == 'Plain answer.'
+    assert text == '{"ok": true}'
     payload = post.call_args[0][1]
-    assert 'response_format' not in payload
+    assert payload['response_format'] == {'type': 'json_object'}
+    assert payload['chat_template_kwargs'] == {'enable_thinking': False}
+
+
+def test_complete_text_can_leave_qwen_thinking_enabled():
+    client = EnrichedLlamaClient(_config(ENRICHED_LLM_DISABLE_THINKING=False))
+    response = requests.Response()
+    response.status_code = 200
+    response._content = b'{"choices":[{"message":{"content":"{\\"ok\\": true}"}}]}'
+
+    with patch('reports.enriched.llama_client._http_post') as post:
+        post.return_value = response
+        text, _ = client.complete_text('system', 'user')
+
+    assert text == '{"ok": true}'
+    payload = post.call_args[0][1]
+    assert payload['response_format'] == {'type': 'json_object'}
+    assert 'chat_template_kwargs' not in payload
 
 
 def test_complete_text_raises_on_empty_response():

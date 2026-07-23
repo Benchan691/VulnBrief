@@ -2,10 +2,10 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from .evidence_cache import lookup_cached_payload, store_cached_payload
+from .evidence_cache import delete_cached_payload, lookup_cached_payload, store_cached_payload
 from .json_response import extract_json
 from .llama_client import EnrichedLlamaClient, EnrichedLLMError
-from core.prompts import resolve_prompt
+from core.prompts import DEFAULT_PROMPTS, resolve_prompt
 from .pipeline_collections import collection
 from .reference_urls import canonical_catalog_reference_url, filter_reference_urls, is_generic_reference_url
 from .schemas import validate_source_evidence_card
@@ -27,6 +27,19 @@ _PLACEHOLDER_VALUES = frozenset({
     '-',
     '--',
 })
+_SUBSTANTIVE_EVIDENCE_FIELDS = (
+    'what_happened',
+    'why_matters',
+    'how_to_respond',
+    'affected_versions',
+    'fixed_versions',
+    'cvss_score',
+    'cvss_vector',
+    'exploit_status',
+    'cisa_kev',
+    'epss',
+    'business_impact',
+)
 
 
 def _is_unconfirmed(value):
@@ -48,7 +61,7 @@ def _nullable_string(value):
     if isinstance(value, str):
         stripped = value.strip()
         return stripped or None
-    return str(value) if value is not None else None
+    return None
 
 
 def _nullable_bool(value):
@@ -79,6 +92,22 @@ def _nullable_number(value):
     return None
 
 
+def has_usable_evidence(card):
+    if not isinstance(card, dict):
+        return False
+    for field in _SUBSTANTIVE_EVIDENCE_FIELDS:
+        value = card.get(field)
+        if isinstance(value, str):
+            if not _is_unconfirmed(value):
+                return True
+        elif isinstance(value, (list, tuple, set, dict)):
+            if value:
+                return True
+        elif value is not None:
+            return True
+    return False
+
+
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -93,6 +122,21 @@ def _list(value):
     return []
 
 
+def _evidence_system_prompt(config):
+    prompt = resolve_prompt(config or {}, 'evidence_extraction_system')
+    normalized = prompt.lower()
+    required_terms = ('json', 'what_happened', 'why_matters', 'how_to_respond')
+    if (
+        all(term in normalized for term in required_terms)
+        and 'do not return json' not in normalized
+    ):
+        return prompt
+    logger.warning(
+        'incompatible evidence extraction prompt override ignored; using JSON schema default'
+    )
+    return DEFAULT_PROMPTS['evidence_extraction_system']
+
+
 def _prompt(result, candidate, page_char_limit, config=None):
     page_content = (result.get('page_content') or result.get('snippet') or '')[:page_char_limit]
     source = {
@@ -103,7 +147,7 @@ def _prompt(result, candidate, page_char_limit, config=None):
     # Avoid duplicating search snippet when full page_content is already present.
     if not result.get('page_content') and result.get('snippet'):
         source['snippet'] = page_content
-    system = resolve_prompt(config or {}, 'evidence_extraction_system')
+    system = _evidence_system_prompt(config)
     user = {
         'cve_id': candidate['cve_id'],
         'candidate': {
@@ -118,7 +162,7 @@ def _prompt(result, candidate, page_char_limit, config=None):
 
 def _parse_json_response(text):
     try:
-        parsed = extract_json(text)
+        parsed = _unwrap_card_payload(extract_json(text))
     except EnrichedLLMError:
         return {}
     if not isinstance(parsed, dict):
@@ -222,7 +266,7 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
     client = client or EnrichedLlamaClient(config)
     page_char_limit = int(config.get('ENRICHED_LLM_PAGE_CHARS', 12000))
     cache_enabled = bool(config.get('ENRICHED_EVIDENCE_CACHE_ENABLED', True))
-    cache_version = str(config.get('ENRICHED_EVIDENCE_CACHE_VERSION', '1'))
+    cache_version = str(config.get('ENRICHED_EVIDENCE_CACHE_VERSION', '2'))
     cards = []
     total = len(results)
     cache_hits = 0
@@ -233,6 +277,15 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
         cached_payload = None
         if cache_enabled:
             cached_payload = lookup_cached_payload(web_database, result, cache_version)
+            if cached_payload is not None and not has_usable_evidence(cached_payload):
+                logger.info(
+                    'enriched llm removed unusable evidence cache entry cve=%s task_type=%s url=%s',
+                    result.get('cve_id'),
+                    result.get('task_type'),
+                    result.get('url'),
+                )
+                delete_cached_payload(web_database, result, cache_version)
+                cached_payload = None
         if cached_payload is not None:
             cache_hits += 1
             logger.info(
@@ -259,7 +312,7 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
             result.get('task_type'),
         )
         system, prompt = _prompt(result, candidate, page_char_limit, config)
-        extracted = False
+        cacheable = False
         try:
             text, _ = client.complete_text(
                 system,
@@ -268,7 +321,7 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
             )
             raw = _parse_json_response(text)
             card = _normalize_card(raw, result)
-            extracted = bool(raw)
+            cacheable = has_usable_evidence(card)
         except EnrichedLLMError as exc:
             logger.warning(
                 'enriched llm evidence failed cve=%s task_type=%s url=%s error=%s',
@@ -278,7 +331,7 @@ def extract_evidence_cards(web_database, run_id, config, client=None, progress_c
                 exc,
             )
             card = _normalize_card({}, result)
-        if cache_enabled and extracted:
+        if cache_enabled and cacheable:
             store_cached_payload(web_database, result, card, cache_version)
         cards.append(card)
         if progress_callback is not None:

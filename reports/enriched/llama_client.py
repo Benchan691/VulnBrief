@@ -122,7 +122,10 @@ class EnrichedLlamaClient:
             'messages': messages,
             'temperature': 0.1,
             'max_tokens': output_tokens,
+            'response_format': {'type': 'json_object'},
         }
+        if self.disable_thinking:
+            payload['chat_template_kwargs'] = {'enable_thinking': False}
         url = self.base_url + '/chat/completions'
         payload_chars = self._payload_size(payload)
         last_error = None

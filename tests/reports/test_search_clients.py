@@ -95,6 +95,25 @@ def test_tavily_client_rotates_keys_safely_with_concurrent_searches(monkeypatch)
     assert keys.count('tavily-a') == keys.count('tavily-b') == 10
 
 
+def test_tavily_client_retry_worker_does_not_reuse_previous_key():
+    client = TavilyClient(['tavily-a', 'tavily-b', 'tavily-c', 'tavily-d'])
+
+    first_key = client._next_key()
+    workers = [
+        threading.Thread(target=client._next_key)
+        for _ in range(3)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    retry_key = client._next_key()
+
+    assert first_key == 'tavily-a'
+    assert retry_key == 'tavily-b'
+
+
 def test_build_search_client_requires_tavily_key():
     with pytest.raises(ValueError, match='TAVILY_API_KEYS'):
         build_search_client({})
@@ -108,3 +127,9 @@ def test_build_search_client_uses_all_tavily_keys():
     assert client.search_depth == 'advanced'
     assert client.max_results == 8
     assert client.chunks_per_source == 3
+
+
+def test_build_search_client_splits_comma_separated_legacy_key_value():
+    client = build_search_client({'TAVILY_API_KEY': 'tvly-dev-a, tvly-dev-b'})
+
+    assert client.api_keys == ['tvly-dev-a', 'tvly-dev-b']

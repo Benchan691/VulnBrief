@@ -89,7 +89,7 @@ def _resolve_key_list(list_env, single_env, file_config, json_keys):
     keys = _resolve(list_env, file_config, json_keys, [], list)
     single_value = os.environ.get(single_env)
     if not keys and single_value:
-        keys = [single_value]
+        keys = _list(single_value, [])
     return [str(key).strip() for key in keys if str(key).strip()]
 
 
@@ -297,7 +297,7 @@ def load_application_config(base_dir):
             'ENRICHED_EVIDENCE_CACHE_VERSION',
             file_config,
             ('enriched', 'evidence_cache_version'),
-            '1',
+            '2',
         ),
         'REPORT_SECTION_CHUNK_PROMPT_CHARS': _resolve(
             'REPORT_SECTION_CHUNK_PROMPT_CHARS',

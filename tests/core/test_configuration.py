@@ -230,6 +230,15 @@ def test_single_tavily_key_backfills_key_list(tmp_path, monkeypatch):
     assert loaded['TAVILY_API_KEYS'] == ['legacy-key']
 
 
+def test_comma_separated_single_tavily_env_builds_key_list(tmp_path, monkeypatch):
+    _set_required_env(monkeypatch, TAVILY_API_KEY='tvly-dev-a, tvly-dev-b')
+    monkeypatch.delenv('TAVILY_API_KEYS', raising=False)
+
+    loaded = load_application_config(str(tmp_path))
+
+    assert loaded['TAVILY_API_KEYS'] == ['tvly-dev-a', 'tvly-dev-b']
+
+
 def test_load_dotenv_from_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for name in (

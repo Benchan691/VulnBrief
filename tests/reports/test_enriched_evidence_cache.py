@@ -4,6 +4,7 @@ import pytest
 
 from app import app
 from reports.enriched.evidence_cache import (
+    delete_cached_payload,
     evidence_cache_key,
     lookup_cached_payload,
     purge_evidence_cache,
@@ -50,6 +51,12 @@ class FakeCacheCollection:
         count = len(self.docs)
         self.docs = {}
         return type('Result', (), {'deleted_count': count})()
+
+    def delete_one(self, query):
+        key = query.get('cache_key')
+        deleted_count = int(key in self.docs)
+        self.docs.pop(key, None)
+        return type('Result', (), {'deleted_count': deleted_count})()
 
 
 class FakeCollection:
@@ -136,6 +143,29 @@ def test_store_and_lookup_cached_payload():
     assert database['source_evidence_cache'].docs[
         evidence_cache_key('CVE-2026-1000', 'enrichment', result['url'], 'hash-1', '1')
     ]['hit_count'] == 1
+
+
+def test_delete_cached_payload_removes_only_matching_entry():
+    database = FakeDatabase({'source_evidence_cache': FakeCacheCollection()})
+    result = {
+        'cve_id': 'CVE-2026-1000',
+        'task_type': 'enrichment',
+        'url': 'https://example.com/advisory',
+        'content_hash': 'hash-1',
+    }
+    card = _normalize_card({
+        'what_happened': 'Cached fact.',
+        'why_matters': 'Risk.',
+        'how_to_respond': 'Upgrade.',
+    }, {
+        **result,
+        'run_id': 'run-a',
+        'candidate_id': 'candidate-a',
+    })
+    store_cached_payload(database, result, card, '2')
+
+    assert delete_cached_payload(database, result, '2') == 1
+    assert lookup_cached_payload(database, result, '2') is None
 
 
 def test_purge_evidence_cache_deletes_all_entries():
@@ -250,6 +280,66 @@ def test_prompt_omits_snippet_when_page_content_present():
     assert 'snippet' not in user['source']
 
 
+def test_prompt_replaces_incompatible_legacy_plain_text_override():
+    result = {
+        'run_id': 'r1',
+        'candidate_id': 'c1',
+        'cve_id': 'CVE-2026-46847',
+        'task_type': 'enrichment',
+        'url': 'https://example.com',
+        'page_content': 'Advisory text.',
+    }
+    candidate = {
+        'cve_id': 'CVE-2026-46847',
+        'vendor': 'Acme',
+        'product': 'Widget',
+        'title': 'Acme Widget',
+    }
+    config = {
+        'AI_PROMPTS': {
+            'evidence_extraction_system': (
+                'Answer the requested task_type in plain text. Do not return JSON.'
+            ),
+        },
+    }
+
+    system, _ = _prompt(result, candidate, 4500, config)
+
+    assert 'Return only valid JSON' in system
+    assert 'why_matters' in system
+    assert 'Do not return JSON' not in system
+
+
+def test_prompt_preserves_compatible_custom_json_override():
+    result = {
+        'run_id': 'r1',
+        'candidate_id': 'c1',
+        'cve_id': 'CVE-2026-46847',
+        'task_type': 'enrichment',
+        'url': 'https://example.com',
+        'page_content': 'Advisory text.',
+    }
+    candidate = {
+        'cve_id': 'CVE-2026-46847',
+        'vendor': 'Acme',
+        'product': 'Widget',
+        'title': 'Acme Widget',
+    }
+    custom_prompt = (
+        'Return JSON containing what_happened, why_matters, and how_to_respond. '
+        'Use only the source.'
+    )
+
+    system, _ = _prompt(
+        result,
+        candidate,
+        4500,
+        {'AI_PROMPTS': {'evidence_extraction_system': custom_prompt}},
+    )
+
+    assert system == custom_prompt
+
+
 def test_parse_json_response_returns_all_fields():
     parsed = _parse_json_response(json.dumps({
         'what_happened': 'Confirmed issue.',
@@ -257,6 +347,23 @@ def test_parse_json_response_returns_all_fields():
         'how_to_respond': 'Patch now.',
         'confidence': 'high',
     }))
+    assert parsed['what_happened'] == 'Confirmed issue.'
+    assert parsed['why_matters'] == 'High risk.'
+    assert parsed['how_to_respond'] == 'Patch now.'
+    assert parsed['confidence'] == 'high'
+
+
+@pytest.mark.parametrize('wrapper', ['required_output', 'card', 'result', 'data'])
+def test_parse_json_response_unwraps_nested_card_payload(wrapper):
+    parsed = _parse_json_response(json.dumps({
+        wrapper: {
+            'what_happened': 'Confirmed issue.',
+            'why_matters': 'High risk.',
+            'how_to_respond': 'Patch now.',
+            'confidence': 'high',
+        },
+    }))
+
     assert parsed['what_happened'] == 'Confirmed issue.'
     assert parsed['why_matters'] == 'High risk.'
     assert parsed['how_to_respond'] == 'Patch now.'
@@ -300,6 +407,26 @@ def test_normalize_card_preserves_boolean_cisa_kev():
     }
     card = _normalize_card({'cisa_kev': True, 'confidence': 'high'}, result)
     assert card['cisa_kev'] is True
+
+
+@pytest.mark.parametrize('invalid_value', [False, [], {}, 123])
+def test_normalize_card_rejects_non_string_report_narratives(invalid_value):
+    result = {
+        'run_id': 'run-1',
+        'candidate_id': 'candidate-1',
+        'cve_id': 'CVE-2026-1000',
+        'task_type': 'enrichment',
+        'url': 'https://example.com/advisory',
+    }
+
+    card = _normalize_card({
+        'why_matters': invalid_value,
+        'how_to_respond': invalid_value,
+        'confidence': 'low',
+    }, result)
+
+    assert card['why_matters'] is None
+    assert card['how_to_respond'] is None
 
 
 def test_extract_evidence_cards_continues_after_llm_failure():
@@ -361,6 +488,121 @@ def test_extract_evidence_cards_continues_after_llm_failure():
     assert cards[0]['what_happened'] is None
     assert cards[1]['why_matters'] == 'Recovered.'
     assert FailingLlamaClient.calls == 2
+
+
+def test_extract_evidence_cards_does_not_cache_null_only_response():
+    class NullOnlyLlamaClient:
+        evidence_max_output_tokens = 1024
+        calls = 0
+
+        def complete_text(self, *args, **kwargs):
+            type(self).calls += 1
+            return json.dumps({
+                'what_happened': None,
+                'why_matters': None,
+                'how_to_respond': None,
+                'confidence': 'low',
+                'references': ['https://example.com/advisory'],
+            }), {}
+
+    cache = FakeCacheCollection()
+    database = FakeDatabase({
+        'source_evidence_cache': cache,
+        'source_evidence_cards': FakeCollection([]),
+        'candidate_vulnerability_items': FakeCollection([{
+            'run_id': 'run-1',
+            'candidate_id': 'candidate-1',
+            'cve_id': 'CVE-2026-1000',
+            'vendor': 'Acme',
+            'product': 'Widget',
+            'title': 'Acme Widget',
+        }]),
+        'filtered_enrichment_results': FakeCollection([{
+            'run_id': 'run-1',
+            'candidate_id': 'candidate-1',
+            'cve_id': 'CVE-2026-1000',
+            'task_type': 'enrichment',
+            'url': 'https://example.com/advisory',
+            'content_hash': 'hash-1',
+            'page_content': 'Advisory text.',
+        }]),
+    })
+    config = {
+        'ENRICHED_LLM_PAGE_CHARS': 12000,
+        'ENRICHED_EVIDENCE_CACHE_ENABLED': True,
+        'ENRICHED_EVIDENCE_CACHE_VERSION': '3',
+    }
+
+    extract_evidence_cards(database, 'run-1', config, NullOnlyLlamaClient())
+    extract_evidence_cards(database, 'run-1', config, NullOnlyLlamaClient())
+
+    assert NullOnlyLlamaClient.calls == 2
+    assert cache.docs == {}
+
+
+def test_extract_evidence_cards_caches_complementary_partial_sources():
+    class ComplementaryLlamaClient:
+        evidence_max_output_tokens = 1024
+        calls = 0
+
+        def complete_text(self, _system, user_prompt, **kwargs):
+            type(self).calls += 1
+            source_url = json.loads(user_prompt)['source']['url']
+            if source_url.endswith('/risk'):
+                return json.dumps({
+                    'what_happened': 'The source confirms a vulnerability.',
+                    'why_matters': 'Remote exploitation can compromise the system.',
+                    'how_to_respond': None,
+                    'confidence': 'medium',
+                }), {}
+            return json.dumps({
+                'what_happened': None,
+                'why_matters': None,
+                'how_to_respond': 'Upgrade to the fixed release.',
+                'confidence': 'medium',
+            }), {}
+
+    cache = FakeCacheCollection()
+    results = [
+        {
+            'run_id': 'run-1',
+            'candidate_id': 'candidate-1',
+            'cve_id': 'CVE-2026-1000',
+            'task_type': 'enrichment',
+            'url': f'https://example.com/{suffix}',
+            'content_hash': f'hash-{suffix}',
+            'page_content': 'Advisory text.',
+        }
+        for suffix in ('risk', 'remediation')
+    ]
+    database = FakeDatabase({
+        'source_evidence_cache': cache,
+        'source_evidence_cards': FakeCollection([]),
+        'candidate_vulnerability_items': FakeCollection([{
+            'run_id': 'run-1',
+            'candidate_id': 'candidate-1',
+            'cve_id': 'CVE-2026-1000',
+            'vendor': 'Acme',
+            'product': 'Widget',
+            'title': 'Acme Widget',
+        }]),
+        'filtered_enrichment_results': FakeCollection(results),
+    })
+    config = {
+        'ENRICHED_LLM_PAGE_CHARS': 12000,
+        'ENRICHED_EVIDENCE_CACHE_ENABLED': True,
+        'ENRICHED_EVIDENCE_CACHE_VERSION': '3',
+    }
+
+    first = extract_evidence_cards(database, 'run-1', config, ComplementaryLlamaClient())
+    second = extract_evidence_cards(database, 'run-1', config, ComplementaryLlamaClient())
+
+    assert ComplementaryLlamaClient.calls == 2
+    assert len(cache.docs) == 2
+    assert any(card['why_matters'] for card in first)
+    assert any(card['how_to_respond'] for card in first)
+    assert any(card['why_matters'] for card in second)
+    assert any(card['how_to_respond'] for card in second)
 
 
 def test_purge_evidence_cache_route(client, monkeypatch):

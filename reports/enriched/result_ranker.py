@@ -79,8 +79,6 @@ def is_relevant(result, candidate):
     cve_id = candidate.get('cve_id')
     if is_generic_reference_url(url, cve_id) or is_low_value_reference_url(url, cve_id):
         return False
-    if result.get('cve_id') == cve_id:
-        return True
     text = _result_text(result)
     if (cve_id or '').lower() in text:
         return True
@@ -183,7 +181,14 @@ def rank_results_for_run(web_database, run_id, top_n=4):
 
     filtered = []
     for items in grouped.values():
-        filtered.extend(sorted(items, key=lambda item: item['rank_score'], reverse=True)[:top_n])
+        filtered.extend(sorted(
+            items,
+            key=lambda item: (
+                item.get('source_type') != 'candidate_reference',
+                item['rank_score'],
+            ),
+            reverse=True,
+        )[:top_n])
 
     target = collection(web_database, 'filtered_enrichment_results')
     target.delete_many({'run_id': run_id})

@@ -141,3 +141,73 @@ def test_rank_results_excludes_generic_catalog_and_seeds_candidate_refs():
     assert 'https://www.ricoh.com/products/security/vulnerabilities/vul?id=ricoh-2025-000002' in ranked_urls
     assert 'https://jvn.jp/en/jp/JVN55319858/' in ranked_urls
 
+
+def test_rank_results_keeps_tavily_pages_ahead_of_candidate_reference_seeds():
+    database = FakeDatabase({
+        'candidate_vulnerability_items': FakeCollection([{
+            'run_id': 'run',
+            'candidate_id': 'candidate',
+            'cve_id': 'CVE-2026-50101',
+            'vendor': 'Acme',
+            'product': 'Widget',
+            'summary': 'Acme Widget contains a vulnerability.',
+            'references': [
+                'https://acme.example/reference-one',
+                'https://acme.example/reference-two',
+            ],
+        }]),
+        'search_enrichment_results': FakeCollection([
+            {
+                'run_id': 'run',
+                'candidate_id': 'candidate',
+                'cve_id': 'CVE-2026-50101',
+                'task_type': 'enrichment',
+                'url': 'https://nvd.nist.gov/vuln/detail/CVE-2026-50101',
+                'title': 'CVE-2026-50101 detail',
+                'snippet': 'CVE-2026-50101 has a high CVSS score.',
+                'page_content': 'CVE-2026-50101 has a high CVSS score.',
+                'content_hash': 'nvd-detail',
+            },
+            {
+                'run_id': 'run',
+                'candidate_id': 'candidate',
+                'cve_id': 'CVE-2026-50101',
+                'task_type': 'enrichment',
+                'url': 'https://research.example/CVE-2026-50101',
+                'title': 'CVE-2026-50101 exploitation analysis',
+                'snippet': 'CVE-2026-50101 can allow remote code execution.',
+                'page_content': 'CVE-2026-50101 can allow remote code execution.',
+                'content_hash': 'research',
+            },
+        ]),
+    })
+
+    ranked = rank_results_for_run(database, 'run', top_n=2)
+
+    assert [item['source_type'] for item in ranked] == ['nvd_mitre', 'research_blog']
+    assert all(item['source_type'] != 'candidate_reference' for item in ranked)
+
+
+def test_rank_results_rejects_unrelated_page_with_task_stamped_cve_id():
+    database = FakeDatabase({
+        'candidate_vulnerability_items': FakeCollection([{
+            'run_id': 'run',
+            'candidate_id': 'candidate',
+            'cve_id': 'CVE-2026-50102',
+            'vendor': 'Acme',
+            'product': 'Widget',
+        }]),
+        'search_enrichment_results': FakeCollection([{
+            'run_id': 'run',
+            'candidate_id': 'candidate',
+            'cve_id': 'CVE-2026-50102',
+            'task_type': 'enrichment',
+            'url': 'https://unrelated.example/article',
+            'title': 'Unrelated article',
+            'snippet': 'This page discusses a different product.',
+            'page_content': 'This page discusses a different product.',
+            'content_hash': 'unrelated',
+        }]),
+    })
+
+    assert rank_results_for_run(database, 'run', top_n=2) == []
