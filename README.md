@@ -115,7 +115,7 @@ Production-style local run uses Gunicorn on port **9100** (`gunicorn_config.py`)
 | `core/` | Flask setup, configuration, MongoDB, authentication guard, and templating |
 | `auth/`, `newsletters/`, `reviews/`, `subscriptions/` | Domain routes and business logic |
 | `reports/` | Report jobs, rendering, translation, runners, and Enriched Weekly pipeline |
-| `operations/` | Operations routes and process scheduler |
+| `operations/` | Email scheduler health UI and API |
 | `integrations/` | External integrations such as SMTP email |
 | `templates/`, `static/` | Domain-grouped Jinja views and frontend assets |
 | `tests/` | Domain-grouped Pytest suite |

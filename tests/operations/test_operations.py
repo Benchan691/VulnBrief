@@ -1,22 +1,18 @@
 import copy
 import json
 import re
-import time
+from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
 
-import operations.service
 from app import app
-from operations.service import (
-    build_command,
-    default_config,
-    load_config,
-    reset_config,
-    save_config,
-    start_catch_up_schedule,
-    start_operation,
-    stop_catch_up_schedule,
-    tick_scheduler,
+from operations.health import build_health_snapshot
+from subscriptions.scheduler import (
+    SCHEDULER_ALIVE_SECONDS,
+    SCHEDULER_HEALTH_ID,
+    read_scheduler_health,
+    tick_email_scheduler,
+    tick_retention,
 )
 
 
@@ -25,14 +21,17 @@ def authenticate(client):
         session['username'] = 'test-user'
 
 
-def test_operation_pages_require_authentication():
-    client = app.test_client()
+def _patch_review_views(monkeypatch):
+    monkeypatch.setattr(
+        'subscriptions.profiles.review_views',
+        lambda database: {'cve_review': {'options': {'viewOn': 'cve', 'pipeline': []}}},
+    )
 
+
+def test_operations_page_requires_authentication():
+    client = app.test_client()
     assert client.get('/operations').status_code == 302
-    assert client.get('/api/operations/config').status_code == 401
-    assert client.post('/api/operations/schedule/catch_up/start').status_code == 401
-    assert client.post('/api/operations/schedule/catch_up/stop').status_code == 401
-    assert client.delete('/api/operations/config').status_code == 401
+    assert client.get('/api/operations/health').status_code == 401
 
     authenticate(client)
     page = client.get('/operations')
@@ -45,241 +44,221 @@ def test_operation_pages_require_authentication():
     )
     assert match
     page_config = json.loads(match.group(1))
-    assert page_config['configUrl'] == '/api/operations/config'
-    assert page_config['runUrlTemplate'].endswith('/__OPERATION__')
+    assert page_config['healthUrl'] == '/api/operations/health'
 
 
-def test_operations_config_api(monkeypatch):
-    database = FakeDatabase()
-    monkeypatch.setattr('operations.routes.get_web_database', lambda: database)
+def test_operations_health_api(monkeypatch):
+    now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    job_id = ObjectId()
+    account_id = ObjectId()
+    delivery_id = ObjectId()
+    web = FakeDatabase({
+        'scheduler_health': {
+            SCHEDULER_HEALTH_ID: {
+                '_id': SCHEDULER_HEALTH_ID,
+                'last_tick_at': now - timedelta(seconds=30),
+                'hostname': 'web-1',
+                'pid': 42,
+                'retention': {
+                    'last_run_at': now - timedelta(hours=1),
+                    'last_result': {'web': 1, 'vulnerabilities': 2},
+                },
+            },
+        },
+        'sub_account': {
+            account_id: {
+                '_id': account_id,
+                'email': 'ops@example.com',
+                'team': 'SOC',
+                'newsletter_profile': {
+                    'enabled': True,
+                    'filters': {'collections': ['cve_review']},
+                    'delivery_cursor': '2026-07-01T00:00:00+00:00',
+                    'cve_delivery_cutoff': '2026-06-01T00:00:00+00:00',
+                },
+                'report_profile': {
+                    'enabled': True,
+                    'filters': {'collections': ['cve_review']},
+                    'generation_mode': 'template',
+                    'report_language': 'en',
+                    'schedule_enabled': True,
+                    'schedule_weekday': 'mon',
+                    'schedule_time': '09:00',
+                    'next_run_at': now - timedelta(minutes=5),
+                    'last_run_at': now - timedelta(days=7),
+                    'last_job_id': str(job_id),
+                    'last_error': '',
+                    'last_match_count': 3,
+                },
+                'schedule_claim_owner': 'web-1',
+                'schedule_claim_until': now + timedelta(minutes=10),
+            },
+        },
+        'report_jobs': {
+            job_id: {
+                '_id': job_id,
+                'status': 'completed',
+                'delivery_status': 'completed',
+                'delivery_error': '',
+            },
+        },
+        'newsletter_deliveries': {
+            delivery_id: {
+                '_id': delivery_id,
+                'email': 'ops@example.com',
+                'source_collection': 'cve_review',
+                'selection_id': 'CVE-2026-1',
+                'title': 'Example CVE',
+                'database': 'vulnerabilities',
+                'sent_at': now - timedelta(hours=2),
+            },
+        },
+    })
+    monkeypatch.setattr('operations.routes.get_web_database', lambda: web)
+    monkeypatch.setattr('operations.routes.get_vulnerabilities_database', lambda: FakeDatabase({}))
+    monkeypatch.setattr(
+        'operations.health.newsletter_delivery_statistics',
+        lambda email, web_database=None: {
+            'email': email,
+            'total': 4,
+            'by_collection': [{'database': 'vulnerabilities', 'source_collection': 'cve_review', 'count': 4}],
+            'databases': ['vulnerabilities'],
+        },
+    )
+    _patch_review_views(monkeypatch)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr('operations.health.datetime', FixedDateTime)
+
     client = app.test_client()
     authenticate(client)
-
-    response = client.put('/api/operations/config', json={
-        'catch_up': {'interval_hours': 2, 'periodic_enabled': True},
-    })
-
+    response = client.get('/api/operations/health')
     assert response.status_code == 200
     body = response.get_json()
-    assert body['avd_root'] == default_config()['avd_root']
-    assert body['catch_up']['interval_hours'] == 2
-    assert client.get('/api/operations/config').get_json()['catch_up']['periodic_enabled'] is True
-    stored = database['operation_config'].documents['operations']
-    assert 'avd_root' not in stored
-    assert 'python_path' not in stored
+    assert body['scheduler']['alive'] is True
+    assert body['scheduler']['hostname'] == 'web-1'
+    assert body['scheduler']['retention']['last_result']['web'] == 1
+    assert body['reports'][0]['email'] == 'ops@example.com'
+    assert body['reports'][0]['due'] is True
+    assert body['reports'][0]['delivery']['delivery_status'] == 'completed'
+    assert body['newsletters'][0]['total_delivered'] == 4
+    assert body['newsletters'][0]['delivery_cursor'] == '2026-07-01T00:00:00+00:00'
+    assert len(body['recent_newsletter_deliveries']) == 1
 
 
-def test_builds_configured_commands():
-    config = default_config()
-    config.update({
-        'avd_root': '/repo',
-        'python_path': '/repo/.venv/bin/python',
-        'database': 'vulnerabilities',
+def test_read_scheduler_health_marks_stale_heartbeat():
+    now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    web = FakeDatabase({
+        'scheduler_health': {
+            SCHEDULER_HEALTH_ID: {
+                '_id': SCHEDULER_HEALTH_ID,
+                'last_tick_at': now - timedelta(seconds=SCHEDULER_ALIVE_SECONDS + 1),
+                'hostname': 'web-1',
+                'pid': 7,
+            },
+        },
     })
-    config['review']['providers'] = 'cve, avd'
-
-    assert build_command('review', config) == [
-        '/repo/.venv/bin/python', '-m', 'vuln_scraper.cli', 'review', 'cve', 'avd'
-    ]
-    assert build_command('catch_up', config)[:4] == [
-        '/repo/.venv/bin/python', '-m', 'vuln_scraper.cli', 'catch-up'
-    ]
+    health = read_scheduler_health(web, now=now)
+    assert health['alive'] is False
+    assert health['hostname'] == 'web-1'
 
 
-def test_start_operation_records_output_and_blocks_duplicate(monkeypatch):
-    database = FakeDatabase()
-    config = save_config(database, {
-        'avd_root': '/tmp',
-        'python_path': 'python',
+def test_tick_email_scheduler_writes_heartbeat_and_skips_catch_up(monkeypatch):
+    now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    web = FakeDatabase({'scheduler_health': {}})
+    calls = []
+
+    monkeypatch.setattr(
+        'subscriptions.scheduler.tick_scheduled_reports',
+        lambda app, database, now=None: calls.append('reports') or 0,
+    )
+    monkeypatch.setattr(
+        'subscriptions.scheduler.tick_newsletter_deliveries',
+        lambda app, database, now=None: calls.append('newsletters') or 0,
+    )
+    monkeypatch.setattr(
+        'subscriptions.scheduler.tick_retention',
+        lambda database, now=None: calls.append('retention') or None,
+    )
+
+    did_work = tick_email_scheduler(object(), web, now=now)
+    assert did_work is False
+    assert calls == ['reports', 'newsletters', 'retention']
+    stored = web['scheduler_health'].documents[SCHEDULER_HEALTH_ID]
+    assert stored['last_tick_at'] == now
+    assert 'catch_up' not in stored
+    assert 'operation_runs' not in web.collections
+
+
+def test_tick_retention_stores_state_on_scheduler_health(monkeypatch):
+    now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    web = FakeDatabase({'scheduler_health': {}})
+    monkeypatch.setattr(
+        'subscriptions.scheduler.purge_old_data',
+        lambda web_database, vuln_database, now=None: {'web': 2, 'vulnerabilities': 1},
+    )
+    monkeypatch.setattr('subscriptions.scheduler.get_vulnerabilities_database', lambda: FakeDatabase({}))
+
+    result = tick_retention(web, now=now)
+    assert result == {'web': 2, 'vulnerabilities': 1}
+    stored = web['scheduler_health'].documents[SCHEDULER_HEALTH_ID]
+    assert stored['retention']['last_run_at'] == now
+    assert stored['retention']['last_result'] == {'web': 2, 'vulnerabilities': 1}
+
+    assert tick_retention(web, now=now + timedelta(hours=1)) is None
+
+
+def test_build_health_snapshot_includes_due_report(monkeypatch):
+    now = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    account_id = ObjectId()
+    web = FakeDatabase({
+        'scheduler_health': {
+            SCHEDULER_HEALTH_ID: {
+                '_id': SCHEDULER_HEALTH_ID,
+                'last_tick_at': now,
+                'hostname': 'local',
+                'pid': 1,
+            },
+        },
+        'sub_account': {
+            account_id: {
+                '_id': account_id,
+                'email': 'a@example.com',
+                'team': 'A',
+                'newsletter_profile': {'enabled': False, 'filters': {}},
+                'report_profile': {
+                    'enabled': True,
+                    'filters': {'collections': ['cve_review']},
+                    'generation_mode': 'template',
+                    'schedule_enabled': True,
+                    'schedule_weekday': 'thu',
+                    'schedule_time': '10:00',
+                    'next_run_at': now - timedelta(seconds=1),
+                },
+            },
+        },
+        'newsletter_deliveries': {},
+        'report_jobs': {},
     })
-    monkeypatch.setattr(operations.service, '_validate_command', lambda *_: None)
+    _patch_review_views(monkeypatch)
+    monkeypatch.setattr(
+        'operations.health.newsletter_delivery_statistics',
+        lambda email, web_database=None: {
+            'email': email,
+            'total': 0,
+            'by_collection': [],
+            'databases': [],
+        },
+    )
 
-    run = start_operation(database, 'catch_up', popen=lambda *args, **kwargs: FakeProcess(['ok\n'], wait=0))
-    wait_for(lambda: database['operation_runs'].documents[ObjectId(run['id'])]['status'] == 'succeeded')
-
-    stored = database['operation_runs'].documents[ObjectId(run['id'])]
-    assert stored['log'] == 'ok\n'
-    assert stored['exit_code'] == 0
-
-
-def test_start_operation_uses_avd_python_and_mongo_env(monkeypatch, tmp_path):
-    avd_root = tmp_path / 'avd'
-    python_path = avd_root / '.venv' / 'bin' / 'python'
-    python_path.parent.mkdir(parents=True)
-    python_path.touch()
-    database = FakeDatabase()
-    monkeypatch.setattr(operations.service, 'default_config', lambda: {
-        'avd_root': str(avd_root),
-        'python_path': '/usr/local/bin/python3.11',
-        'database': 'vulnerabilities',
-        'vuln_scrape_module': 'vuln_scraper.cli',
-        'catch_up': default_config()['catch_up'],
-        'review': {'providers': ''},
-    })
-    monkeypatch.setattr('core.database.get_config', lambda: {
-        'MONGO_URI': 'mongodb://shared.example/',
-        'VULNERABILITIES_DATABASE': 'vulnerabilities',
-    })
-    monkeypatch.setattr(operations.service, '_validate_command', lambda *_: None)
-    captured = {}
-
-    def fake_popen(command, **kwargs):
-        captured['command'] = command
-        captured['env'] = kwargs['env']
-        return FakeProcess(['ok\n'], wait=0)
-
-    run = start_operation(database, 'catch_up', popen=fake_popen)
-    wait_for(lambda: database['operation_runs'].documents[ObjectId(run['id'])]['status'] == 'succeeded')
-
-    assert captured['command'][0] == str(python_path)
-    assert captured['env']['MONGO_URI'] == 'mongodb://shared.example/'
-    assert captured['env']['MONGO_DB'] == 'vulnerabilities'
-
-
-def test_clear_operations_history_keeps_running(monkeypatch):
-    database = FakeDatabase()
-    runs = database['operation_runs']
-    finished = ObjectId()
-    running = ObjectId()
-    runs.documents[finished] = {'_id': finished, 'status': 'failed'}
-    runs.documents[running] = {'_id': running, 'status': 'running'}
-    monkeypatch.setattr('operations.routes.get_web_database', lambda: database)
-    client = app.test_client()
-    authenticate(client)
-
-    response = client.delete('/api/operations/runs')
-
-    assert response.status_code == 200
-    assert response.get_json()['deleted'] == 1
-    assert finished not in runs.documents
-    assert running in runs.documents
-
-
-def test_tick_scheduler_starts_due_catch_up(monkeypatch):
-    database = FakeDatabase()
-    save_config(database, {
-        'avd_root': '/tmp',
-        'python_path': 'python',
-        'catch_up': {'periodic_enabled': True, 'interval_hours': 1, 'next_run_at': ''},
-    })
-    monkeypatch.setattr(operations.service, '_validate_command', lambda *_: None)
-    monkeypatch.setattr(operations.service, 'subprocess', type('Subprocess', (), {
-        'PIPE': object(),
-        'STDOUT': object(),
-        'Popen': lambda *args, **kwargs: FakeProcess([], wait=0),
-    }))
-
-    assert tick_scheduler(database) is True
-    wait_for(lambda: len(database['operation_runs'].documents) == 1)
-    assert database['operation_config'].documents['operations']['catch_up']['next_run_at']
-
-
-def test_load_config_ignores_stored_path_overrides(monkeypatch, tmp_path):
-    fallback_root = tmp_path / 'cyberclawer'
-    fallback_root.mkdir()
-    monkeypatch.setattr(operations.service, 'default_config', lambda: {
-        'avd_root': str(fallback_root),
-        'python_path': 'python',
-        'catch_up': default_config()['catch_up'],
-        'review': {'providers': ''},
-        'database': 'vulnerabilities',
-        'vuln_scrape_module': 'vuln_scraper.cli',
-    })
-    database = FakeDatabase()
-    database['operation_config'].documents['operations'] = {
-        '_id': 'operations',
-        'avd_root': '/stale/nonexistent/avd',
-        'python_path': '/stale/nonexistent/avd/.venv/bin/python',
-        'catch_up': {'periodic_enabled': True},
-    }
-
-    loaded = load_config(database)
-
-    assert loaded['avd_root'] == str(fallback_root)
-    assert loaded['catch_up']['periodic_enabled'] is True
-
-
-def test_reset_config_clears_persisted_settings(monkeypatch, tmp_path):
-    database = FakeDatabase()
-    save_config(database, {
-        'catch_up': {'periodic_enabled': True, 'interval_hours': 6},
-        'review': {'providers': 'cve'},
-    })
-    monkeypatch.setattr(operations.service, 'default_config', lambda: {
-        **default_config(),
-        'catch_up': {**default_config()['catch_up'], 'periodic_enabled': False, 'interval_hours': 24},
-    })
-
-    reset = reset_config(database)
-
-    assert 'operations' not in database['operation_config'].documents
-    assert reset['catch_up']['periodic_enabled'] is False
-    assert reset['catch_up']['interval_hours'] == 24
-
-
-def test_start_and_stop_catch_up_schedule():
-    database = FakeDatabase()
-    save_config(database, {
-        'avd_root': '/tmp',
-        'python_path': 'python',
-        'catch_up': {'periodic_enabled': False, 'next_run_at': '2026-06-01T00:00:00+00:00'},
-    })
-
-    started = start_catch_up_schedule(database)
-    assert started['catch_up']['periodic_enabled'] is True
-    assert started['catch_up']['next_run_at'] == ''
-    assert database['operation_config'].documents['operations']['catch_up']['periodic_enabled'] is True
-
-    stopped = stop_catch_up_schedule(database)
-    assert stopped['catch_up']['periodic_enabled'] is False
-    assert database['operation_config'].documents['operations']['catch_up']['periodic_enabled'] is False
-
-
-def test_catch_up_schedule_api(monkeypatch):
-    database = FakeDatabase()
-    save_config(database, {
-        'avd_root': '/tmp',
-        'python_path': 'python',
-        'catch_up': {'periodic_enabled': False},
-    })
-    monkeypatch.setattr('operations.routes.get_web_database', lambda: database)
-    client = app.test_client()
-    authenticate(client)
-
-    start_response = client.post('/api/operations/schedule/catch_up/start')
-    assert start_response.status_code == 200
-    start_body = start_response.get_json()
-    assert start_body['catch_up']['periodic_enabled'] is True
-    assert start_body['catch_up']['next_run_at'] == ''
-
-    stop_response = client.post('/api/operations/schedule/catch_up/stop')
-    assert stop_response.status_code == 200
-    stop_body = stop_response.get_json()
-    assert stop_body['catch_up']['periodic_enabled'] is False
-
-
-class FakeProcess:
-    pid = 123
-
-    def __init__(self, lines, wait=0):
-        self.stdout = lines
-        self._wait = wait
-        self.terminated = False
-
-    def wait(self):
-        return self._wait
-
-    def terminate(self):
-        self.terminated = True
-
-
-def wait_for(predicate):
-    deadline = time.time() + 1
-    while time.time() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    assert predicate()
+    snapshot = build_health_snapshot(web, FakeDatabase({}), now=now)
+    assert snapshot['scheduler']['alive'] is True
+    assert snapshot['reports'][0]['due'] is True
+    assert snapshot['reports'][0]['schedule_weekday'] == 'thu'
 
 
 class InsertResult:
@@ -293,22 +272,26 @@ class DeleteResult:
 
 
 class Cursor(list):
-    def sort(self, field, direction):
+    def sort(self, field, direction=-1):
         return Cursor(sorted(self, key=lambda item: item.get(field) or '', reverse=direction < 0))
 
     def limit(self, count):
         return Cursor(self[:count])
 
 
-class ReplaceResult:
-    def __init__(self, matched_count, upserted_id=None):
-        self.matched_count = matched_count
-        self.upserted_id = upserted_id
-
-
 class FakeCollection:
-    def __init__(self):
+    def __init__(self, documents=None):
         self.documents = {}
+        source = documents or {}
+        if isinstance(source, dict):
+            items = source.values()
+        else:
+            items = source
+        for document in items:
+            stored = copy.deepcopy(document)
+            key = stored.get('_id', ObjectId())
+            stored['_id'] = key
+            self.documents[key] = stored
 
     def find_one(self, query):
         for document in self.documents.values():
@@ -316,8 +299,13 @@ class FakeCollection:
                 return copy.deepcopy(document)
         return None
 
-    def find(self, query):
-        return Cursor(copy.deepcopy(document) for document in self.documents.values() if matches(document, query))
+    def find(self, query=None):
+        query = query or {}
+        return Cursor(
+            copy.deepcopy(document)
+            for document in self.documents.values()
+            if matches(document, query)
+        )
 
     def insert_one(self, document):
         inserted_id = ObjectId()
@@ -328,32 +316,15 @@ class FakeCollection:
 
     def update_one(self, query, update, upsert=False):
         document = self.find_one(query)
-        key = document['_id'] if document else query.get('_id')
-        if key not in self.documents:
+        if document is None:
+            if not upsert:
+                return
+            key = query.get('_id', ObjectId())
             self.documents[key] = {'_id': key}
+        else:
+            key = document['_id']
         for field, value in update.get('$set', {}).items():
             set_path(self.documents[key], field, copy.deepcopy(value))
-
-    def replace_one(self, query, document, upsert=False):
-        existing = self.find_one(query)
-        if existing:
-            key = existing['_id']
-            self.documents[key] = copy.deepcopy(document)
-            return ReplaceResult(1)
-        if not upsert:
-            return ReplaceResult(0)
-        key = document.get('_id', query.get('_id'))
-        stored = copy.deepcopy(document)
-        stored['_id'] = key
-        self.documents[key] = stored
-        return ReplaceResult(0, upserted_id=key)
-
-    def delete_one(self, query):
-        for key, document in list(self.documents.items()):
-            if matches(document, query):
-                del self.documents[key]
-                return DeleteResult(1)
-        return DeleteResult(0)
 
     def delete_many(self, query):
         keys = [key for key, document in self.documents.items() if matches(document, query)]
@@ -363,8 +334,13 @@ class FakeCollection:
 
 
 class FakeDatabase:
-    def __init__(self):
+    def __init__(self, collections=None):
         self.collections = {}
+        for name, documents in (collections or {}).items():
+            if isinstance(documents, FakeCollection):
+                self.collections[name] = documents
+            else:
+                self.collections[name] = FakeCollection(documents)
 
     def __getitem__(self, name):
         self.collections.setdefault(name, FakeCollection())

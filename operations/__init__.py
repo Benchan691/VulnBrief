@@ -1,1 +1,1 @@
-"""Operations runner domain."""
+"""Operations domain for email scheduler health."""

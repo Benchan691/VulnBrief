@@ -1,5 +1,7 @@
+import os
 import socket
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from html import escape
 
@@ -21,7 +23,12 @@ CLAIM_SECONDS = 60 * 60
 RETENTION_DAYS = 30
 NEWSLETTER_DELIVERIES = 'newsletter_deliveries'
 NEWSLETTER_SEND_LIMIT = 20
+SCHEDULER_HEALTH_COLLECTION = 'scheduler_health'
+SCHEDULER_HEALTH_ID = 'email_scheduler'
+SCHEDULER_CHECK_SECONDS = 60
+SCHEDULER_ALIVE_SECONDS = 180
 _newsletter_indexes_ready = False
+_scheduler_started = False
 
 
 def _now():
@@ -356,19 +363,103 @@ def purge_old_data(web_database, vuln_database, now=None):
     return deleted
 
 
+def _scheduler_health(web_database=None):
+    if web_database is None:
+        web_database = get_web_database()
+    return web_database[SCHEDULER_HEALTH_COLLECTION]
+
+
+def write_scheduler_heartbeat(web_database, now=None):
+    now = now or _now()
+    _scheduler_health(web_database).update_one(
+        {'_id': SCHEDULER_HEALTH_ID},
+        {'$set': {
+            'last_tick_at': now,
+            'hostname': socket.gethostname(),
+            'pid': os.getpid(),
+            'updated_at': now,
+        }},
+        upsert=True,
+    )
+    return now
+
+
+def read_scheduler_health(web_database, now=None):
+    now = now or _now()
+    document = _scheduler_health(web_database).find_one({'_id': SCHEDULER_HEALTH_ID}) or {}
+    last_tick_at = _parse_time(document.get('last_tick_at'))
+    alive = bool(last_tick_at and (now - last_tick_at) <= timedelta(seconds=SCHEDULER_ALIVE_SECONDS))
+    retention = document.get('retention') or {}
+    return {
+        'alive': alive,
+        'last_tick_at': last_tick_at.isoformat() if last_tick_at else '',
+        'hostname': document.get('hostname') or '',
+        'pid': document.get('pid'),
+        'retention': {
+            'last_run_at': (
+                _parse_time(retention.get('last_run_at')).isoformat()
+                if _parse_time(retention.get('last_run_at'))
+                else ''
+            ),
+            'last_result': retention.get('last_result'),
+        },
+    }
+
+
 def tick_retention(web_database, now=None):
     now = now or _now()
-    config = web_database['operation_config'].find_one({'_id': 'operations'}) or {}
-    last_run = _parse_time((config.get('retention') or {}).get('last_run_at'))
+    document = _scheduler_health(web_database).find_one({'_id': SCHEDULER_HEALTH_ID}) or {}
+    last_run = _parse_time((document.get('retention') or {}).get('last_run_at'))
     if last_run and now - last_run < timedelta(hours=24):
         return None
     result = purge_old_data(web_database, get_vulnerabilities_database(), now)
-    web_database['operation_config'].update_one(
-        {'_id': 'operations'},
-        {'$set': {'retention.last_run_at': now, 'retention.last_result': result}},
+    _scheduler_health(web_database).update_one(
+        {'_id': SCHEDULER_HEALTH_ID},
+        {'$set': {
+            'retention.last_run_at': now,
+            'retention.last_result': result,
+            'updated_at': now,
+        }},
         upsert=True,
     )
     return result
+
+
+def tick_email_scheduler(app, web_database, now=None):
+    now = now or _now()
+    did_work = False
+    try:
+        did_work = bool(tick_scheduled_reports(app, web_database, now=now)) or did_work
+    except Exception:
+        pass
+    try:
+        did_work = bool(tick_newsletter_deliveries(app, web_database, now=now)) or did_work
+    except Exception:
+        pass
+    try:
+        did_work = tick_retention(web_database, now=now) is not None or did_work
+    except Exception:
+        pass
+    write_scheduler_heartbeat(web_database, now=now)
+    return did_work
+
+
+def start_scheduler(app, database_factory):
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+
+    def loop():
+        while True:
+            time.sleep(SCHEDULER_CHECK_SECONDS)
+            with app.app_context():
+                try:
+                    tick_email_scheduler(app, database_factory())
+                except Exception:
+                    pass
+
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def _newsletter_deliveries(web_database=None):

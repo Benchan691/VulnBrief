@@ -155,7 +155,6 @@ def load_application_config(base_dir):
         ),
         'WEB_AUTH_BOOTSTRAP_PASSWORD': os.environ.get('WEB_AUTH_BOOTSTRAP_PASSWORD', 'changeme'),
         'NEWSLETTER_ROOT': newsletter_root,
-        'OPERATIONS_CONFIG': _resolve('OPERATIONS_CONFIG', file_config, ('operations',), {}, dict),
         'TAVILY_API_KEYS': _resolve_key_list(
             'TAVILY_API_KEYS',
             'TAVILY_API_KEY',

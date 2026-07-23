@@ -12,11 +12,11 @@ def create_app():
     from auth.store import ensure_bootstrap_user
     from newsletters.routes import newsletter_blueprint
     from operations.routes import operations_blueprint
-    from operations.service import start_scheduler
     from reports.routes import report_blueprint
     from reviews.routes import review_blueprint
     from subscriptions.profiles import ensure_sub_account_collection
     from subscriptions.routes import subscription_blueprint
+    from subscriptions.scheduler import start_scheduler
 
     application = Flask(
         __name__,

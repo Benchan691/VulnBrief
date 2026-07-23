@@ -1,6 +1,6 @@
 bind = '0.0.0.0:9100'
 
-# `create_app()` starts the operations/newsletter scheduler in-process.  Keep a
+# `create_app()` starts the subscription email scheduler in-process.  Keep a
 # single worker process so deploying more HTTP capacity cannot start duplicate
 # schedulers, while gthread lets normal requests continue when a client stalls
 # before sending a complete HTTP request.
