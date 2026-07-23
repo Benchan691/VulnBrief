@@ -64,13 +64,6 @@ SCRIPT_OR_STYLE_PATTERN = re.compile(
 
 def _details(document, source_collection=None):
     details = document.get('details') or {}
-    if isinstance(details, dict) and source_collection:
-        value = details.get(source_collection)
-        if isinstance(value, dict):
-            return value
-    if isinstance(details, dict) and len(details) == 1:
-        value = next(iter(details.values()))
-        return value if isinstance(value, dict) else details
     return details if isinstance(details, dict) else {}
 
 
@@ -564,7 +557,7 @@ def normalize_newsletter(document, source_collection):
     related_links = _links(fields['related_values'])
     related_links = [link for link in related_links if link not in references]
     cves = _cve_values(_all(
-        details, document, 'cve', 'cve_code', 'cve_codes', 'cveCode', 'cve_id', 'cve_ids',
+        details, document, 'cve', 'cve_ids', 'cveCode', 'cve_id',
         'vulnerability_identifiers',
     ))
     template_key = template_key_for_source(source_collection)
@@ -573,7 +566,7 @@ def normalize_newsletter(document, source_collection):
     impacts = []
     show_impacts = False
     if template_key == 'hkcert':
-        severity = _values(details.get('risk_level')) or _all({}, document, 'severity', 'status')
+        severity = _values(details.get('risk_level')) or _all({}, document, 'severity')
         impacts = fields['impacts']
         show_impacts = True
     overview = fields['overview'] or 'No overview was provided in the source record.'

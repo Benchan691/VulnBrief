@@ -40,13 +40,13 @@ class FakeDatabase:
         return self.collections[name]
 
 
-def test_query_cve_candidates_uses_cve_only_and_keeps_most_complete_duplicate():
+def test_query_cve_candidates_uses_cve_only_and_keeps_most_complete_duplicate(monkeypatch):
     database = FakeDatabase([
         {
             '_id': 'cve:thin',
             'code': 'CVE-2026-1000',
             'title': 'Thin duplicate',
-            'details': {'cve': {}},
+            'details': {},
         },
         {
             '_id': 'cve:rich',
@@ -55,11 +55,19 @@ def test_query_cve_candidates_uses_cve_only_and_keeps_most_complete_duplicate():
             'severity': 'High',
             'vendor': 'Acme',
             'product': 'Widget',
-            'details': {'cve': {'description': 'Detailed CVE record.', 'affected_products': [{'vendor': 'Acme'}]}},
+            'details': {'description': 'Detailed CVE record.', 'affected_products': [{'vendor': 'Acme'}]},
             'source': {'detail_url': 'https://acme.example/CVE-2026-1000'},
         },
     ])
 
+    monkeypatch.setattr(
+        'reports.enriched.candidate_loader.review_views',
+        lambda unused: {
+            'cve_review': {
+                'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1, 'code': 1}}]}
+            }
+        },
+    )
     candidates = query_cve_candidates(
         database,
         {'collections': ['avd_review'], 'time_window': 'all', 'include_unknown': True},
@@ -72,23 +80,19 @@ def test_query_cve_candidates_uses_cve_only_and_keeps_most_complete_duplicate():
     assert candidates[0]['source_collection'] == 'cve'
 
 
-def test_load_candidates_from_inputs_supports_cve_json_5_documents():
-    from bson import ObjectId
-
+def test_load_candidates_from_inputs_supports_v2_cve_documents():
     class FakeCveCollection:
         def find_one(self, query, projection=None):
-            object_id = ObjectId('6a34241d4ab03604f78c2d5a')
-            if query.get('_id') in {str(object_id), object_id}:
+            if query.get('_id') == 'cve:2026-56012':
                 return {
-                    '_id': object_id,
-                    'cveMetadata': {'cveId': 'CVE-2026-56012', 'datePublished': '2026-01-01'},
-                    'containers': {
-                        'cna': {
-                            'title': 'WordPress plugin issue',
-                            'descriptions': [{'value': 'SQL injection in plugin.'}],
-                            'affected': [{'vendor': 'Acme', 'product': 'Plugin'}],
-                            'metrics': [{'cvssV3_1': {'baseSeverity': 'HIGH'}}],
-                        },
+                    '_id': 'cve:2026-56012',
+                    'schema_version': 2,
+                    'code': '2026-56012',
+                    'title': 'WordPress plugin issue',
+                    'severity': 'High',
+                    'details': {
+                        'descriptions': [{'value': 'SQL injection in plugin.'}],
+                        'affected': [{'vendor': 'Acme', 'product': 'Plugin'}],
                     },
                 }
             return None
@@ -102,21 +106,21 @@ def test_load_candidates_from_inputs_supports_cve_json_5_documents():
         'run-1',
         FakeVulnerabilityDatabase(),
         {'candidate_vulnerability_items': type('C', (), {'delete_many': lambda *args, **kwargs: None, 'insert_many': lambda *args, **kwargs: None})()},
-        [{'source_collection': 'cve', 'selection_id': '6a34241d4ab03604f78c2d5a'}],
+        [{'source_collection': 'cve', 'selection_id': 'cve:2026-56012'}],
     )
 
     assert len(candidates) == 1
     assert candidates[0]['cve_id'] == 'CVE-2026-56012'
-    assert candidates[0]['severity'] == 'HIGH'
+    assert candidates[0]['severity'] == 'High'
     assert candidates[0]['vendor'] == 'Acme'
 
 
-def test_normalize_candidate_uses_nested_details_description_for_summary():
+def test_normalize_candidate_uses_direct_details_description_for_summary():
     candidate = normalize_candidate(
         {
             'code': 'CVE-2026-1000',
             'title': 'Nested details CVE',
-            'details': {'cve': {'description': 'Detailed CVE record.'}},
+            'details': {'description': 'Detailed CVE record.'},
         },
         'run-1',
         0,
@@ -135,12 +139,12 @@ def test_normalize_candidate_accepts_bare_code_and_cve_document_id():
     assert by_title['cve_id'] == 'CVE-2026-12206'
 
 
-def test_extract_document_cve_id_prefers_document_code_over_shared_cve_codes():
+def test_extract_document_cve_id_prefers_document_code_over_shared_cve_ids():
     document = {
         'code': '2026-12007',
         '_id': 'cve:2026-12007',
         'title': 'CVE-2026-12007',
-        'cve_codes': ['2026-12000', '2026-12001', '2026-12007'],
+        'cve_ids': ['CVE-2026-12000', 'CVE-2026-12001', 'CVE-2026-12007'],
     }
 
     assert extract_document_cve_id(document) == 'CVE-2026-12007'

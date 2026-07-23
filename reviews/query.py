@@ -11,7 +11,7 @@ from reviews.repository import review_views
 from reviews.scoring import score_review_document
 from subscriptions.profiles import (
     VALID_SEVERITIES,
-    build_scraped_at_window,
+    build_observed_at_window,
     parse_include_unknown,
 )
 from subscriptions.query import (
@@ -19,26 +19,23 @@ from subscriptions.query import (
     severity_projection_fields,
 )
 SUMMARY_FIELDS = (
-    'code', 'cve', 'cve_code', 'cve_codes', 'title', 'severity', 'status',
+    'code', 'cve', 'cve_ids', 'title', 'severity',
     'affected', 'affected_products',
 )
 FILTER_FIELDS = {
-    'code': ('code', 'cve', 'cve_code', 'cve_codes'),
+    'code': ('code', 'cve', 'cve_ids'),
     'title': ('title',),
     'affected': ('affected', 'affected_products'),
 }
 TEXT_SEARCH_FIELDS = (
-    'code', 'cve', 'cve_code', 'cve_codes', 'title', 'severity', 'status',
+    'code', 'cve', 'cve_ids', 'title', 'severity',
     'affected', 'affected_products', 'description', 'impacts', 'recommendation',
     'vendor', 'product',
-    'details.source.description',
-    'details.cve.description',
     'details.description',
     'details.summary',
-    'containers.cna.descriptions.value',
-    'details.cve.affected.vendor',
-    'details.cve.affected.product',
-    'details.hkcert.vulnerability_identifiers.cve_id',
+    'details.affected.vendor',
+    'details.affected.product',
+    'details.vulnerability_identifiers.cve_id',
 )
 CVE_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)
 RELATED_CVE_LIMIT_PER_COLLECTION = 100
@@ -108,7 +105,7 @@ def _build_filter(args):
         )
         if severity_clause:
             clauses.append(severity_clause)
-    time_clause = build_scraped_at_window(
+    time_clause = build_observed_at_window(
         args.get('time_window', 'all').strip() or 'all',
         args.get('start', ''),
         args.get('end', ''),
@@ -145,16 +142,13 @@ def _first_summary_value(document, fields):
     return ''
 
 
-def _extract_cve_codes(document):
+def _extract_cve_ids(document):
     values = [document.get(field) for field in SUMMARY_FIELDS]
-    values.append(document.get('related_cves'))
+    values.append(document.get('cve_ids'))
     details = document.get('details')
     if isinstance(details, dict):
-        for detail in details.values():
-            if not isinstance(detail, dict):
-                continue
-            for field in ('cve_id', 'cve_ids', 'cveCode', 'vulnerability_identifiers'):
-                values.append(detail.get(field))
+        for field in ('cve_id', 'cve_ids', 'cveCode', 'cveId', 'vulnerability_identifiers'):
+            values.append(details.get(field))
     text = ' '.join(_summary_text(value) for value in values)
     seen = set()
     codes = []
@@ -206,12 +200,6 @@ def _combined_mongo_filter(mongo_filter, search):
     return _merge_mongo_filters(mongo_filter, _build_text_search_filter(search))
 
 
-def _cve_code_forms(code):
-    canonical = code.upper()
-    bare = canonical.removeprefix('CVE-')
-    return (canonical, bare)
-
-
 def _selection_key(collection, selection_id):
     return f'{collection}\u0000{selection_id}'
 
@@ -221,18 +209,14 @@ def _source_projection(view):
     if source_name == 'cve':
         projection = {
             '_id': 1,
-            'cveMetadata': 1,
-            'containers': 1,
             'title': 1,
             'code': 1,
             'cve': 1,
             'details': 1,
-            'scraped_at': 1,
-            'disclosure_date': 1,
-            'cve_code': 1,
-            'cve_codes': 1,
-            'related_cves': 1,
-            'related_cve_ids': 1,
+            'observed_at': 1,
+            'published_at': 1,
+            'updated_at': 1,
+            'cve_ids': 1,
             'affected': 1,
             'affected_products': 1,
             'description': 1,
@@ -268,17 +252,15 @@ def _source_projection(view):
     first_stage['$project'] = projection
     projection.update(severity_projection_fields())
     projection['details'] = 1
-    projection['scraped_at'] = 1
-    projection['disclosure_date'] = 1
-    projection['cve_code'] = 1
-    projection['cve_codes'] = 1
-    projection['related_cves'] = 1
-    projection['related_cve_ids'] = 1
+    projection['observed_at'] = 1
+    projection['published_at'] = 1
+    projection['updated_at'] = 1
+    projection['cve_ids'] = 1
     return [first_stage, *pipeline[1:]]
 
 
 def _review_sort_key(document):
-    return (document.get('scraped_at') or '', str(document.get('_id', '')))
+    return (document.get('observed_at') or '', str(document.get('_id', '')))
 
 
 class _ReviewHeapEntry:
@@ -301,7 +283,7 @@ def _sorted_review_pipeline(view, mongo_filter):
     pipeline = _source_projection(view)
     pipeline.extend([
         {'$match': mongo_filter},
-        {'$sort': {'scraped_at': -1, '_id': -1}},
+        {'$sort': {'observed_at': -1, '_id': -1}},
     ])
     return pipeline
 
@@ -418,8 +400,8 @@ def _collect_scored_review_rows(database, views, view_names, mongo_filter, searc
             'patch_priority': scored['patch_priority'],
             'cve_id': scored['cve_id'],
             'severity': scored['severity'],
-            'disclosure_date': scored['disclosure_date'],
-            'scraped_at': scored['scraped_at'],
+            'published_at': scored['published_at'],
+            'observed_at': scored['observed_at'],
         })
     return rows
 
@@ -465,12 +447,11 @@ def _paginated_cve_search_rows(database, views, view_names, mongo_filter, search
     )
 
 
-def _collect_row_cve_codes(rows):
+def _collect_row_cve_ids(rows):
     row_codes = []
     all_codes = set()
     for row in rows:
-        codes = _extract_cve_codes(row['document'])
+        codes = _extract_cve_ids(row['document'])
         row_codes.append(codes)
         all_codes.update(codes)
     return row_codes, all_codes
-

@@ -54,17 +54,28 @@ def _truthy(value):
 
 def _is_kev(document):
     details = document.get('details') if isinstance(document.get('details'), dict) else {}
-    cve_details = details.get('cve') if isinstance(details.get('cve'), dict) else {}
     return any(_truthy(document.get(field)) for field in ('cisa_kev', 'kev')) or any(
-        _truthy(cve_details.get(field)) for field in ('cisa_kev', 'kev')
+        _truthy(details.get(field)) for field in ('cisa_kev', 'kev')
     )
 
 
-def _cna_base_score(document):
-    cna = (document.get('containers') or {}).get('cna') or {}
-    if not isinstance(cna, dict):
-        return 0.0
-    for metric in cna.get('metrics') or []:
+def _cvss_base_score(document):
+    details = document.get('details') if isinstance(document.get('details'), dict) else {}
+    metrics = details.get('metrics') or {}
+    metric_groups = metrics.values() if isinstance(metrics, dict) else metrics
+    for group in metric_groups:
+        items = group if isinstance(group, list) else [group]
+        for metric in items:
+            if not isinstance(metric, dict):
+                continue
+            data = metric.get('cvssData') if isinstance(metric.get('cvssData'), dict) else metric
+            try:
+                score = float(data.get('baseScore'))
+            except (TypeError, ValueError):
+                continue
+            if score > 0:
+                return score
+    for metric in metrics if isinstance(metrics, list) else []:
         if not isinstance(metric, dict):
             continue
         for key in ('cvssV4_0', 'cvssV3_1', 'cvssV3_0', 'cvssV2_0'):
@@ -101,9 +112,9 @@ def _parse_datetime(value):
     return parsed
 
 
-def _recency_bonus(disclosure_date, scraped_at, now=None):
+def _recency_bonus(published_at, observed_at, now=None):
     now = now or datetime.now(timezone.utc)
-    candidates = [_parse_datetime(disclosure_date), _parse_datetime(scraped_at)]
+    candidates = [_parse_datetime(published_at), _parse_datetime(observed_at)]
     best_age_days = None
     for candidate in candidates:
         if candidate is None:
@@ -145,22 +156,22 @@ def _exploit_and_impact_bonus(text):
 def selection_score(document):
     doc = _prepare_document(document)
     severity = normalize_severity(
-        doc.get('severity') or doc.get('status') or doc.get('impacts'),
+        doc.get('severity') or doc.get('impacts'),
     )
     score = SEVERITY_WEIGHTS.get(severity.lower(), 8)
     kev = _is_kev(doc)
     if kev:
         score += 25
-    score += _cvss_bonus(_cna_base_score(doc))
+    score += _cvss_bonus(_cvss_base_score(doc))
     score += _exploit_and_impact_bonus(extract_document_description(doc))
-    score += _recency_bonus(doc.get('disclosure_date'), doc.get('scraped_at'))
+    score += _recency_bonus(doc.get('published_at'), doc.get('observed_at'))
     return max(0, min(100, round(score, 1)))
 
 
 def score_review_document(document):
     doc = _prepare_document(document)
     severity = normalize_severity(
-        doc.get('severity') or doc.get('status') or doc.get('impacts'),
+        doc.get('severity') or doc.get('impacts'),
     )
     kev = _is_kev(doc)
     score = selection_score(doc)
@@ -169,8 +180,8 @@ def score_review_document(document):
         'patch_priority': patch_priority(score, severity, kev=kev),
         'cve_id': extract_document_cve_id(doc),
         'severity': severity,
-        'disclosure_date': doc.get('disclosure_date'),
-        'scraped_at': doc.get('scraped_at'),
+        'published_at': doc.get('published_at'),
+        'observed_at': doc.get('observed_at'),
     }
 
 
@@ -183,8 +194,8 @@ def _selection_sort_key(row):
     return (
         row.get('selection_score', 0),
         _SEVERITY_RANK.get(row.get('severity') or 'Unknown', 0),
-        _sort_datetime(row.get('disclosure_date')),
-        _sort_datetime(row.get('scraped_at')),
+        _sort_datetime(row.get('published_at')),
+        _sort_datetime(row.get('observed_at')),
         str(row.get('selection_id') or ''),
     )
 

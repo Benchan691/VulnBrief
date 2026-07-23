@@ -135,7 +135,7 @@ def _detail_completeness_score(document):
         (('affected', 'affected_products', 'product', 'products'), 140),
         (('recommendation', 'recommendations', 'solution', 'mitigation'), 120),
         (('references', 'reference_links', 'related_links', 'url'), 90),
-        (('severity', 'status', 'cvss_score'), 50),
+        (('severity', 'cvss_score'), 50),
         (('title', 'advisory_title'), 40),
     ):
         if _first_nested_text({'document': document, 'details': details}, fields):
@@ -155,7 +155,7 @@ def _product(document):
 
 
 def _advisory_id(document, cve_id):
-    return _first_text(document.get('advisory_id'), document.get('code'), document.get('cve_code'), cve_id)
+    return _first_text(document.get('advisory_id'), document.get('code'), cve_id)
 
 
 def _vendor_domain(source_url, vendor, domain_map=None):
@@ -190,10 +190,10 @@ def normalize_candidate(document, run_id, position=0, domain_map=None):
         'vendor': vendor,
         'product': product,
         'title': _first_text(document.get('title'), cve_id),
-        'severity': _first_text(document.get('severity'), document.get('status')),
+        'severity': _first_text(document.get('severity')),
         'summary': summary,
-        'disclosure_date': document.get('disclosure_date'),
-        'scraped_at': document.get('scraped_at'),
+        'published_at': document.get('published_at'),
+        'observed_at': document.get('observed_at'),
         'source_url': source_url,
         'vendor_official_domain': _vendor_domain(source_url, vendor, domain_map),
         'references': _references(document),
@@ -247,15 +247,12 @@ def _projection_pipeline(view):
     projection.update({
         '_id': 1,
         **severity_projection_fields(),
-        'vuln_type': 1,
-        'scraped_at': 1,
-        'disclosure_date': 1,
-        'source_provider': '$source.provider',
+        'observed_at': 1,
+        'published_at': 1,
+        'updated_at': 1,
         'details': 1,
         'source': 1,
-        'cve_code': 1,
-        'cve_codes': 1,
-        'related_cves': 1,
+        'cve_ids': 1,
     })
     first['$project'] = projection
     return [first, *pipeline[1:]]
@@ -278,7 +275,7 @@ def query_cve_candidates(database, filters, limit=MAX_EXPORT_SELECTIONS, domain_
     pipeline = _projection_pipeline(view)
     pipeline.extend([
         {'$match': mongo_filter},
-        {'$sort': {'scraped_at': 1, '_id': 1}},
+        {'$sort': {'observed_at': 1, '_id': 1}},
     ])
     if limit is not None:
         pipeline.append({'$limit': limit + 1})

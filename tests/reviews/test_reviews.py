@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone
 
 import pytest
 from bson import json_util
@@ -73,7 +74,7 @@ def patch_iter_collection_documents(monkeypatch, views, documents=None, on_query
         sorted_documents = sorted(
             documents.get(name, []),
             key=lambda document: (
-                document.get('scraped_at') or '',
+                document.get('observed_at') or document.get('scraped_at') or '',
                 str(document.get('_id', '')),
             ),
             reverse=True,
@@ -95,7 +96,7 @@ def patch_query_review_slice(monkeypatch, views, documents=None, on_query=None):
         sorted_documents = sorted(
             documents.get(name, []),
             key=lambda document: (
-                document.get('scraped_at') or '',
+                document.get('observed_at') or document.get('scraped_at') or '',
                 str(document.get('_id', '')),
             ),
             reverse=True,
@@ -417,7 +418,7 @@ def test_original_document_export_preserves_order(client, monkeypatch):
     assert all('details' in document and 'source' in document for document in documents)
 
 
-def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
+def test_global_review_search_orders_by_observed_at(client, monkeypatch):
     authenticate(client)
     views = {
         'cve_b_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
@@ -427,25 +428,25 @@ def test_global_review_search_orders_by_scraped_at(client, monkeypatch):
     }
     documents = {
         'cve_a_review': [
-            {'_id': 'a:1', 'title': 'Older A', 'scraped_at': '2026-06-01T00:00:00+00:00'},
-            {'_id': 'a:2', 'title': 'Newer A', 'scraped_at': '2026-06-10T00:00:00+00:00'},
+            {'_id': 'a:1', 'title': 'Older A', 'observed_at': '2026-06-01T00:00:00+00:00'},
+            {'_id': 'a:2', 'title': 'Newer A', 'observed_at': '2026-06-10T00:00:00+00:00'},
         ],
         'cve_b_review': [
-            {'_id': 'b:1', 'title': 'Newest B', 'scraped_at': '2026-06-15T00:00:00+00:00'},
-            {'_id': 'b:2', 'title': 'Middle B', 'scraped_at': '2026-06-05T00:00:00+00:00'},
+            {'_id': 'b:1', 'title': 'Newest B', 'observed_at': '2026-06-15T00:00:00+00:00'},
+            {'_id': 'b:2', 'title': 'Middle B', 'observed_at': '2026-06-05T00:00:00+00:00'},
         ],
         'cve_high_review': [
             {
                 '_id': 'high:1',
                 'title': 'Older high priority',
-                'scraped_at': '2026-06-02T00:00:00+00:00',
+                'observed_at': '2026-06-02T00:00:00+00:00',
             },
         ],
         'cve_low_review': [
             {
                 '_id': 'low:1',
                 'title': 'Newer low priority',
-                'scraped_at': '2026-06-12T00:00:00+00:00',
+                'observed_at': '2026-06-12T00:00:00+00:00',
             },
         ],
     }
@@ -596,6 +597,7 @@ def test_review_search_mode_cve_includes_related_records(client, monkeypatch):
     related_avd = {
         '_id': 'avd:CVE-2026-1000',
         'code': '2026-1000',
+        'cve_ids': ['CVE-2026-1000'],
         'title': 'Related AVD',
         'severity': 'Medium',
     }
@@ -604,7 +606,7 @@ def test_review_search_mode_cve_includes_related_records(client, monkeypatch):
     documents = {
         'cve_review': [{
             **cve_document,
-            'scraped_at': '2026-06-18T00:00:00+00:00',
+            'observed_at': '2026-06-18T00:00:00+00:00',
         }],
     }
 
@@ -615,7 +617,7 @@ def test_review_search_mode_cve_includes_related_records(client, monkeypatch):
     def query_slice(database, view, mongo_filter, skip, limit):
         source = view['options']['viewOn']
         filter_text = str(mongo_filter)
-        is_related_query = '^' in filter_text and '2026' in filter_text
+        is_related_query = '$in' in filter_text and '2026' in filter_text
         if is_related_query:
             related_filters.append(filter_text)
             if source == 'cve':
@@ -644,33 +646,28 @@ def test_review_search_mode_cve_includes_related_records(client, monkeypatch):
     assert {entry['collection'] for entry in related} == {'cve_review', 'avd_review'}
     assert any(entry['code'] == '2026-1000' for entry in related)
     assert any(entry['is_self'] for entry in related)
-    assert any('CVE\\\\-2026\\\\-1000' in filter_text for filter_text in related_filters)
-    assert any('2026\\\\-1000' in filter_text for filter_text in related_filters)
+    assert any('CVE-2026-1000' in filter_text for filter_text in related_filters)
+    assert any('2026-1000' in filter_text for filter_text in related_filters)
     assert any(entry.get('document', {}).get('code') == '2026-1000' for entry in related)
     assert {
         'collection', 'selection_id', 'document', 'code', 'title', 'severity', 'affected', 'is_self',
     } <= set(related[0])
 
 
-def test_review_extracts_multiple_cves_from_hkcert_identifiers_and_cve_codes():
-    from reviews.routes import _extract_cve_codes, _related_cve_mongo_filter
+def test_review_extracts_multiple_cves_from_canonical_cve_ids():
+    from reviews.routes import _extract_cve_ids, _related_cve_mongo_filter
 
     document = {
-        'cve_codes': ['2026-1000'],
+        'cve_ids': ['CVE-2026-1000', 'CVE-2026-2000'],
         'details': {
-            'hkcert': {
-                'vulnerability_identifiers': [
-                    {'cve_id': 'CVE-2026-2000'},
-                    {'cve_id': 'CVE-2026-1000'},
-                ]
-            }
+            'summary': 'Provider evidence',
         },
     }
 
-    assert _extract_cve_codes(document) == ['CVE-2026-1000', 'CVE-2026-2000']
+    assert _extract_cve_ids(document) == ['CVE-2026-1000', 'CVE-2026-2000']
     related_filter = str(_related_cve_mongo_filter(['CVE-2026-1000']))
-    assert 'cve_codes' in related_filter
-    assert 'details.hkcert.vulnerability_identifiers.cve_id' in related_filter
+    assert 'cve_ids' in related_filter
+    assert "'code'" in related_filter
 
 
 def test_review_search_keyword_matches_nested_projected_details(client, monkeypatch):
@@ -687,14 +684,14 @@ def test_review_search_keyword_matches_nested_projected_details(client, monkeypa
                 'code': 'CVE-2026-1000',
                 'title': 'Summary misses keyword',
                 'severity': 'High',
-                'details': {'source': {'description': 'contains nested-only-token'}},
+                'details': {'description': 'contains nested-only-token'},
             },
             {
                 '_id': 'cve:2',
                 'code': 'CVE-2026-2000',
                 'title': 'Another record',
                 'severity': 'High',
-                'details': {'source': {'description': 'different text'}},
+                'details': {'description': 'different text'},
             },
         ],
     }
@@ -717,7 +714,7 @@ def test_review_search_keyword_matches_nested_projected_details(client, monkeypa
     body = response.get_json()
     assert body['total'] == 1
     assert body['data'][0]['selection_id'] == 'cve:1'
-    assert 'details.source.description' in str(captured[0])
+    assert 'details.description' in str(captured[0])
 
 
 def test_review_search_keyword_matches_any_term(client, monkeypatch):
@@ -814,7 +811,7 @@ def test_review_documents_sort_newest_first(client, monkeypatch):
             captured['pipeline'] = pipeline
             return iter([{
                 'documents': [
-                    {'_id': 'cve:2', 'title': 'Newer', 'scraped_at': '2026-06-10T00:00:00+00:00'},
+                    {'_id': 'cve:2', 'title': 'Newer', 'observed_at': '2026-06-10T00:00:00+00:00'},
                 ],
                 'metadata': [{'total': 2}],
             }])
@@ -829,7 +826,7 @@ def test_review_documents_sort_newest_first(client, monkeypatch):
     response = client.get('/api/reviews/cve_review?page_size=1')
     assert response.status_code == 200
     assert response.get_json()['data'][0]['selection_id'] == 'cve:2'
-    assert {'$sort': {'scraped_at': -1, '_id': -1}} in captured['pipeline']
+    assert {'$sort': {'observed_at': -1, '_id': -1}} in captured['pipeline']
 
 
 def test_global_review_search_allows_empty_filters_and_rejects_invalid_filters(client, monkeypatch):
@@ -931,9 +928,9 @@ def test_review_search_scrape_time_filter_applies_to_query(client, monkeypatch):
 
     assert response.status_code == 200
     assert captured == [{
-        'scraped_at': {
-            '$gte': '2026-06-01T00:30:00+00:00',
-            '$lt': '2026-06-02T01:45:00+00:00',
+        'observed_at': {
+            '$gte': datetime(2026, 6, 1, 0, 30, tzinfo=timezone.utc),
+            '$lt': datetime(2026, 6, 2, 1, 45, tzinfo=timezone.utc),
         },
     }]
 

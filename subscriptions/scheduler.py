@@ -335,7 +335,7 @@ def purge_old_data(web_database, vuln_database, now=None):
     cutoff_iso = cutoff.isoformat()
     deleted = {'vulnerabilities': 0, 'web': 0}
     for collection_name in {view['options']['viewOn'] for view in review_views(vuln_database).values()}:
-        deleted['vulnerabilities'] += vuln_database[collection_name].delete_many({'scraped_at': {'$lt': cutoff_iso}}).deleted_count
+        deleted['vulnerabilities'] += vuln_database[collection_name].delete_many({'observed_at': {'$lt': cutoff}}).deleted_count
     old_jobs = list(web_database['report_jobs'].find({
         'status': {'$nin': ['queued', 'running']},
         'created_at': {'$lt': cutoff},
@@ -393,8 +393,11 @@ def _vulnerabilities_database_name():
     return get_config()['VULNERABILITIES_DATABASE']
 
 
-def _scraped_at_value(document):
-    return str((document or {}).get('scraped_at') or '')
+def _observed_at_value(document):
+    value = (document or {}).get('observed_at')
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value or '')
 
 
 def newsletter_delivery_statistics(email, web_database=None):
@@ -485,7 +488,7 @@ def _record_newsletter_delivery(web_database, *, email, database_name, source_co
 def _is_updated_cve(source_collection, document):
     return (
         source_collection == 'cve'
-        and str((document or {}).get('status') or '').strip().casefold() == 'updated'
+        and str((document or {}).get('change_type') or '').strip().casefold() == 'updated'
     )
 
 
@@ -540,14 +543,14 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
     pending = []
     for match in matches:
         document = match.get('document') or {}
-        scraped_at = _scraped_at_value(document)
-        if not scraped_at or scraped_at <= cursor:
+        observed_at = _observed_at_value(document)
+        if not observed_at or observed_at <= cursor:
             continue
         source_collection = match['source_collection']
         selection_id = match['selection_id']
         if _already_delivered(web_database, subscription['email'], source_collection, selection_id):
             continue
-        pending.append((scraped_at, match, document))
+        pending.append((observed_at, match, document))
     pending.sort(key=lambda item: item[0])
 
     sent = 0
@@ -556,7 +559,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
         return {'sent': 0, 'cursor_initialized': False, 'delivery_cursor': cursor}
 
     with Mailer(app.config) as mailer:
-        for scraped_at, match, document in pending:
+        for observed_at, match, document in pending:
             if limit is not None and sent >= limit:
                 break
             source_collection = match['source_collection']
@@ -567,8 +570,8 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
             if source_document is None:
                 continue
             if _is_updated_cve(source_collection, source_document):
-                if scraped_at > max_cursor:
-                    max_cursor = scraped_at
+                if observed_at > max_cursor:
+                    max_cursor = observed_at
                 continue
             html, newsletter = render_newsletter(source_document, source_collection)
             title = newsletter.get('title') or selection_id
@@ -588,8 +591,8 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
             if not recorded:
                 continue
             sent += 1
-            if scraped_at > max_cursor:
-                max_cursor = scraped_at
+            if observed_at > max_cursor:
+                max_cursor = observed_at
 
     if max_cursor != cursor:
         web_database['sub_account'].update_one(

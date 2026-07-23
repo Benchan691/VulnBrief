@@ -184,30 +184,19 @@ def _clean(value, depth=0):
 def compact_document(document):
     details = document.get('details') or {}
     detail_fields = {
-        'description', 'summary', 'impacts', 'impact', 'severity', 'status',
+        'description', 'summary', 'impacts', 'impact', 'severity',
         'affected', 'affected_products', 'systems_affected', 'recommendation',
         'recommendations', 'solution', 'solutions', 'remediation', 'mitigation',
         'mitigations', 'references', 'reference_links', 'related_links',
     }
-    if isinstance(details, dict) and detail_fields.intersection(details):
-        normalized = details
-    elif isinstance(details, dict):
-        normalized = next(
-            (value for value in details.values() if isinstance(value, dict)),
-            {},
-        )
-    else:
-        normalized = {}
+    normalized = details if isinstance(details, dict) else {}
     compacted = _clean({
         'id': str(document.get('_id', '')),
-        'type': document.get('type'),
-        'code': document.get('cve_code') or document.get('cve') or document.get('code'),
-        'cve_codes': document.get('cve_codes'),
+        'code': document.get('cve') or document.get('code'),
+        'cve_ids': document.get('cve_ids'),
         'title': document.get('title'),
-        'vulnerability_type': document.get('vuln_type'),
-        'disclosure_date': document.get('disclosure_date'),
-        'scraped_at': document.get('scraped_at'),
-        'status': document.get('status'),
+        'published_at': document.get('published_at'),
+        'observed_at': document.get('observed_at'),
         'severity': document.get('severity'),
         'summary': document.get('summary') or document.get('description') or document.get('impacts'),
         'affected': document.get('affected') or document.get('affected_products'),
@@ -367,19 +356,14 @@ def _template_all_values(record, details, *fields):
 
 
 def _normalized_details_root(details):
-    if not isinstance(details, dict):
-        return {}
-    if len(details) == 1:
-        inner = next(iter(details.values()))
-        return inner if isinstance(inner, dict) else details
-    return details
+    return details if isinstance(details, dict) else {}
 
 
 def _item_title_from_details(details, identifier, position, record=None):
     record = record if isinstance(record, dict) else {}
     normalized = _normalized_details_root(details)
     title = _template_first_value(record, normalized, 'title', 'vulName', 'advisory_title')
-    code = _template_first_value(record, normalized, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode')
+    code = _template_first_value(record, normalized, 'code', 'cve', 'cve_ids', 'cveCode', 'cnnvdCode')
     return title or code or identifier or f'Vulnerability record {position}'
 
 
@@ -401,12 +385,12 @@ def _source_record_for_item(item):
             item['source_collection'],
             item['selection_id'],
             {
-                'title': 1, 'code': 1, 'cve': 1, 'cve_code': 1, 'severity': 1,
-                'status': 1, 'source': 1, 'type': 1,
+                'title': 1, 'code': 1, 'cve_ids': 1, 'severity': 1,
+                'source': 1,
             },
         )
         if document:
-            for field in ('title', 'code', 'cve', 'cve_code', 'severity', 'status', 'source', 'type'):
+            for field in ('title', 'code', 'cve_ids', 'severity', 'source'):
                 if document.get(field):
                     record.setdefault(field, document[field])
         record['source_collection'] = item['source_collection']
@@ -452,7 +436,6 @@ def _template_highlights(records):
         details = record.get('details') if isinstance(record.get('details'), dict) else {}
         source_collection = (
             record.get('source_collection')
-            or record.get('type')
             or record.get('collection')
             or 'generic'
         )
@@ -463,18 +446,18 @@ def _template_highlights(records):
             newsletter_title = ''
         title = (
             _template_first_value(record, details, 'title', 'vulName', 'advisory_title')
-            or _template_first_value(record, details, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode')
+            or _template_first_value(record, details, 'code', 'cve', 'cve_ids', 'cveCode', 'cnnvdCode')
             or newsletter_title
             or f'Vulnerability record {position}'
         )
         severity = (
-            _template_first_value(record, details, 'severity', 'status', 'risk', 'priority', 'hazardLevel')
+            _template_first_value(record, details, 'severity', 'risk', 'priority', 'hazardLevel')
             or next(iter(newsletter.get('severity') or []), '')
         )
         highlights.append({
             'title': title,
             'code': _template_first_value(
-                record, details, 'code', 'cve', 'cve_code', 'cveCode', 'cnnvdCode',
+                record, details, 'code', 'cve', 'cve_ids', 'cveCode', 'cnnvdCode',
             ),
             'severity': severity,
             'summary': _strip_html(str(newsletter.get('overview') or '')),
@@ -496,7 +479,7 @@ def _deterministic_report_sections(records):
     for record in records:
         details = record.get('details') if isinstance(record.get('details'), dict) else {}
         severity = _template_first_value(
-            record, details, 'severity', 'status', 'risk', 'priority', 'hazardLevel',
+            record, details, 'severity', 'risk', 'priority', 'hazardLevel',
         )
         affected = _template_all_values(
             record, details,

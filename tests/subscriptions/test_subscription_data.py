@@ -2,7 +2,7 @@ import pytest
 
 import subscriptions.query
 from subscriptions.profiles import (
-    build_scraped_at_window,
+    build_observed_at_window,
     parse_hong_kong_datetime,
     parse_include_unknown,
     validate_filters,
@@ -13,10 +13,12 @@ from subscriptions.query import build_match_filter, query_profile_matches
 
 @pytest.fixture(autouse=True)
 def patch_review_views(monkeypatch):
-    monkeypatch.setattr('subscriptions.profiles.review_views', lambda database: {
+    views = {
         'cve_review': {'options': {'viewOn': 'cve', 'pipeline': [{'$project': {'title': 1}}]}},
         'avd_review': {'options': {'viewOn': 'avd', 'pipeline': [{'$project': {'title': 1}}]}},
-    })
+    }
+    monkeypatch.setattr('subscriptions.profiles.review_views', lambda database: views)
+    monkeypatch.setattr('subscriptions.query.review_views', lambda database: views)
 
 
 def test_curated_filter_builds_combined_mongo_match():
@@ -34,7 +36,7 @@ def test_curated_filter_builds_combined_mongo_match():
     })
 
     assert '$and' in mongo_filter
-    assert any('scraped_at' in clause for clause in mongo_filter['$and'])
+    assert any('observed_at' in clause for clause in mongo_filter['$and'])
     assert len(mongo_filter['$and']) == 7
 
 
@@ -82,8 +84,8 @@ def test_parse_hong_kong_datetime_accepts_z_suffix_and_naive_local_times():
     assert parse_hong_kong_datetime('2026-06-01T08:30').isoformat() == '2026-06-01T08:30:00+08:00'
 
 
-def test_build_scraped_at_window_returns_none_for_all():
-    assert build_scraped_at_window('all') is None
+def test_build_observed_at_window_returns_none_for_all():
+    assert build_observed_at_window('all') is None
 
 
 def test_parse_include_unknown_accepts_common_truthy_values():
@@ -171,7 +173,8 @@ def test_collection_filter_override_limits_cve_matches_to_the_cutoff(monkeypatch
 
     cve_match = database['cve'].pipelines[0][1]['$match']
     avd_match = database['avd'].pipelines[0][1]['$match']
-    assert cve_match == {'scraped_at': {'$gt': cutoff}}
+    from datetime import datetime
+    assert cve_match == {'observed_at': {'$gt': datetime.fromisoformat(cutoff)}}
     assert avd_match['severity']['$regex'].startswith('^(?:Critical')
 
 
@@ -215,9 +218,9 @@ def test_enriched_filters_include_keywords_threshold_and_scope_limit():
     assert '$and' in mongo_filter
     assert filters['report_scope']['max_count'] == 3
     assert filters['report_scope']['kev_only'] is True
-    assert any('details.cve.affected.vendor' in str(clause) for clause in mongo_filter['$and'])
-    assert any('details.cve.affected.product' in str(clause) for clause in mongo_filter['$and'])
-    assert any('details.cve.kev' in str(clause) for clause in mongo_filter['$and'])
+    assert any('details.affected.vendor' in str(clause) for clause in mongo_filter['$and'])
+    assert any('details.affected.product' in str(clause) for clause in mongo_filter['$and'])
+    assert any('details.kev' in str(clause) for clause in mongo_filter['$and'])
 
     profile = {'generation_mode': 'enriched_weekly', 'filters': filters}
     assert query_profile_matches(FakeDatabase(), profile, limit=10) == []
@@ -246,8 +249,8 @@ def test_keywords_use_or_logic_and_case_space_insensitive_regex():
     assert '$or' in mongo_filter['$and'][0]
     assert len(mongo_filter['$and'][0]['$or']) == 2
     clause_text = str(mongo_filter)
-    assert 'details.cve.affected.vendor' in clause_text
-    assert 'details.cve.affected.product' in clause_text
+    assert 'details.affected.vendor' in clause_text
+    assert 'details.affected.product' in clause_text
     assert 'description' in clause_text
     assert 'classification' not in clause_text
     assert 'r\\\\s*e\\\\s*d\\\\s*h\\\\s*a\\\\s*t' in clause_text

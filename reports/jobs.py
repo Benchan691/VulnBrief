@@ -101,7 +101,7 @@ def create_job(inputs, input_source, generation_mode='enriched_weekly', report_l
                 raise ValueError('Each uploaded document must contain a details object.')
             source_record = {
                 key: item[key]
-                for key in ('title', 'code', 'cve', 'cve_code')
+                for key in ('title', 'code', 'cve_ids')
                 if item.get(key)
             }
             queued = {
@@ -169,8 +169,7 @@ def _load_input_details(item):
 
 
 def _local_item(details):
-    normalized = next(iter(details.values()), details) if len(details) == 1 else details
-    report = generate_template_report_data([{'details': normalized}])
+    report = generate_template_report_data([{'details': details}])
     return {'highlight': report['highlights'][0], 'recommendations': report['recommendations']}
 
 
@@ -316,4 +315,3 @@ def delete_job(job_id):
         pass
     _job_collection().delete_one({'_id': job_object_id})
     return str(job_object_id)
-

@@ -118,8 +118,8 @@ def test_purge_old_data_removes_old_sources_and_report_artifacts(monkeypatch):
     })
     vuln = FakeDatabase({
         'cve': [
-            {'_id': 'old', 'scraped_at': '2026-05-01T00:00:00+00:00'},
-            {'_id': 'new', 'scraped_at': '2026-06-20T00:00:00+00:00'},
+            {'_id': 'old', 'observed_at': datetime(2026, 5, 1, tzinfo=timezone.utc)},
+            {'_id': 'new', 'observed_at': datetime(2026, 6, 20, tzinfo=timezone.utc)},
         ],
     })
     monkeypatch.setattr(subscriptions.scheduler, 'review_views', lambda database: {
@@ -133,7 +133,10 @@ def test_purge_old_data_removes_old_sources_and_report_artifacts(monkeypatch):
     assert web['report_job_inputs'].documents == [{'job_id': running_job_id}]
     assert web['candidate_vulnerability_items'].documents == [{'run_id': str(running_job_id)}]
     assert web['source_evidence_cache'].documents == [{'updated_at': '2026-06-20T00:00:00+00:00'}]
-    assert vuln['cve'].documents == [{'_id': 'new', 'scraped_at': '2026-06-20T00:00:00+00:00'}]
+    assert vuln['cve'].documents == [{
+        '_id': 'new',
+        'observed_at': datetime(2026, 6, 20, tzinfo=timezone.utc),
+    }]
 
 
 class FakeDeleteResult:
@@ -331,7 +334,7 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
 
         newsletter_title = 'Ruijie AP180 series操作系统命令注入漏洞（CNVD-2026-2825856）'
         document = {
-            'scraped_at': '2026-07-10T12:00:00+00:00',
+            'observed_at': datetime(2026, 7, 10, 12, tzinfo=timezone.utc),
             'title': newsletter_title,
             'description': 'Details',
         }
@@ -411,7 +414,7 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
         assert len(sent) == 1
         assert sent[0][0] == 'newsletter@example.com'
         assert sent[0][1]['subject'] == f'Security newsletter: {newsletter_title}'
-        assert stored['newsletter_profile']['delivery_cursor'] == document['scraped_at']
+        assert stored['newsletter_profile']['delivery_cursor'] == document['observed_at'].isoformat()
         assert delivery is not None
         assert delivery['title'] == newsletter_title
 
@@ -428,8 +431,8 @@ def test_deliver_pending_newsletters_skips_updated_cves(monkeypatch):
         subscription_id = ObjectId()
         cursor = '2026-07-01T00:00:00+00:00'
         document = {
-            'scraped_at': '2026-07-10T12:00:00+00:00',
-            'status': 'updated',
+            'observed_at': datetime(2026, 7, 10, 12, tzinfo=timezone.utc),
+            'change_type': 'updated',
             'title': 'Updated CVE',
         }
         web['sub_account'].delete_many({'_id': subscription_id})
@@ -494,9 +497,9 @@ def test_deliver_pending_newsletters_skips_updated_cves(monkeypatch):
 
         stored = web['sub_account'].find_one({'_id': subscription_id})
         assert result['sent'] == 0
-        assert result['delivery_cursor'] == document['scraped_at']
+        assert result['delivery_cursor'] == document['observed_at'].isoformat()
         assert sent == []
-        assert stored['newsletter_profile']['delivery_cursor'] == document['scraped_at']
+        assert stored['newsletter_profile']['delivery_cursor'] == document['observed_at'].isoformat()
         assert web['newsletter_deliveries'].count_documents({'email': 'newsletter@example.com'}) == 0
 
         web['sub_account'].delete_many({'_id': subscription_id})

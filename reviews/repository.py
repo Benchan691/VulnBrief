@@ -1,6 +1,3 @@
-from bson import ObjectId
-from bson.errors import InvalidId
-
 from core.database import get_config
 
 
@@ -19,38 +16,7 @@ def review_views(database):
 
 
 def _lookup_queries(source_collection, selection_id):
-    queries = [{'_id': selection_id}]
-    try:
-        queries.append({'_id': ObjectId(selection_id)})
-    except (InvalidId, TypeError):
-        pass
-    if ':' in selection_id:
-        _, _, suffix = selection_id.partition(':')
-        if suffix:
-            queries.extend([
-                {'code': suffix},
-                {'cve_code': suffix},
-                {'cve_codes': suffix},
-            ])
-            if not selection_id.startswith(f'{source_collection}:'):
-                queries.append({'_id': f'{source_collection}:{suffix}'})
-    else:
-        queries.extend([
-            {'_id': f'{source_collection}:{selection_id}'},
-            {'code': selection_id},
-            {'cve_code': selection_id},
-            {'cve_codes': selection_id},
-        ])
-        if source_collection == 'cve':
-            queries.append({'cveMetadata.cveId': selection_id})
-    unique = []
-    seen = set()
-    for query in queries:
-        key = tuple(sorted((field, repr(value)) for field, value in query.items()))
-        if key not in seen:
-            seen.add(key)
-            unique.append(query)
-    return unique
+    return [{'_id': selection_id}]
 
 
 def resolve_vulnerability_document(database, source_collection, selection_id, projection=None):

@@ -83,9 +83,7 @@ This is **important** and [tracked](https://github.com/gogs/gogs).
 def test_non_github_newsletters_do_not_render_markdown_or_images():
     newsletter = normalize_newsletter({
         'details': {
-            'cve': {
-                'descriptions': [{'lang': 'en', 'value': '**Literal Markdown** ![image](https://example.test/image.png)'}],
-            },
+            'descriptions': [{'lang': 'en', 'value': '**Literal Markdown** ![image](https://example.test/image.png)'}],
         },
     }, 'cve')
 
@@ -101,13 +99,11 @@ def test_hkcert_newsletter_omits_empty_table():
     document = {
         'title': 'HKCERT Advisory',
         'details': {
-            'hkcert': {
-                'summary': 'Summary',
-                'risk_level': 'High Risk',
-                'impact': ['Remote Code Execution'],
-                'systems_affected': ['Product A'],
-                'table': [],
-            },
+            'summary': 'Summary',
+            'risk_level': 'High Risk',
+            'impact': ['Remote Code Execution'],
+            'systems_affected': ['Product A'],
+            'table': [],
         },
     }
     normalized = normalize_newsletter(document, 'hkcert')
@@ -127,11 +123,9 @@ def test_newsletter_normalizes_bare_cve_codes() -> None:
     normalized = normalize_newsletter(
         {
             'details': {
-                'hkcert': {
-                    'vulnerability_identifiers': [{'cve_id': 'CVE-2026-2000'}],
-                },
+                'vulnerability_identifiers': [{'cve_id': 'CVE-2026-2000'}],
             },
-            'cve_codes': ['2026-1000', 'CVE-2026-2000'],
+            'cve_ids': ['CVE-2026-1000', 'CVE-2026-2000'],
         },
         'hkcert',
     )
@@ -142,9 +136,7 @@ def test_newsletter_normalizes_bare_cve_codes() -> None:
 def test_hkcert_newsletter_renders_non_empty_table():
     document = {
         'details': {
-            'hkcert': {
-                'table': [{'Vulnerable Product': 'Product A', 'Risk Level': 'High'}],
-            },
+            'table': [{'Vulnerable Product': 'Product A', 'Risk Level': 'High'}],
         },
     }
     with app.app_context():
@@ -161,9 +153,8 @@ def test_source_specific_newsletter_fields_use_semantic_values():
             'cisco',
             {
                 'title': 'Cisco Advisory',
-                'status': 'Interim',
                 'severity': 'High',
-                'details': {'cisco': {'sir': 'High', 'product_names': ['Router']}},
+                'details': {'sir': 'High', 'product_names': ['Router']},
             },
             ['High'],
             ['Router'],
@@ -174,11 +165,9 @@ def test_source_specific_newsletter_fields_use_semantic_values():
                 'title': 'Palo Alto Advisory',
                 'severity': 'High',
                 'details': {
-                    'paloalto': {
-                        'severity': 'HIGH',
-                        'products': ['Cortex XSOAR'],
-                        'impact': [{'id': 'CAPEC-475', 'name': 'Signature Spoofing'}],
-                    },
+                    'severity': 'HIGH',
+                    'products': ['Cortex XSOAR'],
+                    'impact': [{'id': 'CAPEC-475', 'name': 'Signature Spoofing'}],
                 },
             },
             ['High'],
@@ -190,14 +179,12 @@ def test_source_specific_newsletter_fields_use_semantic_values():
                 'title': 'AVD Advisory',
                 'severity': 'High',
                 'details': {
-                    'avd': {
-                        'affected_software': [{
-                            'vendor': 'apache',
-                            'product': 'activemq',
-                            'version': '*',
-                            'impact': 'Up to 5.19.7',
-                        }],
-                    },
+                    'affected_software': [{
+                        'vendor': 'apache',
+                        'product': 'activemq',
+                        'version': '*',
+                        'impact': 'Up to 5.19.7',
+                    }],
                 },
             },
             ['High'],
@@ -215,9 +202,9 @@ def test_source_specific_newsletter_fields_use_semantic_values():
 def test_source_specific_newsletter_sections_and_references():
     huawei = normalize_newsletter({
         'title': 'Huawei Advisory',
-        'status': 'NEW',
+        'change_type': 'new',
         'severity': 'Critical',
-        'details': {'huawei_sa': {'severity': 'Critical'}},
+        'details': {'severity': 'Critical'},
         'source': {'detail_url': 'https://example.test/huawei'},
     }, 'huawei_sa')
     assert huawei['severity'] == ['Critical']
@@ -225,14 +212,14 @@ def test_source_specific_newsletter_sections_and_references():
     assert not huawei['show_affected']
 
     infosec = normalize_newsletter({
-        'details': {'infosec': {'affected_systems': ['System A']}},
+        'details': {'affected_systems': ['System A']},
         'source': {'detail_url': 'https://example.test/infosec'},
     }, 'infosec')
     assert infosec['affected'] == ['System A']
     assert infosec['references'] == ['https://example.test/infosec']
 
     hkcert = normalize_newsletter({
-        'details': {'hkcert': {}},
+        'details': {},
         'source': {'detail_url': 'https://www.hkcert.org/security-bulletin/example'},
     }, 'hkcert')
     assert hkcert['references'] == ['https://www.hkcert.org/security-bulletin/example']
@@ -242,11 +229,9 @@ def test_cnvd_title_juniper_affected_table_and_zeroday_hidden_sections():
     cnvd = normalize_newsletter({
         'title': 'Mozilla Firefox存在未明漏洞（CNVD-2026-2...',
         'details': {
-            'cnvd': {
-                'title': '相关漏洞',
-                'raw_fields': {
-                    '厂商补丁': 'Mozilla Firefox存在未明漏洞（CNVD-2026-23640）的补丁',
-                },
+            'title': '相关漏洞',
+            'raw_fields': {
+                '厂商补丁': 'Mozilla Firefox存在未明漏洞（CNVD-2026-23640）的补丁',
             },
         },
     }, 'cnvd')
@@ -255,19 +240,15 @@ def test_cnvd_title_juniper_affected_table_and_zeroday_hidden_sections():
     cnvd_without_patch = normalize_newsletter({
         'title': 'Tenda JD12L缓冲区溢出漏洞',
         'details': {
-            'cnvd': {
-                'title': 'Tenda JD12L缓冲区溢出漏洞',
-                'raw_fields': {'厂商补丁': '(无补丁信息)'},
-            },
+            'title': 'Tenda JD12L缓冲区溢出漏洞',
+            'raw_fields': {'厂商补丁': '(无补丁信息)'},
         },
     }, 'cnvd')
     assert cnvd_without_patch['title'] == 'Tenda JD12L缓冲区溢出漏洞'
 
     juniper = normalize_newsletter({
         'details': {
-            'juniper': {
-                'raw_tables': [[['Product', 'Status'], ['Junos OS', 'Affected']]],
-            },
+            'raw_tables': [[['Product', 'Status'], ['Junos OS', 'Affected']]],
         },
     }, 'juniper')
     assert juniper['affected_table'] == {
@@ -277,7 +258,7 @@ def test_cnvd_title_juniper_affected_table_and_zeroday_hidden_sections():
 
     with app.app_context():
         html, zeroday = render_newsletter({
-            'details': {'zeroday': {'vulnerable_component': 'Component A'}},
+            'details': {'vulnerable_component': 'Component A'},
         }, 'zeroday')
     assert not zeroday['show_severity']
     assert not zeroday['show_affected']
@@ -291,7 +272,7 @@ def test_chinese_source_templates_use_chinese_language_and_labels():
             html, normalized = render_newsletter({
                 'title': '漏洞通报',
                 'severity': 'High',
-                'details': {source: {'summary': '漏洞摘要'}},
+                'details': {'summary': '漏洞摘要'},
             }, source)
 
         assert normalized['language'] == 'zh-Hans'
@@ -306,15 +287,13 @@ def test_similar_source_shapes_are_mapped_without_flattening_metadata():
         'title': 'CVE-2026-1000',
         'severity': 'High',
         'details': {
-            'cve': {
-                'descriptions': [{'lang': 'en', 'value': 'Useful description'}],
-                'affected': [{
-                    'vendor': 'Example Vendor',
-                    'product': 'Example Product',
-                    'versions': [{'lessThan': '2.0'}],
-                }],
-                'references': [{'url': 'https://example.test/cve'}],
-            },
+            'descriptions': [{'lang': 'en', 'value': 'Useful description'}],
+            'affected': [{
+                'vendor': 'Example Vendor',
+                'product': 'Example Product',
+                'versions': [{'lessThan': '2.0'}],
+            }],
+            'references': [{'url': 'https://example.test/cve'}],
         },
     }, 'cve')
     assert cve['title'] == 'CVE-2026-1000'
@@ -325,13 +304,11 @@ def test_similar_source_shapes_are_mapped_without_flattening_metadata():
     github = normalize_newsletter({
         'severity': 'Medium',
         'details': {
-            'github_advisory': {
-                'vulnerabilities': [{
-                    'package': {'ecosystem': 'npm', 'name': 'example'},
-                    'vulnerable_version_range': '< 2.0',
-                    'first_patched_version': '2.0',
-                }],
-            },
+            'vulnerabilities': [{
+                'package': {'ecosystem': 'npm', 'name': 'example'},
+                'vulnerable_version_range': '< 2.0',
+                'first_patched_version': '2.0',
+            }],
         },
     }, 'github_advisory')
     assert github['affected'] == ['npm:example < 2.0']
@@ -342,15 +319,13 @@ def test_cve_details_fields_populate_the_newsletter():
     newsletter = normalize_newsletter({
         'title': 'CVE-2026-8616',
         'details': {
-            'cve': {
-                'descriptions': [{'lang': 'en', 'value': 'Missing authorization permits unauthenticated option deletion.'}],
-                'affected': [{
-                    'vendor': 'devozon',
-                    'product': 'Fense Proxy & VPN Blocker',
-                    'versions': [{'version': '0', 'lessThanOrEqual': '3.0.1'}],
-                }],
-                'references': [{'url': 'https://example.test/advisory'}],
-            },
+            'descriptions': [{'lang': 'en', 'value': 'Missing authorization permits unauthenticated option deletion.'}],
+            'affected': [{
+                'vendor': 'devozon',
+                'product': 'Fense Proxy & VPN Blocker',
+                'versions': [{'version': '0', 'lessThanOrEqual': '3.0.1'}],
+            }],
+            'references': [{'url': 'https://example.test/advisory'}],
         },
     }, 'cve')
 
@@ -369,12 +344,10 @@ def test_cve_newsletter_title_keeps_meaningful_titles_and_normalizes_fallbacks()
         'code': 'CVE-2026-8616',
         'title': 'CVE-2026-8616 Record',
         'details': {
-            'cve': {
-                'descriptions': [{
-                    'lang': 'en',
-                    'value': 'This description must not be appended to the title.',
-                }],
-            },
+            'descriptions': [{
+                'lang': 'en',
+                'value': 'This description must not be appended to the title.',
+            }],
         },
     }, 'cve')
     missing = normalize_newsletter({
@@ -464,8 +437,8 @@ def test_filter_newsletter_feed_builds_live_results_from_atlas_matches(monkeypat
     source = {
         '_id': 'avd-1',
         'title': 'Live Advisory',
-        'scraped_at': '2026-06-15T12:00:00+00:00',
-        'details': {'avd': {'summary': 'Live summary'}},
+        'observed_at': '2026-06-15T12:00:00+00:00',
+        'details': {'summary': 'Live summary'},
     }
 
     def fake_query(database, profile, limit=None, include_documents=False):
@@ -504,7 +477,7 @@ def test_filter_newsletter_feed_uses_the_raw_source_document(monkeypatch):
     raw_source = {
         '_id': 'msrc-1',
         'title': 'Windows Media Information Disclosure Vulnerability',
-        'details': {'msrc': {'description': 'Source-only overview text.'}},
+        'details': {'description': 'Source-only overview text.'},
     }
     monkeypatch.setattr(
         'newsletters.feed.query_profile_matches',

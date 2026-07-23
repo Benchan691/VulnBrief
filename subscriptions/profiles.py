@@ -26,12 +26,10 @@ FILTER_TEXT_FIELDS = (
     'search', 'code', 'title', 'impact', 'affected', 'source',
 )
 KEYWORD_SEARCH_FIELDS = (
-    'code', 'cve', 'title', 'description', 'impacts', 'affected',
-    'recommendation', 'related_link', 'status', 'source_provider',
-    'details.cve.affected.vendor',
-    'details.cve.affected_products.vendor', 'vendor',
-    'details.cve.affected.product',
-    'details.cve.affected_products.product', 'affected_products',
+    'code', 'cve_ids', 'title', 'description', 'impacts', 'affected',
+    'recommendation', 'related_link',
+    'details.affected.vendor', 'vendor',
+    'details.affected.product', 'affected_products',
 )
 VALID_SEVERITIES = {'', 'Critical', 'High', 'Medium', 'Low'}
 VALID_WINDOWS = {'all', 'daily', 'week', 'custom'}
@@ -102,7 +100,7 @@ def parse_include_unknown(value):
     return str(value).lower() in {'1', 'true', 'yes', 'on'}
 
 
-def build_scraped_at_window(window, start='', end='', now=None):
+def build_observed_at_window(window, start='', end='', now=None):
     if window not in VALID_WINDOWS:
         raise ValueError('Invalid scrape time window.')
     if window == 'all':
@@ -122,9 +120,9 @@ def build_scraped_at_window(window, start='', end='', now=None):
 
     start_dt, end_dt = bounds
     return {
-        'scraped_at': {
-            '$gte': start_dt.astimezone(timezone.utc).isoformat(),
-            '$lt': end_dt.astimezone(timezone.utc).isoformat(),
+        'observed_at': {
+            '$gte': start_dt.astimezone(timezone.utc),
+            '$lt': end_dt.astimezone(timezone.utc),
         },
     }
 

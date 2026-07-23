@@ -14,6 +14,9 @@ def _set_required_env(monkeypatch, **overrides):
     values.update(overrides)
     for key, value in values.items():
         monkeypatch.setenv(key, value)
+    for key in ('LOCAL_DATABASE', 'WEB_DATABASE'):
+        if key not in overrides:
+            monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv('MONGO_URI', raising=False)
     if 'MONGO_URI' in overrides:
         monkeypatch.setenv('MONGO_URI', overrides['MONGO_URI'])

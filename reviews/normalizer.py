@@ -23,16 +23,12 @@ def normalize_cve_id(value):
 def extract_document_cve_id(document):
     if not isinstance(document, dict):
         return ''
-    metadata = document.get('cveMetadata') if isinstance(document.get('cveMetadata'), dict) else {}
     return normalize_cve_id([
         document.get('code'),
         document.get('_id'),
         document.get('title'),
-        metadata.get('cveId'),
-        document.get('cve_id'),
         document.get('cve'),
-        document.get('cve_code'),
-        document.get('cve_codes'),
+        document.get('cve_ids'),
     ])
 
 
@@ -76,8 +72,7 @@ def _first_nested_text(document, key_names):
 
 def _cve_details_block(document):
     details = document.get('details') if isinstance(document.get('details'), dict) else {}
-    cve = details.get('cve') if isinstance(details.get('cve'), dict) else {}
-    return cve
+    return details
 
 
 def _descriptions_list_values(container):
@@ -110,14 +105,12 @@ def _affected_vendor_product(items):
 def extract_document_description(document):
     if not isinstance(document, dict):
         return ''
-    cna = (document.get('containers') or {}).get('cna') or {}
     cve_details = _cve_details_block(document)
     details = document.get('details') if isinstance(document.get('details'), dict) else {}
     details_description = details.get('description')
     if isinstance(details_description, (dict, list)):
         details_description = ''
     structured = _first_non_empty_str(
-        _cna_descriptions(cna),
         _descriptions_list_values(cve_details),
         cve_details.get('description'),
         _descriptions_list_values(details),
@@ -145,16 +138,12 @@ def extract_document_description(document):
 def extract_document_vendor_product(document):
     if not isinstance(document, dict):
         return '', ''
-    cna = (document.get('containers') or {}).get('cna') or {}
     cve_details = _cve_details_block(document)
     details = document.get('details') if isinstance(document.get('details'), dict) else {}
 
-    for vendor, product in (
-        _affected_vendor_product(cve_details.get('affected')),
-        _cna_vendor_product(cna),
-    ):
-        if vendor or product:
-            return vendor, product
+    vendor, product = _affected_vendor_product(cve_details.get('affected'))
+    if vendor or product:
+        return vendor, product
 
     return (
         _first_non_empty_str(
@@ -188,141 +177,11 @@ def promote_cve_display_fields(document):
     return document
 
 
-def _cna_descriptions(cna):
-    if not isinstance(cna, dict):
-        return ''
-    descriptions = cna.get('descriptions') or []
-    parts = []
-    for item in descriptions:
-        if isinstance(item, dict):
-            text = str(item.get('value') or '').strip()
-            if text:
-                parts.append(text)
-    return '\n'.join(parts)
-
-
-def _cna_severity(cna):
-    if not isinstance(cna, dict):
-        return ''
-    for metric in cna.get('metrics') or []:
-        if not isinstance(metric, dict):
-            continue
-        for key in ('cvssV4_0', 'cvssV3_1', 'cvssV3_0', 'cvssV2_0'):
-            data = metric.get(key)
-            if isinstance(data, dict):
-                severity = _first_non_empty_str(data.get('baseSeverity'))
-                if severity:
-                    return severity
-    return ''
-
-
-def _cna_affected(cna):
-    if not isinstance(cna, dict):
-        return []
-    affected = []
-    for item in cna.get('affected') or []:
-        if not isinstance(item, dict):
-            continue
-        vendor = str(item.get('vendor') or '').strip()
-        product = str(item.get('product') or '').strip()
-        label = ' '.join(part for part in (vendor, product) if part).strip()
-        if label:
-            affected.append(label)
-    return affected
-
-
-def _cna_vendor_product(cna):
-    if not isinstance(cna, dict):
-        return '', ''
-    for item in cna.get('affected') or []:
-        if not isinstance(item, dict):
-            continue
-        vendor = str(item.get('vendor') or '').strip()
-        product = str(item.get('product') or '').strip()
-        if vendor or product:
-            return vendor, product
-    return '', ''
-
-
-def _cna_references(cna):
-    if not isinstance(cna, dict):
-        return []
-    links = []
-    for item in cna.get('references') or []:
-        if isinstance(item, dict):
-            url = str(item.get('url') or '').strip()
-            if url:
-                links.append(url)
-    return links
-
-
 def normalize_cve_record_document(document):
     if not isinstance(document, dict):
         return document
-
-    cna = (document.get('containers') or {}).get('cna') or {}
-    metadata = document.get('cveMetadata') or {}
-    if not cna and not metadata:
-        return promote_cve_display_fields(document)
-
-    cve_id = _first_non_empty_str(
-        document.get('code'),
-        document.get('cve'),
-        document.get('cve_code'),
-        metadata.get('cveId'),
-    )
-    advisory_title = _first_non_empty_str(cna.get('title'), document.get('title'))
-    severity = _first_non_empty_str(
-        _cna_severity(cna),
-        document.get('severity'),
-        document.get('impacts'),
-        document.get('status'),
-    )
-    vendor, product = _cna_vendor_product(cna)
-    normalized = dict(document)
-    normalized['code'] = cve_id
-    normalized['cve'] = cve_id
-    normalized['title'] = cve_id or advisory_title
-    normalized['advisory_title'] = advisory_title
-    normalized['description'] = _first_non_empty_str(
-        _cna_descriptions(cna),
-        _descriptions_list_values(_cve_details_block(document)),
-        _descriptions_list_values(document.get('details') or {}),
-        document.get('summary'),
-        document.get('description'),
-        _first_nested_text(document.get('details') or {}, ('summary', 'overview', 'vulDesc')),
-        advisory_title,
-    )
-    normalized['severity'] = severity
-    normalized['impacts'] = severity
-    existing_affected = document.get('affected') or document.get('affected_products') or []
-    if isinstance(existing_affected, list) and existing_affected:
-        normalized['affected'] = existing_affected
-    else:
-        normalized['affected'] = _cna_affected(cna)
-    existing_links = document.get('related_link') or document.get('references') or []
-    if isinstance(existing_links, list) and existing_links:
-        normalized['related_link'] = existing_links
-    else:
-        normalized['related_link'] = _cna_references(cna)
-    if not normalized.get('disclosure_date'):
-        normalized['disclosure_date'] = metadata.get('datePublished') or metadata.get('dateUpdated')
-
-    nested_vendor, nested_product = extract_document_vendor_product(document)
-    if vendor or product:
-        normalized['vendor'] = vendor
-        normalized['product'] = product
-    elif nested_vendor or nested_product:
-        if nested_vendor:
-            normalized['vendor'] = nested_vendor
-        if nested_product:
-            normalized['product'] = nested_product
-    return promote_cve_display_fields(normalized)
+    return promote_cve_display_fields(document)
 
 
 def is_cve_record_document(document):
-    return isinstance(document, dict) and (
-        isinstance(document.get('cveMetadata'), dict)
-        or isinstance((document.get('containers') or {}).get('cna'), dict)
-    )
-
+    return isinstance(document, dict) and str(document.get('_id') or '').startswith('cve:')

@@ -52,18 +52,17 @@ def authenticate(client):
 def sample_document(index=1):
     return {
         '_id': f'test:{index}',
-        'type': 'test',
+        'schema_version': 2,
+        'code': str(index),
         'title': f'Vulnerability {index}',
-        'status': 'HIGH',
+        'severity': 'High',
         'details': {
-            'test': {
-                'description': 'Evidence-based description.',
-                'affected_products': ['Product A'],
-                'reference_links': ['https://example.com'],
-                'raw': {'large': 'must be removed'},
-            },
+            'description': 'Evidence-based description.',
+            'affected_products': ['Product A'],
+            'reference_links': ['https://example.com'],
+            'raw': {'large': 'must be removed'},
         },
-        'source': {'provider': 'test', 'detail_url': 'https://example.com/source'},
+        'source': {'detail_url': 'https://example.com/source'},
     }
 
 
@@ -125,7 +124,7 @@ def test_template_generation_maps_source_fields_and_counts():
         {
             'code': 'CVE-TEST-1',
             'title': 'First vulnerability',
-            'status': 'HIGH',
+            'severity': 'High',
             'source': {'detail_url': 'https://example.com/source-detail'},
             'details': {
                 'summary': 'Source summary.',
@@ -136,7 +135,7 @@ def test_template_generation_maps_source_fields_and_counts():
         },
         {
             'code': 'CVE-TEST-2',
-            'status': 'MEDIUM',
+            'severity': 'Medium',
             'details': {
                 'description': 'Second source description.',
                 'systems_affected': 'Product B',
@@ -153,7 +152,7 @@ def test_template_generation_maps_source_fields_and_counts():
     assert report['recommendations'] == []
     assert report['highlights'][0]['title'] == 'First vulnerability'
     assert report['highlights'][0]['code'] == 'CVE-TEST-1'
-    assert report['highlights'][0]['severity'] == 'HIGH'
+    assert report['highlights'][0]['severity'] == 'High'
     assert report['highlights'][0]['source_link'] == 'https://example.com/source-detail'
     assert report['highlights'][0]['newsletter']['overview'] == 'Source summary.'
     assert report['highlights'][0]['newsletter']['affected'] == ['Product A']

@@ -55,7 +55,7 @@ def filter_newsletter_feed(database, email, filters, limit=DEFAULT_FEED_LIMIT, o
         normalized = normalize_newsletter(document, source_collection)
         if not _matches_keyword(normalized, source_collection, keyword):
             continue
-        generated_at = document.get('scraped_at') or document.get('disclosure_date') or ''
+        generated_at = document.get('observed_at') or document.get('published_at') or ''
         items.append({
             'id': _record_id(source_collection, selection_id),
             'source_collection': source_collection,

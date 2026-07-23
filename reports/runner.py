@@ -47,8 +47,7 @@ def run_template_job(app, job_id):
                 if _job_is_cancelled(job_object_id):
                     return
                 details = compact_details(_load_input_details(item), current_app.config)
-                normalized = next(iter(details.values()), details) if len(details) == 1 else details
-                records.append({**_source_record_for_item(item), 'details': normalized})
+                records.append({**_source_record_for_item(item), 'details': details})
                 update_job_progress(
                     job_id,
                     current=position,

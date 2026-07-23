@@ -9,20 +9,17 @@ from reviews.scoring import (
 
 def _critical_kev_document():
     return {
-        '_id': 'critical:1',
-        'cveMetadata': {
-            'cveId': 'CVE-2026-9000',
-            'datePublished': '2026-06-20T00:00:00+00:00',
-        },
-        'cisa_kev': True,
-        'scraped_at': '2026-06-20T00:00:00+00:00',
-        'containers': {
-            'cna': {
-                'metrics': [{'cvssV3_1': {'baseSeverity': 'CRITICAL', 'baseScore': 9.8}}],
-                'descriptions': [{
-                    'value': 'Remote code execution exploited in the wild on internet-facing systems.',
-                }],
-            },
+        '_id': 'cve:2026-9000',
+        'code': '2026-9000',
+        'severity': 'Critical',
+        'published_at': '2026-06-20T00:00:00+00:00',
+        'observed_at': '2026-06-20T00:00:00+00:00',
+        'details': {
+            'cisa_kev': True,
+            'metrics': {'cvss_v31': [{'cvssData': {'baseSeverity': 'CRITICAL', 'baseScore': 9.8}}]},
+            'descriptions': [{
+                'value': 'Remote code execution exploited in the wild on internet-facing systems.',
+            }],
         },
     }
 
@@ -33,7 +30,7 @@ def _medium_document():
         'code': 'CVE-2026-1000',
         'severity': 'Medium',
         'summary': 'Information disclosure in a configuration panel.',
-        'scraped_at': '2020-01-01T00:00:00+00:00',
+        'observed_at': '2020-01-01T00:00:00+00:00',
     }
 
 

@@ -13,10 +13,9 @@ from reviews.query import (
     RELATED_CVE_QUERY_BATCH_SIZE,
     _MappingFilterArgs,
     _build_filter,
-    _collect_row_cve_codes,
+    _collect_row_cve_ids,
     _collect_scored_review_rows,
-    _cve_code_forms,
-    _extract_cve_codes,
+    _extract_cve_ids,
     _first_summary_value,
     _is_review_view,
     _iter_collection_documents,
@@ -109,32 +108,25 @@ def _related_summary(collection_name, selection_id, document, current_collection
         'collection': collection_name,
         'selection_id': selection_id,
         'document': _serialize(document),
-        'code': _first_summary_value(document, ('code', 'cve', 'cve_code', 'cve_codes')),
+        'code': _first_summary_value(document, ('code', 'cve', 'cve_ids')),
         'title': _first_summary_value(document, ('title',)),
-        'severity': _first_summary_value(document, ('severity', 'status', 'impacts')),
+        'severity': _first_summary_value(document, ('severity', 'impacts')),
         'affected': _first_summary_value(document, ('affected', 'affected_products')),
         'is_self': collection_name == current_collection and selection_id == current_selection_id,
     }
 
 
-def _related_cve_mongo_filter(cve_codes):
+def _related_cve_mongo_filter(cve_ids):
+    prefixed = sorted({code.upper() for code in cve_ids})
+    bare = sorted({code.removeprefix('CVE-') for code in prefixed})
     return {'$or': [
-        {field: {'$regex': f'^{re.escape(form)}$', '$options': 'i'}}
-        for code in cve_codes
-        for form in _cve_code_forms(code)
-        for field in (
-            'code',
-            'cve',
-            'cve_code',
-            'cve_codes',
-            'related_cves.cve_code',
-            'details.hkcert.vulnerability_identifiers.cve_id',
-        )
+        {'cve_ids': {'$in': prefixed}},
+        {'code': {'$in': bare}},
     ]}
 
 
-def _related_candidates(database, views, cve_codes):
-    all_codes = set(cve_codes)
+def _related_candidates(database, views, cve_ids):
+    all_codes = set(cve_ids)
     if not all_codes:
         return []
     candidates = []
@@ -158,7 +150,7 @@ def _related_candidates(database, views, cve_codes):
                     'collection': name,
                     'selection_id': selection_id,
                     'document': document,
-                    'codes': set(_extract_cve_codes(document)),
+                    'codes': set(_extract_cve_ids(document)),
                     '_sort': sort_key,
                 })
     return candidates
@@ -197,7 +189,7 @@ def _attach_related_cve_documents(database, views, rows):
     if not rows:
         return
 
-    row_codes, all_codes = _collect_row_cve_codes(rows)
+    row_codes, all_codes = _collect_row_cve_ids(rows)
     candidates = _related_candidates(database, views, all_codes)
     for row, codes in zip(rows, row_codes):
         related = _related_for_codes(

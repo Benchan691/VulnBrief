@@ -5,7 +5,7 @@ from reviews.repository import MAX_EXPORT_SELECTIONS, review_views
 from subscriptions.profiles import (
     HONG_KONG,
     KEYWORD_SEARCH_FIELDS,
-    build_scraped_at_window,
+    build_observed_at_window,
     parse_hong_kong_datetime,
 )
 
@@ -84,30 +84,7 @@ def build_severity_threshold_filter(threshold='', include_unknown=False):
 
 
 def severity_projection_fields():
-    return {
-        'status': 1,
-        'severity': {
-            '$ifNull': [
-                '$severity',
-                {
-                    '$ifNull': [
-                        '$details.hkcert.risk_level',
-                        {
-                            '$ifNull': [
-                                '$details.cisco.sir',
-                                {
-                                    '$ifNull': [
-                                        '$details.cnnvd.hazardLevel',
-                                        '$status',
-                                    ],
-                                },
-                            ],
-                        },
-                    ],
-                },
-            ],
-        },
-    }
+    return {'severity': 1}
 
 
 def _window_bounds(filters, now=None):
@@ -147,13 +124,13 @@ def _keyword_clause(value):
 def build_match_filter(filters, now=None):
     clauses = []
     mapping = {
-        'search': ('code', 'cve', 'title', 'description', 'impacts', 'affected',
-                   'recommendation', 'related_link', 'status', 'source_provider'),
-        'code': ('code', 'cve'),
+        'search': ('code', 'cve', 'cve_ids', 'title', 'description', 'impacts', 'affected',
+                   'recommendation', 'related_link', 'source_url'),
+        'code': ('code', 'cve', 'cve_ids'),
         'title': ('title',),
         'impact': ('impacts',),
         'affected': ('affected',),
-        'source': ('source_provider',),
+        'source': ('source_url',),
     }
     for parameter, fields in mapping.items():
         value = filters.get(parameter, '')
@@ -180,36 +157,39 @@ def build_match_filter(filters, now=None):
     if bounds:
         start, end = bounds
         clauses.append({
-            'scraped_at': {
-                '$gte': start.astimezone(timezone.utc).isoformat(),
-                '$lt': end.astimezone(timezone.utc).isoformat(),
+            'observed_at': {
+                '$gte': start.astimezone(timezone.utc),
+                '$lt': end.astimezone(timezone.utc),
             },
         })
     source_timestamp = filters.get('source_timestamp') or {}
     if source_timestamp:
-        source_clause = build_scraped_at_window(
+        source_clause = build_observed_at_window(
             source_timestamp.get('time_window') or source_timestamp.get('window') or 'all',
             source_timestamp.get('start', ''),
             source_timestamp.get('end', ''),
             now,
         )
         if source_clause:
-            bounds_clause = source_clause['scraped_at']
+            bounds_clause = source_clause['observed_at']
             clauses.append({'$or': [
-                {'scraped_at': bounds_clause},
-                {'disclosure_date': bounds_clause},
+                {'observed_at': bounds_clause},
+                {'published_at': bounds_clause},
+                {'updated_at': bounds_clause},
             ]})
     report_scope = filters.get('report_scope') or {}
     if report_scope.get('kev_only'):
         clauses.append({'$or': [
             {'cisa_kev': True},
             {'kev': True},
-            {'details.cve.cisa_kev': True},
-            {'details.cve.kev': True},
+            {'details.cisa_kev': True},
+            {'details.kev': True},
         ]})
     cve_delivery_cutoff = str(filters.get('cve_delivery_cutoff') or '').strip()
     if cve_delivery_cutoff:
-        clauses.append({'scraped_at': {'$gt': cve_delivery_cutoff}})
+        cutoff = parse_hong_kong_datetime(cve_delivery_cutoff)
+        if cutoff:
+            clauses.append({'observed_at': {'$gt': cutoff.astimezone(timezone.utc)}})
     if not clauses:
         return {}
     return clauses[0] if len(clauses) == 1 else {'$and': clauses}
@@ -224,10 +204,11 @@ def _projection_pipeline(view):
     projection.update({
         '_id': 1,
         **severity_projection_fields(),
-        'vuln_type': 1,
-        'scraped_at': 1,
-        'disclosure_date': 1,
-        'source_provider': '$source.provider',
+        'observed_at': 1,
+        'published_at': 1,
+        'updated_at': 1,
+        'cve_ids': 1,
+        'source_url': {'$ifNull': ['$source.detail_url', '$source.url']},
     })
     first['$project'] = projection
     return [first, *pipeline[1:]]
@@ -283,7 +264,7 @@ def query_profile_matches(
         pipeline = _projection_pipeline(view)
         pipeline.extend([
             {'$match': mongo_filter},
-            {'$sort': {'scraped_at': 1, '_id': 1}},
+            {'$sort': {'observed_at': 1, '_id': 1}},
         ])
         if limit is not None:
             pipeline.append({'$limit': limit + 1})

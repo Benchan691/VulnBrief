@@ -97,8 +97,8 @@ def _metrics(cards):
     timeline = [
         {
             'cve_id': item['cve_id'],
-            'disclosure_date': item.get('disclosure_date'),
-            'scraped_at': item.get('scraped_at'),
+            'published_at': item.get('published_at'),
+            'observed_at': item.get('observed_at'),
             'fixed_versions': item.get('fixed_versions') or [],
         }
         for item in cards
