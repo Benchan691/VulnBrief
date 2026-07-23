@@ -114,3 +114,43 @@ def test_promote_cve_display_fields_uses_nvd_descriptions_and_affected_vendor_pr
     assert 'Broken Authentication' in promoted['description']
     assert promoted['vendor'] == 'XServer'
     assert promoted['product'] == 'CloudSecure WP Security'
+
+
+def test_promote_cve_display_fields_uses_top_level_details_descriptions():
+    from reviews.normalizer import promote_cve_display_fields
+
+    document = {
+        'code': '2026-9857',
+        'title': 'CVE-2026-9857',
+        'details': {
+            'source_identifier': 'Wordfence',
+            'descriptions': [{
+                'lang': 'en',
+                'value': 'The Invoice123 plugin for WordPress is vulnerable to authorization bypass.',
+            }],
+            'weaknesses': [{
+                'descriptions': [{'lang': 'en', 'description': 'CWE-862 Missing Authorization'}],
+            }],
+        },
+    }
+
+    promoted = promote_cve_display_fields(document)
+
+    assert 'authorization bypass' in promoted['description']
+    assert promoted['summary'] == promoted['description']
+
+
+def test_promote_cve_display_fields_uses_details_description_string():
+    from reviews.normalizer import promote_cve_display_fields
+
+    document = {
+        'code': '2026-42588',
+        'title': 'Apache ActiveMQ jolokia',
+        'details': {
+            'description': 'Apache ActiveMQ Jolokia remote code execution vulnerability.',
+        },
+    }
+
+    promoted = promote_cve_display_fields(document)
+
+    assert 'Jolokia' in promoted['description']

@@ -112,36 +112,20 @@ def extract_document_description(document):
         return ''
     cna = (document.get('containers') or {}).get('cna') or {}
     cve_details = _cve_details_block(document)
+    details = document.get('details') if isinstance(document.get('details'), dict) else {}
+    details_description = details.get('description')
+    if isinstance(details_description, (dict, list)):
+        details_description = ''
     structured = _first_non_empty_str(
         _cna_descriptions(cna),
         _descriptions_list_values(cve_details),
         cve_details.get('description'),
+        _descriptions_list_values(details),
+        details_description if not _is_cwe_label(details_description) else '',
     )
     if structured:
-        # #region agent log
-        try:
-            import json as _json, urllib.request as _url
-            _payload = _json.dumps({'sessionId': '5a3615', 'hypothesisId': 'A', 'location': 'normalizer.py:extract_document_description', 'message': 'structured description found', 'data': {'source': 'cna_or_cve_details', 'len': len(structured), 'preview': structured[:80]}, 'timestamp': __import__('time').time() * 1000}).encode()
-            _req = _url.Request('http://host.docker.internal:7930/ingest/963a9c32-06bb-450a-a312-2a970a022ece', data=_payload, headers={'Content-Type': 'application/json', 'X-Debug-Session-Id': '5a3615'}, method='POST')
-            _url.urlopen(_req, timeout=0.5)
-        except Exception:
-            pass
-        # #endregion
         return structured
-    details = document.get('details') if isinstance(document.get('details'), dict) else {}
-    details_descriptions = _descriptions_list_values(details)
     nested_summary = _first_nested_text(details, ('summary', 'overview', 'vulDesc'))
-    nested_description = _first_nested_text(details, ('description',))
-    # #region agent log
-    if details_descriptions or nested_description:
-        try:
-            import json as _json, urllib.request as _url
-            _payload = _json.dumps({'sessionId': '5a3615', 'hypothesisId': 'A,B', 'location': 'normalizer.py:extract_document_description', 'message': 'missed nested description candidates', 'data': {'details_keys': list(details.keys())[:20], 'has_details_descriptions_list': bool(details_descriptions), 'details_descriptions_preview': (details_descriptions or '')[:80], 'has_nested_summary': bool(nested_summary), 'has_nested_description': bool(nested_description), 'nested_description_preview': (nested_description or '')[:80], 'top_description': bool(_first_non_empty_str(document.get('description'))), 'top_summary': bool(_first_non_empty_str(document.get('summary'))), 'will_return_empty': not bool(_first_non_empty_str(document.get('summary'), document.get('description'), document.get('overview'), nested_summary))}, 'timestamp': __import__('time').time() * 1000}).encode()
-            _req = _url.Request('http://host.docker.internal:7930/ingest/963a9c32-06bb-450a-a312-2a970a022ece', data=_payload, headers={'Content-Type': 'application/json', 'X-Debug-Session-Id': '5a3615'}, method='POST')
-            _url.urlopen(_req, timeout=0.5)
-        except Exception:
-            pass
-    # #endregion
     for candidate in (
         document.get('summary'),
         document.get('description'),
@@ -303,6 +287,7 @@ def normalize_cve_record_document(document):
     normalized['description'] = _first_non_empty_str(
         _cna_descriptions(cna),
         _descriptions_list_values(_cve_details_block(document)),
+        _descriptions_list_values(document.get('details') or {}),
         document.get('summary'),
         document.get('description'),
         _first_nested_text(document.get('details') or {}, ('summary', 'overview', 'vulDesc')),
