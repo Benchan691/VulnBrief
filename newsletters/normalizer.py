@@ -5,6 +5,7 @@ import bleach
 import markdown
 from flask import render_template
 from markupsafe import Markup
+from reviews.normalizer import extract_document_cve_id
 
 ALLOWED_TAGS = {
     'a', 'b', 'blockquote', 'br', 'code', 'div', 'em', 'h2', 'h3', 'li', 'ol',
@@ -53,6 +54,9 @@ CHINESE_LABELS = {
     'footer': '如有任何疑问，请联系安全运营中心。谢谢。',
 }
 CVE_PATTERN = re.compile(r'\b(?:CVE-)?(\d{4}-\d{4,})\b', re.IGNORECASE)
+GENERIC_CVE_TITLE_PATTERN = re.compile(
+    r'^\s*(?:CVE-)?\d{4}-\d{4,}(?:\s+Record)?\s*$', re.IGNORECASE,
+)
 SCRIPT_OR_STYLE_PATTERN = re.compile(
     r'<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>', re.IGNORECASE | re.DOTALL,
 )
@@ -299,6 +303,13 @@ def _cve_affected(values):
     return result
 
 
+def _cve_title(document, title):
+    text = str(title or '').strip()
+    if text and not GENERIC_CVE_TITLE_PATTERN.fullmatch(text):
+        return text
+    return extract_document_cve_id(document) or text
+
+
 def _path(value, *fields):
     for field in fields:
         if not isinstance(value, dict):
@@ -384,6 +395,7 @@ def _cnnvd_source_fields(fields, document, details):
 
 
 def _cve_source_fields(fields, document, details):
+    fields['title'] = _cve_title(document, fields['title'])
     fields['overview'] = _first(
         {}, {'values': _nested_values(details.get('descriptions'), 'value')}, 'values',
     )

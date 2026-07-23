@@ -1,5 +1,6 @@
 import pytest
 
+import subscriptions.query
 from subscriptions.profiles import (
     build_scraped_at_window,
     parse_hong_kong_datetime,
@@ -89,6 +90,89 @@ def test_parse_include_unknown_accepts_common_truthy_values():
     assert parse_include_unknown('true') is True
     assert parse_include_unknown('1') is True
     assert parse_include_unknown(None) is False
+
+
+def test_newsletter_profile_preserves_internal_cve_delivery_cutoff():
+    profile = validate_profile(FakeDatabase(), {
+        'enabled': True,
+        'filters': {},
+        'cve_delivery_cutoff': '2026-07-23T04:00:00+00:00',
+    }, 'newsletter')
+
+    assert profile['cve_delivery_cutoff'] == '2026-07-23T04:00:00+00:00'
+
+
+def test_public_subscription_hides_the_internal_cve_delivery_cutoff():
+    from subscriptions.routes import _public_subscription
+
+    public = _public_subscription(FakeDatabase(), {
+        'email': 'newsletter@example.com',
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {},
+            'cve_delivery_cutoff': '2026-07-23T04:00:00+00:00',
+        },
+        'report_profile': {'enabled': False, 'filters': {}},
+    })
+
+    assert 'cve_delivery_cutoff' not in public['newsletter_profile']
+
+
+def test_collection_filter_override_limits_cve_matches_to_the_cutoff(monkeypatch):
+    class CapturingCollection:
+        def __init__(self):
+            self.pipelines = []
+
+        def aggregate(self, pipeline):
+            self.pipelines.append(pipeline)
+            return iter([])
+
+    class CapturingDatabase:
+        def __init__(self):
+            self.collections = {
+                'cve': CapturingCollection(),
+                'avd': CapturingCollection(),
+            }
+
+        def __getitem__(self, name):
+            return self.collections[name]
+
+    views = {
+        'cve_review': {
+            'options': {
+                'viewOn': 'cve',
+                'pipeline': [{'$project': {'title': 1}}],
+            },
+        },
+        'avd_review': {
+            'options': {
+                'viewOn': 'avd',
+                'pipeline': [{'$project': {'title': 1}}],
+            },
+        },
+    }
+    monkeypatch.setattr('subscriptions.query.review_views', lambda database: views)
+    database = CapturingDatabase()
+    filters = validate_filters(FakeDatabase(), {'collections': []})
+    cutoff = '2026-07-23T04:00:00+00:00'
+
+    query_profile_matches(
+        database,
+        {'filters': filters},
+        limit=None,
+        collection_filter_overrides={
+            'cve_review': {
+                **filters,
+                'include_unknown': True,
+                'cve_delivery_cutoff': cutoff,
+            },
+        },
+    )
+
+    cve_match = database['cve'].pipelines[0][1]['$match']
+    avd_match = database['avd'].pipelines[0][1]['$match']
+    assert cve_match == {'scraped_at': {'$gt': cutoff}}
+    assert avd_match['severity']['$regex'].startswith('^(?:Critical')
 
 
 class FakeDatabase:

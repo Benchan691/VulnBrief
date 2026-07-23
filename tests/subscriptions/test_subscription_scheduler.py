@@ -179,6 +179,52 @@ def _matches(document, query):
     return True
 
 
+def test_newsletter_delivery_cve_override_honors_collections_and_severity_filters():
+    from subscriptions.scheduler import _newsletter_delivery_filter_overrides
+
+    cutoff = '2026-07-23T04:00:00+00:00'
+    default = _newsletter_delivery_filter_overrides({
+        'filters': {'collections': [], 'status': [], 'severity_threshold': ''},
+        'cve_delivery_cutoff': cutoff,
+    })
+    status_filtered = _newsletter_delivery_filter_overrides({
+        'filters': {
+            'collections': ['cve_review'],
+            'status': ['High'],
+            'severity_threshold': '',
+            'include_unknown': False,
+        },
+        'cve_delivery_cutoff': cutoff,
+    })
+    threshold_filtered = _newsletter_delivery_filter_overrides({
+        'filters': {
+            'collections': ['cve_review'],
+            'status': [],
+            'severity_threshold': 'High',
+            'include_unknown': False,
+        },
+        'cve_delivery_cutoff': cutoff,
+    })
+
+    assert default == {
+        'cve_review': {
+            'collections': [],
+            'status': [],
+            'severity_threshold': '',
+            'include_unknown': True,
+            'cve_delivery_cutoff': cutoff,
+        },
+    }
+    assert status_filtered['cve_review']['status'] == ['High']
+    assert status_filtered['cve_review']['include_unknown'] is False
+    assert threshold_filtered['cve_review']['severity_threshold'] == 'High'
+    assert threshold_filtered['cve_review']['include_unknown'] is False
+    assert _newsletter_delivery_filter_overrides({
+        'filters': {'collections': ['avd_review']},
+        'cve_delivery_cutoff': cutoff,
+    }) == {}
+
+
 def test_deliver_pending_newsletters_initializes_cursor_without_sending(monkeypatch):
     from subscriptions.scheduler import deliver_pending_newsletters
 

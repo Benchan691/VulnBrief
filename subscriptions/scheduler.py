@@ -489,6 +489,25 @@ def _is_updated_cve(source_collection, document):
     )
 
 
+def _newsletter_delivery_filter_overrides(profile):
+    """Apply CVE-only delivery safeguards without changing other sources."""
+    filters = profile.get('filters') or {}
+    collections = filters.get('collections') or []
+    if collections and 'cve_review' not in collections:
+        return {}
+
+    cve_filters = dict(filters)
+    if not cve_filters.get('status') and not cve_filters.get('severity_threshold'):
+        # Newsletter subscriptions default to every new CVE, including CVEs
+        # whose source record has no CVSS severity yet.
+        cve_filters['include_unknown'] = True
+
+    cutoff = str(profile.get('cve_delivery_cutoff') or '').strip()
+    if cutoff:
+        cve_filters['cve_delivery_cutoff'] = cutoff
+    return {'cve_review': cve_filters}
+
+
 def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER_SEND_LIMIT):
     now = now or _now()
     web_database = get_web_database()
@@ -516,6 +535,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
         {'filters': profile.get('filters') or {}},
         limit=None,
         include_documents=True,
+        collection_filter_overrides=_newsletter_delivery_filter_overrides(profile),
     )
     pending = []
     for match in matches:

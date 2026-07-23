@@ -219,6 +219,40 @@ def test_subscription_update_sends_branded_change_notification(client, monkeypat
     assert 'Manage or cancel subscription' in sent['email']['html']
 
 
+def test_subscription_edit_preserves_hidden_cve_delivery_cutoff(client):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {'collections': ['cve_review']},
+        },
+    }).status_code == 201
+
+    cutoff = '2026-07-23T04:00:00+00:00'
+    with app.app_context():
+        get_web_database()[SUB_ACCOUNT_COLLECTION].update_one(
+            {'email': TEST_EMAIL},
+            {'$set': {'newsletter_profile.cve_delivery_cutoff': cutoff}},
+        )
+
+    public = next(item for item in client.get('/api/subscriptions').get_json()['data'] if item['email'] == TEST_EMAIL)
+    assert 'cve_delivery_cutoff' not in public['newsletter_profile']
+
+    response = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {'collections': ['cve_review'], 'keywords': ['Apache']},
+        },
+    })
+
+    assert response.status_code == 200
+    with app.app_context():
+        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+    assert stored['newsletter_profile']['cve_delivery_cutoff'] == cutoff
+
+
 def test_unchanged_subscription_update_does_not_send_email(client, monkeypatch):
     authenticate(client)
     assert client.post('/api/subscriptions', json={

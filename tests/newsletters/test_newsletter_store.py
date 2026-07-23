@@ -360,6 +360,40 @@ def test_cve_details_fields_populate_the_newsletter():
     assert newsletter['references'] == ['https://example.test/advisory']
 
 
+def test_cve_newsletter_title_keeps_meaningful_titles_and_normalizes_fallbacks():
+    meaningful = normalize_newsletter({
+        'code': 'CVE-2026-8616',
+        'title': 'Fense Proxy & VPN Blocker missing authorization',
+    }, 'cve')
+    generic = normalize_newsletter({
+        'code': 'CVE-2026-8616',
+        'title': 'CVE-2026-8616 Record',
+        'details': {
+            'cve': {
+                'descriptions': [{
+                    'lang': 'en',
+                    'value': 'This description must not be appended to the title.',
+                }],
+            },
+        },
+    }, 'cve')
+    missing = normalize_newsletter({
+        'code': 'CVE-2026-8617',
+        'details': {
+            'cve': {
+                'descriptions': [{
+                    'lang': 'en',
+                    'value': 'A missing title still falls back to the CVE ID only.',
+                }],
+            },
+        },
+    }, 'cve')
+
+    assert meaningful['title'] == 'Fense Proxy & VPN Blocker missing authorization'
+    assert generic['title'] == 'CVE-2026-8616'
+    assert missing['title'] == 'CVE-2026-8617'
+
+
 def test_cve_empty_affected_data_is_rendered_as_not_specified():
     document = {
         'title': 'CVE-2026-0001',

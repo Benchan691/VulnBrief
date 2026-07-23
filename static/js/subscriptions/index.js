@@ -5,7 +5,7 @@
         reviewsUrl,
     } = JSON.parse(document.getElementById('page-config').textContent);
     const modal = new bootstrap.Modal(document.getElementById('subscription-modal'));
-    const newsletterCollections = new CollectionPicker('newsletter');
+    const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionMeansAll: true});
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
     let collections = [], subscriptions = [], editingEmail = null;
@@ -27,7 +27,7 @@
         '<div class="dropdown-divider my-2"></div>' +
         '<div class="d-flex justify-content-between px-1">' +
         '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">Select all</button>' +
-        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="clear">Clear</button>' +
+        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="reset">Reset to all</button>' +
         '</div></div></div></div></div>';
     }
 

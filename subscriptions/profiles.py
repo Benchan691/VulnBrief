@@ -61,6 +61,10 @@ DEFAULT_NEWSLETTER_PROFILE = {
     'enabled': False,
     'filters': DEFAULT_FILTERS,
     'delivery_cursor': '',
+    # Set during deployment to prevent delivery of CVEs scraped before the
+    # repaired scheduler is live. This is an internal delivery setting, not a
+    # subscriber-facing filter.
+    'cve_delivery_cutoff': '',
 }
 DEFAULT_REPORT_PROFILE = {
     'enabled': True,
@@ -216,6 +220,8 @@ def validate_profile(database, value, profile_type):
     if profile_type == 'newsletter':
         if 'delivery_cursor' in value:
             profile['delivery_cursor'] = value.get('delivery_cursor') or ''
+        if 'cve_delivery_cutoff' in value:
+            profile['cve_delivery_cutoff'] = value.get('cve_delivery_cutoff') or ''
         return profile
     if profile_type == 'report':
         profile['generation_mode'] = value.get('generation_mode', default['generation_mode'])
@@ -279,4 +285,3 @@ def profile_with_window(profile, window_data):
         filters['start'] = window_data.get('start', '')
         filters['end'] = window_data.get('end', '')
     return profile
-

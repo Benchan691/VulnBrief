@@ -1,7 +1,10 @@
 (function () {
     class CollectionPicker {
-        constructor(prefix) {
+        constructor(prefix, options) {
             this.prefix = prefix;
+            options = options || {};
+            this.emptySelectionMeansAll = options.emptySelectionMeansAll === true;
+            this.allMode = false;
         }
 
         element(suffix) {
@@ -13,6 +16,7 @@
         }
 
         selectedValues() {
+            if (this.allMode) return [];
             return this.checkboxes()
                 .filter(function (input) { return input.checked; })
                 .map(function (input) { return input.value; });
@@ -34,12 +38,14 @@
         updateLabel() {
             const checked = this.checkboxes().filter(function (input) { return input.checked; });
             const toggle = this.element('toggle');
-            toggle.textContent = checked.length === 0
+            toggle.textContent = this.allMode || checked.length === 0
                 ? 'All collections'
                 : checked.length === 1 ? checked[0].value : checked.length + ' collections';
         }
 
         render(collections, selected) {
+            selected = Array.isArray(selected) ? selected : [];
+            this.allMode = this.emptySelectionMeansAll && selected.length === 0;
             const options = this.element('options');
             options.replaceChildren();
             collections.forEach((name) => {
@@ -50,7 +56,7 @@
                 input.className = 'form-check-input collection-picker-checkbox';
                 input.id = this.prefix + '-collection-' + name.replace(/[^a-zA-Z0-9_-]/g, '_');
                 input.value = name;
-                input.checked = selected.includes(name);
+                input.checked = this.allMode || selected.includes(name);
                 const label = document.createElement('label');
                 label.className = 'form-check-label small';
                 label.htmlFor = input.id;
@@ -68,16 +74,27 @@
             search.addEventListener('input', () => this.filter());
             search.addEventListener('click', function (event) { event.stopPropagation(); });
             search.addEventListener('keydown', function (event) { event.stopPropagation(); });
-            options.addEventListener('change', () => this.updateLabel());
+            options.addEventListener('change', () => {
+                // Leaving the dynamic all mode makes the visible checkboxes an explicit list.
+                this.allMode = false;
+                this.updateLabel();
+            });
             this.element('menu').addEventListener('click', (event) => {
                 const action = event.target.closest('.collections-action');
                 if (!action) return;
                 event.preventDefault();
+                if (this.emptySelectionMeansAll && action.dataset.action === 'reset') {
+                    this.allMode = true;
+                    this.checkboxes().forEach(function (input) { input.checked = true; });
+                    this.updateLabel();
+                    return;
+                }
                 const checkboxes = action.dataset.action === 'all'
                     ? this.checkboxes().filter(function (input) {
                         return !input.closest('.form-check').classList.contains('d-none');
                     })
                     : this.checkboxes();
+                this.allMode = false;
                 checkboxes.forEach(function (input) {
                     input.checked = action.dataset.action === 'all';
                 });

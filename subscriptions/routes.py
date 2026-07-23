@@ -59,6 +59,7 @@ def _public_subscription(database, document):
     normalized.pop('_id', None)
     normalized.pop('schedule_claim_until', None)
     normalized.pop('schedule_claim_owner', None)
+    normalized.get('newsletter_profile', {}).pop('cve_delivery_cutoff', None)
     return normalized
 
 
@@ -281,6 +282,17 @@ def add_subscription():
         return jsonify({'error': 'Email and team are required.'}), 400
     try:
         database = get_vulnerabilities_database()
+        newsletter_value = data.get('newsletter_profile')
+        if isinstance(newsletter_value, dict):
+            # The deployment cutoff is maintained by the service, not clients.
+            data = {
+                **data,
+                'newsletter_profile': {
+                    key: value
+                    for key, value in newsletter_value.items()
+                    if key != 'cve_delivery_cutoff'
+                },
+            }
         newsletter_profile, report_profile = _profiles(database, data)
         report_profile = _with_next_run(report_profile)
         if get_collection().find_one({'email': email}):
@@ -341,6 +353,14 @@ def edit_subscription(email):
             newsletter_value = {
                 **newsletter_value,
                 'delivery_cursor': current['newsletter_profile'].get('delivery_cursor') or '',
+            }
+            data['newsletter_profile'] = newsletter_value
+        if isinstance(newsletter_value, dict):
+            newsletter_value = {
+                **newsletter_value,
+                # This cutoff is set at deployment and must survive ordinary
+                # subscription edits, even though it is not sent to the UI.
+                'cve_delivery_cutoff': current['newsletter_profile'].get('cve_delivery_cutoff') or '',
             }
             data['newsletter_profile'] = newsletter_value
         newsletter_profile, report_profile = _profiles(database, data)

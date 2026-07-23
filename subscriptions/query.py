@@ -207,6 +207,9 @@ def build_match_filter(filters, now=None):
             {'details.cve.cisa_kev': True},
             {'details.cve.kev': True},
         ]})
+    cve_delivery_cutoff = str(filters.get('cve_delivery_cutoff') or '').strip()
+    if cve_delivery_cutoff:
+        clauses.append({'scraped_at': {'$gt': cve_delivery_cutoff}})
     if not clauses:
         return {}
     return clauses[0] if len(clauses) == 1 else {'$and': clauses}
@@ -264,16 +267,19 @@ def query_profile_matches(
     limit=MAX_EXPORT_SELECTIONS,
     include_documents=False,
     allow_partial=False,
+    collection_filter_overrides=None,
 ):
     filters, views, collection_names = _profile_collection_names(database, profile)
     if profile.get('generation_mode') == 'enriched_weekly':
         scope_limit = (filters.get('report_scope') or {}).get('max_count')
         if scope_limit:
             limit = min(limit, int(scope_limit)) if limit is not None else int(scope_limit)
-    mongo_filter = build_match_filter(filters)
+    collection_filter_overrides = collection_filter_overrides or {}
     results = []
     for view_name in collection_names:
         view = views[view_name]
+        view_filters = collection_filter_overrides.get(view_name, filters)
+        mongo_filter = build_match_filter(view_filters)
         pipeline = _projection_pipeline(view)
         pipeline.extend([
             {'$match': mongo_filter},
