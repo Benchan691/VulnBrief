@@ -365,10 +365,32 @@ def _iter_merged_documents(database, views, view_names, mongo_filter):
 def _prepare_review_document(collection_name, document, view=None):
     document = dict(document)
     source_name = (view or {}).get('options', {}).get('viewOn', '')
-    if source_name == 'cve' or collection_name == 'cve_review' or is_cve_record_document(document):
+    details = document.get('details') if isinstance(document.get('details'), dict) else {}
+    before_keys = {
+        'has_top_description': bool(document.get('description')),
+        'has_top_summary': bool(document.get('summary')),
+        'details_keys': list(details.keys())[:20],
+        'has_details_descriptions': isinstance(details.get('descriptions'), list),
+        'has_details_description': bool(details.get('description')),
+        'has_details_cve': isinstance(details.get('cve'), dict),
+        'has_containers_cna': isinstance(((document.get('containers') or {}).get('cna')), dict),
+    }
+    use_normalize = source_name == 'cve' or collection_name == 'cve_review' or is_cve_record_document(document)
+    if use_normalize:
         document = normalize_cve_record_document(document)
     else:
         document = promote_cve_display_fields(document)
+    # #region agent log
+    _desc = str(document.get('description') or '')
+    if not _desc and (before_keys['has_details_descriptions'] or before_keys['has_details_description']):
+        try:
+            import json as _json, urllib.request as _url, time as _time
+            _payload = _json.dumps({'sessionId': '5a3615', 'hypothesisId': 'A,B,D', 'location': 'query.py:_prepare_review_document', 'message': 'prepared empty description despite nested text', 'data': {'collection': collection_name, 'source_name': source_name, 'use_normalize': use_normalize, 'before': before_keys, 'after_description_len': 0, 'after_summary_len': len(str(document.get('summary') or ''))}, 'timestamp': _time.time() * 1000}).encode()
+            _req = _url.Request('http://host.docker.internal:7930/ingest/963a9c32-06bb-450a-a312-2a970a022ece', data=_payload, headers={'Content-Type': 'application/json', 'X-Debug-Session-Id': '5a3615'}, method='POST')
+            _url.urlopen(_req, timeout=0.5)
+        except Exception:
+            pass
+    # #endregion
     return document
 
 

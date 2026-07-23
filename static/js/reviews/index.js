@@ -393,6 +393,15 @@
                 '',
                 true
             );
+            // #region agent log
+            (function () {
+                const details = projectedDocument && projectedDocument.details && typeof projectedDocument.details === 'object'
+                    ? projectedDocument.details
+                    : {};
+                const descValue = firstValue(projectedDocument, ['description', 'summary', 'overview', 'intro']);
+                fetch('http://127.0.0.1:7930/ingest/963a9c32-06bb-450a-a312-2a970a022ece',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'5a3615'},body:JSON.stringify({sessionId:'5a3615',hypothesisId:'C',location:'reviews/index.js:renderResults',message:'frontend description cell',data:{collection:item.collection,code:firstValue(projectedDocument,['code','cve','title']),descValue:descValue || '-',descLen:(descValue||'').length,topDescription:!!projectedDocument.description,topSummary:!!projectedDocument.summary,detailsKeys:Object.keys(details).slice(0,20),hasDetailsDescriptions:Array.isArray(details.descriptions),hasDetailsDescription:!!details.description,nestedDescPreview:Array.isArray(details.descriptions)&&(details.descriptions[0]&&details.descriptions[0].value)?String(details.descriptions[0].value).slice(0,80):(details.description?String(details.description).slice(0,80):'')},timestamp:Date.now()})}).catch(function(){});
+            }());
+            // #endregion
             addCell(
                 row,
                 firstValue(projectedDocument, ['description', 'summary', 'overview', 'intro']),
