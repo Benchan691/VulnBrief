@@ -9,9 +9,16 @@
     const empty = document.getElementById('empty');
     const resultSummary = document.getElementById('result-summary');
     const keyword = document.getElementById('feed-keyword');
+    const pageSize = document.getElementById('page-size');
+    const pagination = document.getElementById('pagination');
+    const pageLabel = document.getElementById('page-label');
+    const previousPage = document.getElementById('previous-page');
+    const nextPage = document.getElementById('next-page');
     const previewModal = new bootstrap.Modal(document.getElementById('preview-modal'));
     const collectionPicker = new CollectionPicker('feed');
     let collections = [];
+    let currentPage = 1;
+    let totalPages = 0;
 
     function previewUrl(item) {
         return '/generated-newsletters/'
@@ -70,6 +77,22 @@
         loading.classList.toggle('d-none', state !== 'loading');
         empty.classList.toggle('d-none', state !== 'empty');
         rows.parentElement.parentElement.classList.toggle('d-none', state === 'prompt' || state === 'loading');
+        if (state !== 'results') {
+            pagination.classList.add('d-none');
+        }
+    }
+
+    function updatePagination(body) {
+        currentPage = body.page || 1;
+        totalPages = body.pages || 0;
+        const hasPages = totalPages > 0 && body.count > 0;
+        pagination.classList.toggle('d-none', !hasPages);
+        if (!hasPages) {
+            return;
+        }
+        pageLabel.textContent = 'Page ' + currentPage + ' of ' + totalPages;
+        previousPage.disabled = currentPage <= 1;
+        nextPage.disabled = currentPage >= totalPages;
     }
 
     function renderRows(items) {
@@ -100,22 +123,29 @@
         });
     }
 
-    function applyFilters() {
+    function applyFilters(page) {
+        currentPage = page || 1;
         message.className = 'alert d-none';
         setViewState('loading');
         resultSummary.classList.add('d-none');
         requestJson(queryUrl, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({filters: readFilters()}),
+            body: JSON.stringify({
+                filters: readFilters(),
+                page: currentPage,
+                page_size: parseInt(pageSize.value, 10),
+            }),
         }).then(function (body) {
             renderRows(body.data);
-            if (body.data.length === 0) {
+            if (body.count === 0) {
                 setViewState('empty');
+                updatePagination(body);
             } else {
                 setViewState('results');
                 resultSummary.textContent = body.count + ' matching newsletter' + (body.count === 1 ? '' : 's');
                 resultSummary.classList.remove('d-none');
+                updatePagination(body);
             }
         }).catch(function (error) {
             setViewState('prompt');
@@ -125,14 +155,28 @@
 
     collectionPicker.wire();
 
-    document.getElementById('apply-btn').onclick = applyFilters;
+    document.getElementById('apply-btn').onclick = function () { applyFilters(1); };
     document.getElementById('clear-btn').onclick = function () {
         setFilters({});
         rows.replaceChildren();
+        currentPage = 1;
+        totalPages = 0;
         resultSummary.classList.add('d-none');
+        pagination.classList.add('d-none');
         message.className = 'alert d-none';
         setViewState('prompt');
     };
+    previousPage.addEventListener('click', function () {
+        if (currentPage > 1) applyFilters(currentPage - 1);
+    });
+    nextPage.addEventListener('click', function () {
+        if (currentPage < totalPages) applyFilters(currentPage + 1);
+    });
+    pageSize.addEventListener('change', function () {
+        if (!resultSummary.classList.contains('d-none') || !empty.classList.contains('d-none')) {
+            applyFilters(1);
+        }
+    });
 
     requestJson(reviewsUrl).then(function (body) {
         collections = body.data.map(function (item) { return item.name; });

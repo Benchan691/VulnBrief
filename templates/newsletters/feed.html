@@ -22,7 +22,16 @@
             </div>
         </div>
     </div>
-    <div id="result-summary" class="text-muted small mb-2 d-none"></div>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+        <div id="result-summary" class="text-muted small d-none"></div>
+        <div class="d-flex align-items-center gap-2">
+            <select id="page-size" class="form-select form-select-sm" aria-label="Results per page">
+                <option value="25" selected>25 per page</option>
+                <option value="50">50 per page</option>
+                <option value="100">100 per page</option>
+            </select>
+        </div>
+    </div>
     <div class="card shadow-sm border-0 overflow-hidden">
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
@@ -33,6 +42,11 @@
         <div id="prompt" class="text-center text-muted py-5">Apply collections to load matching newsletters from this feed.</div>
         <div id="loading" class="text-center text-muted py-5 d-none">Loading newsletters...</div>
         <div id="empty" class="text-center text-muted py-5 d-none">No newsletters match the current filters.</div>
+        <div id="pagination" class="d-flex justify-content-between align-items-center px-3 py-2 border-top d-none">
+            <button id="previous-page" class="btn btn-outline-secondary btn-sm" type="button">Previous</button>
+            <span id="page-label" class="text-muted small"></span>
+            <button id="next-page" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
+        </div>
     </div>
 </div>
 

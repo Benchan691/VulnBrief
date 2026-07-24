@@ -540,8 +540,31 @@ def query_newsletter_feed(email):
             'include_unknown': True,
         })
         filters['keyword'] = str((data.get('filters') or {}).get('keyword') or '').strip()
-        items, count = filter_newsletter_feed(database, email, filters)
-        return jsonify({'data': items, 'count': count})
+        try:
+            page = max(int(data.get('page', 1)), 1)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'page must be an integer.'}), 400
+        try:
+            page_size = int(data.get('page_size', 25))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'page_size must be an integer.'}), 400
+        if page_size not in (25, 50, 100):
+            return jsonify({'error': 'page_size must be 25, 50, or 100.'}), 400
+        items, count = filter_newsletter_feed(
+            database,
+            email,
+            filters,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )
+        pages = 0 if count == 0 else max((count + page_size - 1) // page_size, 1)
+        return jsonify({
+            'data': items,
+            'count': count,
+            'page': page,
+            'pages': pages,
+            'page_size': page_size,
+        })
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:

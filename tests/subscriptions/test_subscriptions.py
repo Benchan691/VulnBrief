@@ -734,6 +734,8 @@ def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypa
     assert page.status_code == 200
     assert b'/static/js/newsletters/feed.js' in page.data
     assert b'id="page-config"' in page.data
+    assert b'id="page-size"' in page.data
+    assert b'id="pagination"' in page.data
     assert b'Search all' not in page.data
 
     document = {
@@ -761,6 +763,9 @@ def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypa
     body = response.get_json()
     assert body['count'] == 1
     assert len(body['data']) == 1
+    assert body['page'] == 1
+    assert body['pages'] == 1
+    assert body['page_size'] == 25
     assert body['data'][0]['title'] == 'Matched Advisory'
     assert body['data'][0]['source_collection'] == 'avd'
     assert body['data'][0]['selection_id'] == 'avd-1'
@@ -791,6 +796,91 @@ def test_newsletter_feed_query_returns_empty_when_no_matches(client, monkeypatch
     body = response.get_json()
     assert body['count'] == 0
     assert body['data'] == []
+    assert body['page'] == 1
+    assert body['pages'] == 0
+    assert body['page_size'] == 25
+
+
+def test_newsletter_feed_query_paginates_results(client, monkeypatch):
+    authenticate(client)
+    assert client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {'enabled': True, 'filters': {'collections': ['avd_review']}},
+    }).status_code == 201
+
+    documents = [
+        {
+            '_id': f'avd-{index}',
+            'title': f'Advisory {index}',
+            'observed_at': f'2026-06-{index:02d}T12:00:00+00:00',
+            'details': {'avd': {'summary': f'Summary {index}'}},
+        }
+        for index in range(1, 4)
+    ]
+    documents_by_id = {document['_id']: document for document in documents}
+
+    monkeypatch.setattr(
+        'newsletters.feed.query_profile_matches',
+        lambda database, profile, limit=None, include_documents=False: [
+            _newsletter_match(document) if include_documents else {
+                'collection': 'avd_review',
+                'source_collection': 'avd',
+                'selection_id': document['_id'],
+            }
+            for document in documents
+        ],
+    )
+    monkeypatch.setattr(
+        'newsletters.feed.resolve_vulnerability_document',
+        lambda database, source_collection, selection_id: documents_by_id.get(selection_id),
+    )
+
+    first_page = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
+        'filters': {'collections': ['avd_review']},
+        'page': 1,
+        'page_size': 25,
+    })
+    assert first_page.status_code == 200
+    first_body = first_page.get_json()
+    assert first_body['count'] == 3
+    assert first_body['page'] == 1
+    assert first_body['pages'] == 1
+    assert first_body['page_size'] == 25
+    assert [item['selection_id'] for item in first_body['data']] == ['avd-3', 'avd-2', 'avd-1']
+
+    invalid = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
+        'filters': {'collections': ['avd_review']},
+        'page': 1,
+        'page_size': 10,
+    })
+    assert invalid.status_code == 400
+    assert invalid.get_json()['error'] == 'page_size must be 25, 50, or 100.'
+
+    captured = {}
+
+    def fake_filter(database, email, filters, limit=25, offset=0):
+        captured['limit'] = limit
+        captured['offset'] = offset
+        return (
+            [{'selection_id': 'avd-2', 'title': 'Advisory 2'}],
+            51,
+        )
+
+    monkeypatch.setattr('subscriptions.routes.filter_newsletter_feed', fake_filter)
+    paged = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
+        'filters': {'collections': ['avd_review']},
+        'page': 2,
+        'page_size': 50,
+    })
+    assert paged.status_code == 200
+    paged_body = paged.get_json()
+    assert captured == {'limit': 50, 'offset': 50}
+    assert paged_body['page'] == 2
+    assert paged_body['pages'] == 2
+    assert paged_body['page_size'] == 50
+    assert paged_body['count'] == 51
+    assert len(paged_body['data']) == 1
 
 
 def test_newsletter_feed_query_unknown_subscription_returns_404(client):
@@ -826,10 +916,14 @@ def test_newsletter_feed_query_uses_collections_and_keyword_only(client, monkeyp
     }).status_code == 201
 
     captured = {}
-    monkeypatch.setattr(
-        'subscriptions.routes.filter_newsletter_feed',
-        lambda database, email, filters: (captured.setdefault('filters', filters) and [], 0),
-    )
+
+    def fake_filter(database, email, filters, limit=25, offset=0):
+        captured['filters'] = filters
+        captured['limit'] = limit
+        captured['offset'] = offset
+        return [], 0
+
+    monkeypatch.setattr('subscriptions.routes.filter_newsletter_feed', fake_filter)
 
     response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
         'filters': {'status': 'Urgent', 'keyword': 'WordPress'},
@@ -838,3 +932,5 @@ def test_newsletter_feed_query_uses_collections_and_keyword_only(client, monkeyp
     assert captured['filters']['collections'] == []
     assert captured['filters']['include_unknown'] is True
     assert captured['filters']['keyword'] == 'WordPress'
+    assert captured['limit'] == 25
+    assert captured['offset'] == 0

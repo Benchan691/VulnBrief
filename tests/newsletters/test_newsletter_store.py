@@ -494,3 +494,39 @@ def test_filter_newsletter_feed_uses_the_raw_source_document(monkeypatch):
 
     assert count == 1
     assert items[0]['title'] == 'Windows Media Information Disclosure Vulnerability'
+
+
+def test_filter_newsletter_feed_applies_limit_and_offset(monkeypatch):
+    documents = [
+        {
+            '_id': f'avd-{index}',
+            'title': f'Advisory {index}',
+            'observed_at': f'2026-06-{index:02d}T12:00:00+00:00',
+            'details': {'summary': f'Summary {index}'},
+        }
+        for index in range(1, 4)
+    ]
+    documents_by_id = {document['_id']: document for document in documents}
+
+    monkeypatch.setattr(
+        'newsletters.feed.query_profile_matches',
+        lambda *args, **kwargs: [
+            {
+                'source_collection': 'avd',
+                'selection_id': document['_id'],
+                'document': document,
+            }
+            for document in documents
+        ],
+    )
+    monkeypatch.setattr('newsletters.feed.validate_filters', lambda database, value: value or {})
+    monkeypatch.setattr(
+        'newsletters.feed.resolve_vulnerability_document',
+        lambda database, source_collection, selection_id: documents_by_id.get(selection_id),
+    )
+
+    items, count = filter_newsletter_feed(None, 'test@example.com', {}, limit=1, offset=1)
+
+    assert count == 3
+    assert len(items) == 1
+    assert items[0]['selection_id'] == 'avd-2'
