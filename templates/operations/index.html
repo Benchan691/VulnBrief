@@ -1,5 +1,6 @@
 {% extends "layouts/base.html" %}
 {% block title %}Operations{% endblock %}
+{% block styles %}<link href="{{ url_for('static', filename='css/operations.css') }}" rel="stylesheet">{% endblock %}
 {% block content %}
 <div class="container">
     <div class="d-flex justify-content-between align-items-center mb-3">
@@ -14,12 +15,23 @@
 
     <div id="message" class="alert d-none" role="alert"></div>
 
-    <div id="scheduler-banner" class="alert alert-secondary mb-4">
-        Loading scheduler status...
-    </div>
+    <ul class="nav nav-tabs mb-4" id="operations-tabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="health-tab" data-bs-toggle="tab" data-bs-target="#health-panel" type="button" role="tab" aria-controls="health-panel" aria-selected="true">Scheduler Health</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="templates-tab" data-bs-toggle="tab" data-bs-target="#templates-panel" type="button" role="tab" aria-controls="templates-panel" aria-selected="false">Email Templates</button>
+        </li>
+    </ul>
 
-    <h2 class="h5 mb-2">Scheduled reports</h2>
-    <div class="card shadow-sm border-0 overflow-hidden mb-4">
+    <div class="tab-content">
+    <section class="tab-pane fade show active" id="health-panel" role="tabpanel" aria-labelledby="health-tab">
+        <div id="scheduler-banner" class="alert alert-secondary mb-4">
+            Loading scheduler status...
+        </div>
+
+        <h2 class="h5 mb-2">Scheduled reports</h2>
+        <div class="card shadow-sm border-0 overflow-hidden mb-4">
         <div class="table-responsive">
             <table class="table table-sm table-hover align-middle mb-0">
                 <thead class="table-dark">
@@ -36,10 +48,10 @@
             </table>
         </div>
         <div id="reports-empty" class="text-center text-muted py-4 d-none">No subscriptions found.</div>
-    </div>
+        </div>
 
-    <h2 class="h5 mb-2">Newsletters</h2>
-    <div class="card shadow-sm border-0 overflow-hidden mb-4">
+        <h2 class="h5 mb-2">Newsletters</h2>
+        <div class="card shadow-sm border-0 overflow-hidden mb-4">
         <div class="table-responsive">
             <table class="table table-sm table-hover align-middle mb-0">
                 <thead class="table-dark">
@@ -55,10 +67,10 @@
             </table>
         </div>
         <div id="newsletters-empty" class="text-center text-muted py-4 d-none">No newsletter profiles found.</div>
-    </div>
+        </div>
 
-    <h2 class="h5 mb-2">Recent newsletter deliveries</h2>
-    <div class="card shadow-sm border-0 overflow-hidden mb-4">
+        <h2 class="h5 mb-2">Recent newsletter deliveries</h2>
+        <div class="card shadow-sm border-0 overflow-hidden mb-4">
         <div class="table-responsive">
             <table class="table table-sm table-hover align-middle mb-0">
                 <thead class="table-dark">
@@ -73,12 +85,22 @@
             </table>
         </div>
         <div id="deliveries-empty" class="text-center text-muted py-4 d-none">No recent newsletter deliveries.</div>
+        </div>
+    </section>
+
+    <section class="tab-pane fade" id="templates-panel" role="tabpanel" aria-labelledby="templates-tab">
+        <p class="text-muted small">The newest source record from each active review collection, rendered with its newsletter template.</p>
+        <div id="templates-loading" class="text-center text-muted py-5 d-none">Loading email templates...</div>
+        <div id="templates-empty" class="text-center text-muted py-5 d-none">No active review collections found.</div>
+        <div id="template-cards" class="row g-4"></div>
+    </section>
     </div>
 </div>
 {% endblock %}
 {% block script %}
 <script id="page-config" type="application/json">{{ {
     'healthUrl': url_for('operations.get_operations_health'),
+    'templatesUrl': url_for('operations.get_newsletter_templates'),
 } | tojson }}</script>
 <script src="{{ url_for('static', filename='js/operations/index.js') }}"></script>
 {% endblock %}

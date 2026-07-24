@@ -7,6 +7,7 @@ from bson import ObjectId
 
 from app import app
 from operations.health import build_health_snapshot
+from operations.templates import latest_newsletter_templates
 from subscriptions.scheduler import (
     SCHEDULER_ALIVE_SECONDS,
     SCHEDULER_HEALTH_ID,
@@ -32,6 +33,7 @@ def test_operations_page_requires_authentication():
     client = app.test_client()
     assert client.get('/operations').status_code == 302
     assert client.get('/api/operations/health').status_code == 401
+    assert client.get('/api/operations/newsletter-templates').status_code == 401
 
     authenticate(client)
     page = client.get('/operations')
@@ -45,6 +47,67 @@ def test_operations_page_requires_authentication():
     assert match
     page_config = json.loads(match.group(1))
     assert page_config['healthUrl'] == '/api/operations/health'
+    assert page_config['templatesUrl'] == '/api/operations/newsletter-templates'
+    assert b'Email Templates' in page.data
+
+
+def test_latest_newsletter_templates_uses_active_sources_and_newest_timestamp(monkeypatch):
+    database = FakeDatabase({
+        'avd': [
+            {'_id': 'older', 'observed_at': '2026-07-20T12:00:00+00:00'},
+            {'_id': 'newer', 'published_at': '2026-07-21T12:00:00+00:00'},
+            {'_id': 'latest', 'observed_at': '2026-07-22T12:00:00+00:00'},
+        ],
+        'empty': [],
+    })
+    monkeypatch.setattr('operations.templates.review_views', lambda database: {
+        'empty_review': {'options': {'viewOn': 'empty'}},
+        'avd_review': {'options': {'viewOn': 'avd'}},
+        'avd_secondary_review': {'options': {'viewOn': 'avd'}},
+    })
+
+    assert latest_newsletter_templates(database) == [
+        {
+            'source_collection': 'avd',
+            'review_collections': ['avd_review', 'avd_secondary_review'],
+            'selection_id': 'latest',
+            'source_timestamp': '2026-07-22T12:00:00+00:00',
+        },
+        {
+            'source_collection': 'empty',
+            'review_collections': ['empty_review'],
+            'selection_id': '',
+            'source_timestamp': '',
+        },
+    ]
+
+
+def test_latest_newsletter_templates_uses_id_when_timestamps_are_missing(monkeypatch):
+    database = FakeDatabase({'avd': [{'_id': 'avd-1'}, {'_id': 'avd-2'}]})
+    monkeypatch.setattr('operations.templates.review_views', lambda database: {
+        'avd_review': {'options': {'viewOn': 'avd'}},
+    })
+
+    assert latest_newsletter_templates(database)[0]['selection_id'] == 'avd-2'
+
+
+def test_newsletter_templates_api_returns_template_rows(monkeypatch):
+    client = app.test_client()
+    authenticate(client)
+    database = FakeDatabase({'avd': [{'_id': 'avd-1', 'scraped_at': '2026-07-23T12:00:00+00:00'}]})
+    monkeypatch.setattr('operations.routes.get_vulnerabilities_database', lambda: database)
+    monkeypatch.setattr('operations.templates.review_views', lambda database: {
+        'avd_review': {'options': {'viewOn': 'avd'}},
+    })
+
+    response = client.get('/api/operations/newsletter-templates')
+    assert response.status_code == 200
+    assert response.get_json()['data'] == [{
+        'source_collection': 'avd',
+        'review_collections': ['avd_review'],
+        'selection_id': 'avd-1',
+        'source_timestamp': '2026-07-23T12:00:00+00:00',
+    }]
 
 
 def test_operations_health_api(monkeypatch):

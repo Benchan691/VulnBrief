@@ -1,6 +1,7 @@
 (function () {
     const pageConfig = JSON.parse(document.getElementById('page-config').textContent);
     const refreshMs = 20000;
+    let templatesLoaded = false;
 
     function showMessage(text, type) {
         const box = document.getElementById('message');
@@ -152,6 +153,50 @@
         });
     }
 
+    function previewUrl(row) {
+        return '/generated-newsletters/' + encodeURIComponent(row.source_collection) + '/'
+            + encodeURIComponent(row.selection_id) + '/preview';
+    }
+
+    function renderTemplates(rows) {
+        const cards = document.getElementById('template-cards');
+        const empty = document.getElementById('templates-empty');
+        cards.replaceChildren();
+        empty.classList.toggle('d-none', rows.length !== 0);
+        rows.forEach(function (row) {
+            const column = document.createElement('div');
+            column.className = 'col-12 col-xl-6';
+            const card = document.createElement('article');
+            card.className = 'card shadow-sm border-0 overflow-hidden';
+            const header = document.createElement('div');
+            header.className = 'card-header bg-white';
+            const title = document.createElement('h2');
+            title.className = 'h6 mb-1';
+            title.textContent = row.source_collection;
+            const detail = document.createElement('div');
+            detail.className = 'small text-muted';
+            detail.textContent = row.source_timestamp
+                ? 'Newest source record: ' + formatTime(row.source_timestamp)
+                : 'No source record available.';
+            header.append(title, detail);
+            card.append(header);
+            if (row.selection_id) {
+                const frame = document.createElement('iframe');
+                frame.className = 'template-preview-frame';
+                frame.title = row.source_collection + ' email template preview';
+                frame.src = previewUrl(row);
+                card.append(frame);
+            } else {
+                const unavailable = document.createElement('div');
+                unavailable.className = 'card-body text-muted py-5';
+                unavailable.textContent = 'No source record available for this active review collection.';
+                card.append(unavailable);
+            }
+            column.append(card);
+            cards.append(column);
+        });
+    }
+
     function loadHealth() {
         return requestJson(pageConfig.healthUrl)
             .then(function (body) {
@@ -166,7 +211,33 @@
             });
     }
 
-    document.getElementById('refresh-btn').addEventListener('click', loadHealth);
+    function loadTemplates() {
+        const loading = document.getElementById('templates-loading');
+        loading.classList.remove('d-none');
+        return requestJson(pageConfig.templatesUrl)
+            .then(function (body) {
+                clearMessage();
+                renderTemplates(body.data || []);
+                templatesLoaded = true;
+            })
+            .catch(function (error) {
+                showMessage(error.message || 'Unable to load email templates.', 'danger');
+            })
+            .finally(function () {
+                loading.classList.add('d-none');
+            });
+    }
+
+    document.getElementById('templates-tab').addEventListener('shown.bs.tab', function () {
+        if (!templatesLoaded) loadTemplates();
+    });
+    document.getElementById('refresh-btn').addEventListener('click', function () {
+        if (document.getElementById('templates-tab').classList.contains('active')) {
+            loadTemplates();
+        } else {
+            loadHealth();
+        }
+    });
     loadHealth();
     setInterval(loadHealth, refreshMs);
 })();
