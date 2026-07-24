@@ -74,8 +74,9 @@ TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them lo
 ## Quick start (Docker)
 
 ```sh
-# 1. Create .env (see Configuration above)
+# 1. Create .env and local compose (see Configuration above)
 cp .env.example .env
+cp docker-compose.example.yml docker-compose.yml
 
 # 2. Start local MongoDB on the host (port 27017) before compose
 mongosh "mongodb://localhost:27017/" --eval 'db.runCommand({ ping: 1 })'

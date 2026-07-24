@@ -11,3 +11,4 @@ key.pem
 config/config.json
 
 .codex/
+docker-compose.yml

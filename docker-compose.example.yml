@@ -10,7 +10,9 @@ services:
     environment:
       LOCAL_MONGO_URI: mongodb://host.docker.internal:27017/
     extra_hosts:
-      - "host.docker.internal:172.18.0.1"
+      # Adjust host gateway IP for your Docker host if needed.
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./newsletters:/app/newsletters
-      - ${AVD_ROOT:-/home/cpcnet/cyberclawer}:/cyberclawer
+      # Local vuln scraper / AVD checkout mounted into the container.
+      - ${AVD_ROOT:-/path/to/cyberclawer}:/cyberclawer
