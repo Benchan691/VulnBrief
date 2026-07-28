@@ -3,7 +3,6 @@ import socket
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from html import escape
 
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
@@ -58,6 +57,40 @@ def next_weekly_run(profile, now=None):
     return target.astimezone(timezone.utc)
 
 
+STATISTIC_SCHEDULE_HOUR = 9
+STATISTIC_SCHEDULE_MINUTE = 0
+
+
+def previous_calendar_month_bounds(now=None):
+    now_hkt = (now or _now()).astimezone(HONG_KONG)
+    first_of_this_month = now_hkt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end = first_of_this_month
+    start = (first_of_this_month - timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def next_monthly_statistic_run(now=None):
+    now_hkt = (now or _now()).astimezone(HONG_KONG)
+    target = now_hkt.replace(
+        day=1,
+        hour=STATISTIC_SCHEDULE_HOUR,
+        minute=STATISTIC_SCHEDULE_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    if target <= now_hkt:
+        if now_hkt.month == 12:
+            target = target.replace(year=now_hkt.year + 1, month=1)
+        else:
+            target = target.replace(month=now_hkt.month + 1)
+    return target.astimezone(timezone.utc)
+
+
+def calendar_month_label(start_utc):
+    start_hkt = start_utc.astimezone(HONG_KONG)
+    return start_hkt.strftime('%B %Y')
+
+
 def due_scheduled_subscriptions(web_database, vuln_database, now=None):
     now = now or _now()
     expired_claim = {'$or': [
@@ -85,6 +118,33 @@ def due_scheduled_subscriptions(web_database, vuln_database, now=None):
     return due
 
 
+def due_monthly_statistic_subscriptions(web_database, vuln_database, now=None):
+    now = now or _now()
+    expired_claim = {'$or': [
+        {'statistic_schedule_claim_until': {'$exists': False}},
+        {'statistic_schedule_claim_until': {'$lte': now}},
+    ]}
+    query = {
+        'newsletter_profile.enabled': True,
+        'newsletter_profile.statistic_schedule_enabled': True,
+        '$and': [
+            expired_claim,
+            {'$or': [
+                {'newsletter_profile.statistic_next_run_at': {'$exists': False}},
+                {'newsletter_profile.statistic_next_run_at': ''},
+                {'newsletter_profile.statistic_next_run_at': {'$lte': now}},
+            ]},
+        ],
+    }
+    due = []
+    for document in web_database['sub_account'].find(query):
+        try:
+            due.append(normalize_subscription(vuln_database, document))
+        except ValueError:
+            continue
+    return due
+
+
 def _claim(collection, subscription, now):
     claim_until = now + timedelta(seconds=CLAIM_SECONDS)
     result = collection.update_one(
@@ -98,6 +158,25 @@ def _claim(collection, subscription, now):
         {'$set': {
             'schedule_claim_owner': socket.gethostname(),
             'schedule_claim_until': claim_until,
+            'updated_at': now,
+        }},
+    )
+    return getattr(result, 'modified_count', 1) != 0
+
+
+def _claim_statistic_schedule(collection, subscription, now):
+    claim_until = now + timedelta(seconds=CLAIM_SECONDS)
+    result = collection.update_one(
+        {
+            '_id': subscription['_id'],
+            '$or': [
+                {'statistic_schedule_claim_until': {'$exists': False}},
+                {'statistic_schedule_claim_until': {'$lte': now}},
+            ],
+        },
+        {'$set': {
+            'statistic_schedule_claim_owner': socket.gethostname(),
+            'statistic_schedule_claim_until': claim_until,
             'updated_at': now,
         }},
     )
@@ -337,6 +416,61 @@ def tick_scheduled_reports(app, web_database, now=None):
     return started
 
 
+def run_monthly_statistic(app, subscription_id, now=None):
+    with app.app_context():
+        web_database = get_web_database()
+        vuln_database = get_vulnerabilities_database()
+        collection = web_database['sub_account']
+        now = now or _now()
+        raw = collection.find_one({'_id': ObjectId(subscription_id)})
+        if raw is None:
+            return
+        try:
+            subscription = normalize_subscription(vuln_database, raw)
+            email = subscription['email']
+            start, end = previous_calendar_month_bounds(now)
+            stats = newsletter_delivery_statistics(email, web_database, start=start, end=end)
+            period = stats.get('period') or calendar_month_label(start)
+            with Mailer(app.config) as mailer:
+                mailer.send_email(email, {
+                    'subject': f'Newsletter delivery statistics — {period}',
+                    'html': render_newsletter_statistics_html(stats),
+                })
+            collection.update_one({'_id': raw['_id']}, {'$set': {
+                'newsletter_profile.statistic_last_run_at': now,
+                'newsletter_profile.statistic_next_run_at': next_monthly_statistic_run(now),
+                'newsletter_profile.statistic_last_error': '',
+                'statistic_schedule_claim_until': None,
+                'statistic_schedule_claim_owner': '',
+                'updated_at': now,
+            }})
+        except Exception as exc:
+            collection.update_one({'_id': raw['_id']}, {'$set': {
+                'newsletter_profile.statistic_last_run_at': now,
+                'newsletter_profile.statistic_last_error': str(exc),
+                'newsletter_profile.statistic_next_run_at': next_monthly_statistic_run(now),
+                'statistic_schedule_claim_until': None,
+                'statistic_schedule_claim_owner': '',
+                'updated_at': now,
+            }})
+
+
+def tick_monthly_statistics(app, web_database, now=None):
+    now = now or _now()
+    vuln_database = get_vulnerabilities_database()
+    started = 0
+    for subscription in due_monthly_statistic_subscriptions(web_database, vuln_database, now):
+        if not _claim_statistic_schedule(web_database['sub_account'], subscription, now):
+            continue
+        threading.Thread(
+            target=run_monthly_statistic,
+            args=(app, str(subscription['_id']), now),
+            daemon=True,
+        ).start()
+        started += 1
+    return started
+
+
 def purge_old_data(web_database, vuln_database, now=None):
     cutoff = (now or _now()) - timedelta(days=RETENTION_DAYS)
     cutoff_iso = cutoff.isoformat()
@@ -433,6 +567,10 @@ def tick_email_scheduler(app, web_database, now=None):
     except Exception:
         pass
     try:
+        did_work = bool(tick_monthly_statistics(app, web_database, now=now)) or did_work
+    except Exception:
+        pass
+    try:
         did_work = bool(tick_newsletter_deliveries(app, web_database, now=now)) or did_work
     except Exception:
         pass
@@ -491,11 +629,19 @@ def _observed_at_value(document):
     return str(value or '')
 
 
-def newsletter_delivery_statistics(email, web_database=None):
+def newsletter_delivery_statistics(email, web_database=None, start=None, end=None):
     ensure_newsletter_delivery_indexes(web_database)
     collection = _newsletter_deliveries(web_database)
+    match = {'email': email}
+    if start is not None or end is not None:
+        sent_at = {}
+        if start is not None:
+            sent_at['$gte'] = start
+        if end is not None:
+            sent_at['$lt'] = end
+        match['sent_at'] = sent_at
     pipeline = [
-        {'$match': {'email': email}},
+        {'$match': match},
         {'$group': {
             '_id': {
                 'database': '$database',
@@ -519,37 +665,29 @@ def newsletter_delivery_statistics(email, web_database=None):
             'source_collection': source_collection,
             'count': count,
         })
-    return {
+    result = {
         'email': email,
         'databases': sorted(databases) or [_vulnerabilities_database_name()],
         'by_collection': by_collection,
         'total': total,
     }
+    if start is not None:
+        result['period'] = calendar_month_label(start)
+        result['period_start'] = start.isoformat()
+        result['period_end'] = end.isoformat() if end is not None else ''
+    return result
 
 
 def render_newsletter_statistics_html(stats):
-    rows = ''.join(
-        (
-            '<tr>'
-            f'<td>{escape(item["database"])}</td>'
-            f'<td>{escape(item["source_collection"])}</td>'
-            f'<td>{item["count"]}</td>'
-            '</tr>'
-        )
-        for item in stats.get('by_collection') or []
-    )
-    if not rows:
-        rows = '<tr><td colspan="3">No newsletters have been sent yet.</td></tr>'
-    databases = ', '.join(escape(name) for name in (stats.get('databases') or []))
-    return (
-        '<h2>Newsletter delivery statistics</h2>'
-        f'<p>Recipient: <strong>{escape(stats.get("email") or "")}</strong></p>'
-        f'<p>Database(s): <strong>{databases}</strong></p>'
-        f'<p>Total newsletters sent: <strong>{int(stats.get("total") or 0)}</strong></p>'
-        '<table border="1" cellpadding="6" cellspacing="0">'
-        '<thead><tr><th>Database</th><th>Collection</th><th>Sent</th></tr></thead>'
-        f'<tbody>{rows}</tbody>'
-        '</table>'
+    from flask import render_template
+
+    return render_template(
+        'subscriptions/statistics_email.html',
+        email=stats.get('email') or '',
+        period=stats.get('period') or '',
+        total=int(stats.get('total') or 0),
+        databases=stats.get('databases') or [],
+        by_collection=stats.get('by_collection') or [],
     )
 
 

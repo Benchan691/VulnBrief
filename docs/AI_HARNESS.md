@@ -40,8 +40,6 @@ recursively and JSON is minified before it is sent to AI (`reports.template_buil
 
 Subscriptions are managed at `/subscriptions`. Each subscriber has independent
 newsletter and report profiles using the same validated curated filters.
-Newsletter profiles expose a local-MongoDB metadata feed with View and Copy HTML.
-Those actions resolve the latest source record from the `vulnerabilities` database and render HTML live.
 Report profile Run actions prepare the browser's Vulnerability Reviews selection
 list for manual report generation on the Reports page.
 

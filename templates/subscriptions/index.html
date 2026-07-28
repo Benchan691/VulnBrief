@@ -38,6 +38,13 @@
                         <div class="card h-100"><div class="card-body">
                             <div class="form-check form-switch mb-3"><input id="newsletter-enabled" class="form-check-input" type="checkbox"><label class="form-check-label fw-semibold" for="newsletter-enabled">Newsletter feed enabled</label></div>
                             <div id="newsletter-fields"></div>
+                            <hr>
+                            <div class="form-check form-switch mb-2">
+                                <input id="newsletter-statistic-schedule-enabled" class="form-check-input" type="checkbox">
+                                <label class="form-check-label small" for="newsletter-statistic-schedule-enabled">Monthly statistic email schedule enabled</label>
+                            </div>
+                            <div class="form-text mb-3">Sends previous-month delivery counts on the 1st at 09:00 HKT.</div>
+                            <button id="newsletter-send-statistic" class="btn btn-success btn-sm d-none" type="button">Send Statistic</button>
                         </div></div>
                     </div>
                     <div class="col-lg-6">

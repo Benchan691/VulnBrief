@@ -63,6 +63,7 @@ DEFAULT_NEWSLETTER_PROFILE = {
     # repaired scheduler is live. This is an internal delivery setting, not a
     # subscriber-facing filter.
     'cve_delivery_cutoff': '',
+    'statistic_schedule_enabled': False,
 }
 DEFAULT_REPORT_PROFILE = {
     'enabled': True,
@@ -220,6 +221,12 @@ def validate_profile(database, value, profile_type):
             profile['delivery_cursor'] = value.get('delivery_cursor') or ''
         if 'cve_delivery_cutoff' in value:
             profile['cve_delivery_cutoff'] = value.get('cve_delivery_cutoff') or ''
+        profile['statistic_schedule_enabled'] = bool(
+            value.get('statistic_schedule_enabled', default.get('statistic_schedule_enabled', False))
+        )
+        for field in ('statistic_next_run_at', 'statistic_last_run_at', 'statistic_last_error'):
+            if field in value:
+                profile[field] = value[field]
         return profile
     if profile_type == 'report':
         profile['generation_mode'] = value.get('generation_mode', default['generation_mode'])

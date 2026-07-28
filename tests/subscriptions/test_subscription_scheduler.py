@@ -5,8 +5,15 @@ from bson import ObjectId
 import subscriptions.scheduler
 from app import app
 from core.database import get_web_database
-from subscriptions.scheduler import next_weekly_run, run_scheduled_report
-from subscriptions.scheduler import purge_old_data
+from subscriptions.scheduler import (
+    next_monthly_statistic_run,
+    next_weekly_run,
+    newsletter_delivery_statistics,
+    previous_calendar_month_bounds,
+    purge_old_data,
+    run_monthly_statistic,
+    run_scheduled_report,
+)
 
 
 def test_next_weekly_run_uses_hong_kong_time():
@@ -16,6 +23,129 @@ def test_next_weekly_run_uses_hong_kong_time():
     )
 
     assert run_at.isoformat() == '2026-06-26T01:30:00+00:00'
+
+
+def test_previous_calendar_month_bounds_uses_hong_kong():
+    start, end = previous_calendar_month_bounds(datetime(2026, 7, 15, 2, 0, tzinfo=timezone.utc))
+    assert start.isoformat() == '2026-05-31T16:00:00+00:00'
+    assert end.isoformat() == '2026-06-30T16:00:00+00:00'
+
+
+def test_next_monthly_statistic_run_on_first_at_nine_hkt():
+    # Before July 1 09:00 HKT → July 1 09:00 HKT
+    before = next_monthly_statistic_run(datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc))
+    assert before.isoformat() == '2026-07-01T01:00:00+00:00'
+    # After July 1 09:00 HKT → August 1 09:00 HKT
+    after = next_monthly_statistic_run(datetime(2026, 7, 1, 2, 0, tzinfo=timezone.utc))
+    assert after.isoformat() == '2026-08-01T01:00:00+00:00'
+
+
+def test_newsletter_delivery_statistics_filters_by_month():
+    with app.app_context():
+        get_web_database()['newsletter_deliveries'].delete_many({'email': 'month-stats@example.com'})
+        get_web_database()['newsletter_deliveries'].insert_many([
+            {
+                'email': 'month-stats@example.com',
+                'database': 'vulnerabilities',
+                'source_collection': 'avd',
+                'selection_id': 'avd:prev',
+                'title': 'Prev',
+                'sent_at': datetime(2026, 6, 15, 4, 0, tzinfo=timezone.utc),
+            },
+            {
+                'email': 'month-stats@example.com',
+                'database': 'vulnerabilities',
+                'source_collection': 'avd',
+                'selection_id': 'avd:curr',
+                'title': 'Curr',
+                'sent_at': datetime(2026, 7, 2, 4, 0, tzinfo=timezone.utc),
+            },
+        ])
+        start, end = previous_calendar_month_bounds(datetime(2026, 7, 1, 2, 0, tzinfo=timezone.utc))
+        stats = newsletter_delivery_statistics(
+            'month-stats@example.com',
+            get_web_database(),
+            start=start,
+            end=end,
+        )
+        assert stats['total'] == 1
+        assert stats['period'] == 'June 2026'
+        get_web_database()['newsletter_deliveries'].delete_many({'email': 'month-stats@example.com'})
+
+
+def test_run_monthly_statistic_emails_previous_month_and_advances(monkeypatch):
+    sent = {}
+    with app.app_context():
+        web = get_web_database()
+        subscription_id = ObjectId()
+        email = 'monthly-stat@example.com'
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': email})
+        web['sub_account'].insert_one({
+            '_id': subscription_id,
+            'email': email,
+            'team': 'Monthly',
+            'newsletter_profile': {
+                'enabled': True,
+                'statistic_schedule_enabled': True,
+                'statistic_next_run_at': datetime(2026, 7, 1, 1, 0, tzinfo=timezone.utc),
+                'filters': {},
+            },
+            'report_profile': {'enabled': False},
+        })
+        web['newsletter_deliveries'].insert_many([
+            {
+                'email': email,
+                'database': 'vulnerabilities',
+                'source_collection': 'avd',
+                'selection_id': 'avd:june',
+                'title': 'June',
+                'sent_at': datetime(2026, 6, 10, 4, 0, tzinfo=timezone.utc),
+            },
+            {
+                'email': email,
+                'database': 'vulnerabilities',
+                'source_collection': 'avd',
+                'selection_id': 'avd:july',
+                'title': 'July',
+                'sent_at': datetime(2026, 7, 2, 4, 0, tzinfo=timezone.utc),
+            },
+        ])
+
+        class FakeMailer:
+            def __init__(self, config):
+                self.config = config
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def send_email(self, receiver, email_payload):
+                sent.update({
+                    'to': receiver,
+                    'subject': email_payload['subject'],
+                    'html': email_payload['html'],
+                })
+
+        monkeypatch.setattr(subscriptions.scheduler, 'Mailer', FakeMailer)
+        now = datetime(2026, 7, 1, 1, 5, tzinfo=timezone.utc)
+        run_monthly_statistic(app, str(subscription_id), now=now)
+
+        stored = web['sub_account'].find_one({'_id': subscription_id})
+        assert stored['newsletter_profile'].get('statistic_last_error', '') == ''
+        next_run = stored['newsletter_profile']['statistic_next_run_at']
+        assert next_run.replace(tzinfo=timezone.utc).isoformat() == '2026-08-01T01:00:00+00:00'
+        assert sent['to'] == email
+        assert sent['subject'] == 'Newsletter delivery statistics — June 2026'
+        assert 'Newsletters sent this period' in sent['html']
+        assert 'metric-value' in sent['html']
+        assert '1</p>' in sent['html'] or '>1<' in sent['html']
+        assert 'avd' in sent['html'] or 'June' in sent['html']
+
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': email})
 
 
 def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):

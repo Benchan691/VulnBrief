@@ -634,6 +634,8 @@ def test_send_subscription_statistic_emails_delivery_counts(client, monkeypatch)
     assert sent['to'] == TEST_EMAIL
     assert sent['subject'] == 'Newsletter delivery statistics'
     assert 'Total newsletters sent' in sent['html']
+    assert 'metric-value' in sent['html']
+    assert 'Security Portal' in sent['html']
     assert 'avd' in sent['html']
     assert 'hkcert' in sent['html']
 
@@ -696,6 +698,25 @@ def test_report_profile_accepts_schedule_and_keywords(client):
     assert item['report_profile']['filters']['keywords'] == ['Red Hat', 'Enterprise Linux']
 
 
+def test_newsletter_profile_accepts_monthly_statistic_schedule(client):
+    authenticate(client)
+    response = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {
+            'enabled': True,
+            'statistic_schedule_enabled': True,
+            'filters': {'collections': ['avd_review']},
+        },
+        'report_profile': {'enabled': True},
+    })
+
+    assert response.status_code == 201
+    item = next(item for item in client.get('/api/subscriptions').get_json()['data'] if item['email'] == TEST_EMAIL)
+    assert item['newsletter_profile']['statistic_schedule_enabled'] is True
+    assert item['newsletter_profile']['statistic_next_run_at']
+
+
 def test_report_profile_rejects_invalid_schedule_and_keywords(client):
     authenticate(client)
     bad_schedule = client.post('/api/subscriptions', json={
@@ -711,226 +732,3 @@ def test_report_profile_rejects_invalid_schedule_and_keywords(client):
         'report_profile': {'filters': {'keywords': 'redhat'}},
     })
     assert bad_keywords.status_code == 400
-
-
-def _newsletter_match(document):
-    return {
-        'collection': 'avd_review',
-        'source_collection': 'avd',
-        'selection_id': document['_id'],
-        'document': document,
-    }
-
-
-def test_newsletter_feed_query_returns_intersecting_newsletters(client, monkeypatch):
-    authenticate(client)
-    assert client.post('/api/subscriptions', json={
-        'email': TEST_EMAIL,
-        'team': 'Test',
-        'newsletter_profile': {'enabled': True, 'filters': {'collections': ['avd_review']}},
-    }).status_code == 201
-
-    page = client.get(f'/subscriptions/{TEST_EMAIL}/newsletter-feed')
-    assert page.status_code == 200
-    assert b'/static/js/newsletters/feed.js' in page.data
-    assert b'id="page-config"' in page.data
-    assert b'id="page-size"' in page.data
-    assert b'id="pagination"' in page.data
-    assert b'Search all' not in page.data
-
-    document = {
-        '_id': 'avd-1',
-        'title': 'Matched Advisory',
-        'scraped_at': '2026-06-15T12:00:00+00:00',
-        'details': {'avd': {'summary': 'Matched summary'}},
-    }
-    monkeypatch.setattr(
-        'newsletters.feed.query_profile_matches',
-        lambda database, profile, limit=None, include_documents=False: [
-            _newsletter_match(document) if include_documents else {
-                'collection': 'avd_review',
-                'source_collection': 'avd',
-                'selection_id': 'avd-1',
-            },
-        ],
-    )
-    monkeypatch.setattr('newsletters.feed.resolve_vulnerability_document', lambda *args: document)
-
-    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
-        'filters': {'collections': ['avd_review']},
-    })
-    assert response.status_code == 200
-    body = response.get_json()
-    assert body['count'] == 1
-    assert len(body['data']) == 1
-    assert body['page'] == 1
-    assert body['pages'] == 1
-    assert body['page_size'] == 25
-    assert body['data'][0]['title'] == 'Matched Advisory'
-    assert body['data'][0]['source_collection'] == 'avd'
-    assert body['data'][0]['selection_id'] == 'avd-1'
-    assert 'html' not in body['data'][0]
-
-
-def test_newsletter_feed_query_requires_authentication(client):
-    assert client.post(
-        f'/api/subscriptions/{TEST_EMAIL}/newsletters/query',
-        json={'filters': {}},
-    ).status_code == 401
-
-
-def test_newsletter_feed_query_returns_empty_when_no_matches(client, monkeypatch):
-    authenticate(client)
-    assert client.post('/api/subscriptions', json={
-        'email': TEST_EMAIL,
-        'team': 'Test',
-        'newsletter_profile': {'enabled': True, 'filters': {}},
-    }).status_code == 201
-
-    monkeypatch.setattr('newsletters.feed.query_profile_matches', lambda *args, **kwargs: [])
-
-    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
-        'filters': {'collections': ['avd_review']},
-    })
-    assert response.status_code == 200
-    body = response.get_json()
-    assert body['count'] == 0
-    assert body['data'] == []
-    assert body['page'] == 1
-    assert body['pages'] == 0
-    assert body['page_size'] == 25
-
-
-def test_newsletter_feed_query_paginates_results(client, monkeypatch):
-    authenticate(client)
-    assert client.post('/api/subscriptions', json={
-        'email': TEST_EMAIL,
-        'team': 'Test',
-        'newsletter_profile': {'enabled': True, 'filters': {'collections': ['avd_review']}},
-    }).status_code == 201
-
-    documents = [
-        {
-            '_id': f'avd-{index}',
-            'title': f'Advisory {index}',
-            'observed_at': f'2026-06-{index:02d}T12:00:00+00:00',
-            'details': {'avd': {'summary': f'Summary {index}'}},
-        }
-        for index in range(1, 4)
-    ]
-    documents_by_id = {document['_id']: document for document in documents}
-
-    monkeypatch.setattr(
-        'newsletters.feed.query_profile_matches',
-        lambda database, profile, limit=None, include_documents=False: [
-            _newsletter_match(document) if include_documents else {
-                'collection': 'avd_review',
-                'source_collection': 'avd',
-                'selection_id': document['_id'],
-            }
-            for document in documents
-        ],
-    )
-    monkeypatch.setattr(
-        'newsletters.feed.resolve_vulnerability_document',
-        lambda database, source_collection, selection_id: documents_by_id.get(selection_id),
-    )
-
-    first_page = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
-        'filters': {'collections': ['avd_review']},
-        'page': 1,
-        'page_size': 25,
-    })
-    assert first_page.status_code == 200
-    first_body = first_page.get_json()
-    assert first_body['count'] == 3
-    assert first_body['page'] == 1
-    assert first_body['pages'] == 1
-    assert first_body['page_size'] == 25
-    assert [item['selection_id'] for item in first_body['data']] == ['avd-3', 'avd-2', 'avd-1']
-
-    invalid = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
-        'filters': {'collections': ['avd_review']},
-        'page': 1,
-        'page_size': 10,
-    })
-    assert invalid.status_code == 400
-    assert invalid.get_json()['error'] == 'page_size must be 25, 50, or 100.'
-
-    captured = {}
-
-    def fake_filter(database, email, filters, limit=25, offset=0):
-        captured['limit'] = limit
-        captured['offset'] = offset
-        return (
-            [{'selection_id': 'avd-2', 'title': 'Advisory 2'}],
-            51,
-        )
-
-    monkeypatch.setattr('subscriptions.routes.filter_newsletter_feed', fake_filter)
-    paged = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
-        'filters': {'collections': ['avd_review']},
-        'page': 2,
-        'page_size': 50,
-    })
-    assert paged.status_code == 200
-    paged_body = paged.get_json()
-    assert captured == {'limit': 50, 'offset': 50}
-    assert paged_body['page'] == 2
-    assert paged_body['pages'] == 2
-    assert paged_body['page_size'] == 50
-    assert paged_body['count'] == 51
-    assert len(paged_body['data']) == 1
-
-
-def test_newsletter_feed_query_unknown_subscription_returns_404(client):
-    authenticate(client)
-    response = client.post(
-        '/api/subscriptions/missing@example.com/newsletters/query',
-        json={'filters': {}},
-    )
-    assert response.status_code == 404
-
-
-def test_newsletter_feed_query_rejects_disabled_profile(client):
-    authenticate(client)
-    assert client.post('/api/subscriptions', json={
-        'email': TEST_EMAIL,
-        'team': 'Test',
-        'newsletter_profile': {'enabled': False, 'filters': {}},
-    }).status_code == 201
-
-    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
-        'filters': {},
-    })
-    assert response.status_code == 400
-    assert response.get_json()['error'] == 'Newsletter feed is disabled for this subscription.'
-
-
-def test_newsletter_feed_query_uses_collections_and_keyword_only(client, monkeypatch):
-    authenticate(client)
-    assert client.post('/api/subscriptions', json={
-        'email': TEST_EMAIL,
-        'team': 'Test',
-        'newsletter_profile': {'enabled': True, 'filters': {}},
-    }).status_code == 201
-
-    captured = {}
-
-    def fake_filter(database, email, filters, limit=25, offset=0):
-        captured['filters'] = filters
-        captured['limit'] = limit
-        captured['offset'] = offset
-        return [], 0
-
-    monkeypatch.setattr('subscriptions.routes.filter_newsletter_feed', fake_filter)
-
-    response = client.post(f'/api/subscriptions/{TEST_EMAIL}/newsletters/query', json={
-        'filters': {'status': 'Urgent', 'keyword': 'WordPress'},
-    })
-    assert response.status_code == 200
-    assert captured['filters']['collections'] == []
-    assert captured['filters']['include_unknown'] is True
-    assert captured['filters']['keyword'] == 'WordPress'
-    assert captured['limit'] == 25
-    assert captured['offset'] == 0

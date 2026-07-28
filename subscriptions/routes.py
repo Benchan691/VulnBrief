@@ -1,13 +1,12 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from flask import Blueprint, abort, current_app, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from core.auth import login_required
 from core.database import get_vulnerabilities_database
 from integrations.email import Mailer
-from newsletters.feed import filter_newsletter_feed
 from reviews.scoring import rank_scored_selections, score_review_document
 from subscriptions.profiles import (
     get_sub_account_collection,
@@ -22,6 +21,7 @@ from subscriptions.query import (
 )
 from subscriptions.scheduler import (
     newsletter_delivery_statistics,
+    next_monthly_statistic_run,
     next_weekly_run,
     render_newsletter_statistics_html,
 )
@@ -59,6 +59,8 @@ def _public_subscription(database, document):
     normalized.pop('_id', None)
     normalized.pop('schedule_claim_until', None)
     normalized.pop('schedule_claim_owner', None)
+    normalized.pop('statistic_schedule_claim_until', None)
+    normalized.pop('statistic_schedule_claim_owner', None)
     normalized.get('newsletter_profile', {}).pop('cve_delivery_cutoff', None)
     return normalized
 
@@ -77,6 +79,13 @@ def _with_next_run(profile):
     if profile.get('schedule_enabled'):
         profile = dict(profile)
         profile['next_run_at'] = next_weekly_run(profile)
+    return profile
+
+
+def _with_statistic_next_run(profile):
+    if profile.get('statistic_schedule_enabled'):
+        profile = dict(profile)
+        profile['statistic_next_run_at'] = next_monthly_statistic_run()
     return profile
 
 
@@ -186,6 +195,8 @@ def subscription_confirmation_email(subscription, cancellation_url):
 
 def _admin_profile_settings(profile, profile_type):
     fields = ['enabled', 'filters']
+    if profile_type == 'newsletter':
+        fields.append('statistic_schedule_enabled')
     if profile_type == 'report':
         fields.extend([
             'generation_mode', 'report_language', 'search_prompt',
@@ -204,6 +215,8 @@ def _subscription_setting_changes(current, updated):
         changes.append('Newsletter Feed status')
     if current_newsletter['filters'] != updated_newsletter['filters']:
         changes.append('Newsletter Feed filters')
+    if current_newsletter.get('statistic_schedule_enabled') != updated_newsletter.get('statistic_schedule_enabled'):
+        changes.append('Newsletter monthly statistic schedule')
     current_report = _admin_profile_settings(current['report_profile'], 'report')
     updated_report = _admin_profile_settings(updated['report_profile'], 'report')
     if current_report['enabled'] != updated_report['enabled']:
@@ -246,21 +259,6 @@ def subscriptions():
     return render_template('subscriptions/index.html')
 
 
-@subscription_blueprint.route('/subscriptions/<path:email>/newsletter-feed')
-@login_required
-def newsletter_feed(email):
-    try:
-        database = get_vulnerabilities_database()
-        raw = get_collection().find_one({'email': email})
-        if raw is None:
-            abort(404)
-        subscription = normalize_subscription(database, raw)
-        saved_filters = subscription['newsletter_profile']['filters']
-    except (PyMongoError, ValueError):
-        abort(503)
-    return render_template('newsletters/feed.html', email=email, saved_filters=saved_filters)
-
-
 @subscription_blueprint.route('/api/subscriptions')
 @login_required
 def get_subscriptions():
@@ -294,6 +292,7 @@ def add_subscription():
                 },
             }
         newsletter_profile, report_profile = _profiles(database, data)
+        newsletter_profile = _with_statistic_next_run(newsletter_profile)
         report_profile = _with_next_run(report_profile)
         if get_collection().find_one({'email': email}):
             return jsonify({'error': 'A subscription already exists for this email.'}), 409
@@ -364,6 +363,7 @@ def edit_subscription(email):
             }
             data['newsletter_profile'] = newsletter_value
         newsletter_profile, report_profile = _profiles(database, data)
+        newsletter_profile = _with_statistic_next_run(newsletter_profile)
         report_profile = _with_next_run(report_profile)
         team = (data.get('team') or '').strip() or current.get('team', '')
         updated_subscription = {
@@ -521,51 +521,3 @@ def send_subscription_statistic(email):
         return jsonify({'error': 'Unable to send newsletter statistics.'}), 503
     except Exception as exc:
         return jsonify({'error': str(exc)}), 502
-
-
-@subscription_blueprint.route('/api/subscriptions/<path:email>/newsletters/query', methods=['POST'])
-@login_required
-def query_newsletter_feed(email):
-    data = request.get_json(silent=True) or {}
-    try:
-        database = get_vulnerabilities_database()
-        raw = get_collection().find_one({'email': email})
-        if raw is None:
-            return jsonify({'error': 'Subscription not found.'}), 404
-        subscription = normalize_subscription(database, raw)
-        if not subscription['newsletter_profile']['enabled']:
-            return jsonify({'error': 'Newsletter feed is disabled for this subscription.'}), 400
-        filters = validate_filters(database, {
-            'collections': (data.get('filters') or {}).get('collections', []),
-            'include_unknown': True,
-        })
-        filters['keyword'] = str((data.get('filters') or {}).get('keyword') or '').strip()
-        try:
-            page = max(int(data.get('page', 1)), 1)
-        except (TypeError, ValueError):
-            return jsonify({'error': 'page must be an integer.'}), 400
-        try:
-            page_size = int(data.get('page_size', 25))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'page_size must be an integer.'}), 400
-        if page_size not in (25, 50, 100):
-            return jsonify({'error': 'page_size must be 25, 50, or 100.'}), 400
-        items, count = filter_newsletter_feed(
-            database,
-            email,
-            filters,
-            limit=page_size,
-            offset=(page - 1) * page_size,
-        )
-        pages = 0 if count == 0 else max((count + page_size - 1) // page_size, 1)
-        return jsonify({
-            'data': items,
-            'count': count,
-            'page': page,
-            'pages': pages,
-            'page_size': page_size,
-        })
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    except PyMongoError:
-        return jsonify({'error': 'Unable to load newsletter feed.'}), 503
