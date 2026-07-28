@@ -55,6 +55,26 @@
     document.getElementById('report-fields').innerHTML = reportFilterMarkup();
 
     function showMessage(text, kind) { message.textContent = text; message.className = 'alert alert-' + kind; }
+    function setSendStatisticStatus(text, kind) {
+        const status = document.getElementById('newsletter-send-statistic-status');
+        if (!text) {
+            status.textContent = '';
+            status.className = 'alert small mt-2 mb-0 d-none';
+            return;
+        }
+        status.textContent = text;
+        status.className = 'alert alert-' + kind + ' small mt-2 mb-0';
+    }
+    function setSendStatisticBusy(busy) {
+        const button = document.getElementById('newsletter-send-statistic');
+        const label = button.querySelector('.send-statistic-label');
+        button.disabled = busy;
+        if (busy) {
+            label.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Sending...';
+        } else {
+            label.textContent = 'Send Statistic';
+        }
+    }
     function requestJson(url, options) {
         return fetch(url, options).then(function (response) {
             const contentType = (response.headers.get('content-type') || '').toLowerCase();
@@ -239,15 +259,21 @@
         document.getElementById('report-schedule-enabled').checked = report.schedule_enabled === true;
         document.getElementById('report-schedule-weekday').value = report.schedule_weekday || 'mon';
         document.getElementById('report-schedule-time').value = report.schedule_time || '09:00';
+        setSendStatisticBusy(false);
+        setSendStatisticStatus('', '');
         updateNewsletterSendStatisticVisibility();
         updateReportSearchPromptVisibility();
         refreshReportPreview();
         modal.show();
     }
     function updateNewsletterSendStatisticVisibility() {
-        const button = document.getElementById('newsletter-send-statistic');
+        const wrap = document.getElementById('newsletter-send-statistic-wrap');
         const show = !!editingEmail && document.getElementById('newsletter-enabled').checked;
-        button.classList.toggle('d-none', !show);
+        wrap.classList.toggle('d-none', !show);
+        if (!show) {
+            setSendStatisticStatus('', '');
+            setSendStatisticBusy(false);
+        }
     }
     function renderRows() {
         rows.replaceChildren(); document.getElementById('empty').classList.toggle('d-none', subscriptions.length !== 0);
@@ -296,10 +322,22 @@
     document.getElementById('add-btn').onclick = function () { openEditor(null); };
     document.getElementById('newsletter-enabled').addEventListener('change', updateNewsletterSendStatisticVisibility);
     document.getElementById('newsletter-send-statistic').addEventListener('click', function () {
-        if (!editingEmail) return;
+        if (!editingEmail || document.getElementById('newsletter-send-statistic').disabled) return;
+        setSendStatisticBusy(true);
+        setSendStatisticStatus('Sending statistics email...', 'info');
         requestJson(apiUrl(editingEmail, '/send-statistic'), {method: 'POST'})
-            .then(function (body) { showMessage(body.message || 'Newsletter statistics email sent.', 'success'); })
-            .catch(function (e) { showMessage(e.message, 'danger'); });
+            .then(function (body) {
+                const text = body.message || 'Newsletter statistics email sent.';
+                setSendStatisticStatus(text, 'success');
+                showMessage(text, 'success');
+            })
+            .catch(function (e) {
+                setSendStatisticStatus(e.message, 'danger');
+                showMessage(e.message, 'danger');
+            })
+            .finally(function () {
+                setSendStatisticBusy(false);
+            });
     });
     document.getElementById('subscription-form').onsubmit = function (event) {
         event.preventDefault();

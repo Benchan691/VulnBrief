@@ -44,7 +44,12 @@
                                 <label class="form-check-label small" for="newsletter-statistic-schedule-enabled">Monthly statistic email schedule enabled</label>
                             </div>
                             <div class="form-text mb-3">Sends previous-month delivery counts on the 1st at 09:00 HKT.</div>
-                            <button id="newsletter-send-statistic" class="btn btn-success btn-sm d-none" type="button">Send Statistic</button>
+                            <div id="newsletter-send-statistic-wrap" class="d-none">
+                                <button id="newsletter-send-statistic" class="btn btn-success btn-sm" type="button">
+                                    <span class="send-statistic-label">Send Statistic</span>
+                                </button>
+                                <div id="newsletter-send-statistic-status" class="alert small mt-2 mb-0 d-none" role="status"></div>
+                            </div>
                         </div></div>
                     </div>
                     <div class="col-lg-6">
