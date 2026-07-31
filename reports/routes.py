@@ -21,6 +21,7 @@ from reports.harness import (
     start_job,
 )
 from reports.progress import get_job_logs
+from core.i18n import t
 
 
 report_blueprint = Blueprint('report', __name__)
@@ -91,7 +92,7 @@ def get_report_jobs():
         jobs = _jobs().find({}).sort('created_at', -1).limit(100)
         return jsonify({'data': [_serialize_job(job) for job in jobs]})
     except PyMongoError:
-        return jsonify({'error': 'Unable to load report history.'}), 503
+        return jsonify({'error': t('Unable to load report history.')}), 503
 
 
 @report_blueprint.route('/api/reports', methods=['POST'])
@@ -112,12 +113,12 @@ def create_report_job():
             input_source = 'upload'
             raw = request.files['json_file'].read()
             if len(raw) > 20 * 1024 * 1024:
-                return jsonify({'error': 'Uploaded JSON is limited to 20 MB.'}), 400
+                return jsonify({'error': t('Uploaded JSON is limited to 20 MB.')}), 400
             inputs = json_util.loads(raw.decode('utf-8'))
             if not isinstance(inputs, list) or not all(isinstance(item, dict) for item in inputs):
-                return jsonify({'error': 'Uploaded JSON must be an array of documents.'}), 400
+                return jsonify({'error': t('Uploaded JSON must be an array of documents.')}), 400
             if not all(isinstance(item.get('details'), dict) for item in inputs):
-                return jsonify({'error': 'Each uploaded document must contain a details object.'}), 400
+                return jsonify({'error': t('Each uploaded document must contain a details object.')}), 400
         else:
             input_source = 'review_selections'
             inputs = resolve_review_selections(data.get('selections'))
@@ -135,7 +136,7 @@ def create_report_job():
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to create report job.'}), 503
+        return jsonify({'error': t('Unable to create report job.')}), 503
 
 
 @report_blueprint.route('/api/reports/evidence-cache/purge', methods=['POST'])
@@ -145,7 +146,7 @@ def purge_report_evidence_cache():
         deleted_count = purge_evidence_cache(get_web_database())
         return jsonify({'deleted_count': deleted_count})
     except PyMongoError:
-        return jsonify({'error': 'Unable to purge evidence cache.'}), 503
+        return jsonify({'error': t('Unable to purge evidence cache.')}), 503
 
 
 @report_blueprint.route('/api/reports/search-cache/purge', methods=['POST'])
@@ -155,7 +156,7 @@ def purge_report_search_cache():
         deleted_count = purge_search_cache(get_web_database())
         return jsonify({'deleted_count': deleted_count})
     except PyMongoError:
-        return jsonify({'error': 'Unable to purge search cache.'}), 503
+        return jsonify({'error': t('Unable to purge search cache.')}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>/cancel', methods=['POST'])
@@ -167,7 +168,7 @@ def cancel_report_job(job_id):
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to cancel report job.'}), 503
+        return jsonify({'error': t('Unable to cancel report job.')}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>', methods=['DELETE'])
@@ -178,9 +179,9 @@ def delete_report_job(job_id):
         return jsonify({'id': job_id, 'deleted': True})
     except ValueError as exc:
         status = 404 if str(exc) == 'Report job not found.' else 400
-        return jsonify({'error': str(exc)}), status
+        return jsonify({'error': t(str(exc))}), status
     except PyMongoError:
-        return jsonify({'error': 'Unable to delete report job.'}), 503
+        return jsonify({'error': t('Unable to delete report job.')}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>/logs')
@@ -189,11 +190,11 @@ def get_report_job_logs(job_id):
     try:
         job = _get_job(job_id)
         if job is None:
-            return jsonify({'error': 'Report job not found.'}), 404
+            return jsonify({'error': t('Report job not found.')}), 404
         logs = get_job_logs(job_id)
         return jsonify({'logs': logs or []})
     except PyMongoError:
-        return jsonify({'error': 'Unable to load report job logs.'}), 503
+        return jsonify({'error': t('Unable to load report job logs.')}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>/translations', methods=['POST'])
@@ -208,10 +209,10 @@ def translate_report_job(job_id):
     except ValueError as exc:
         message = str(exc)
         if message == 'Report job not found.':
-            return jsonify({'error': message}), 404
-        return jsonify({'error': message}), 400
+            return jsonify({'error': t(message)}), 404
+        return jsonify({'error': t(message)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to start report translation.'}), 503
+        return jsonify({'error': t('Unable to start report translation.')}), 503
 
 
 @report_blueprint.route('/api/reports/<job_id>')
@@ -220,19 +221,19 @@ def get_report_job(job_id):
     try:
         job = _get_job(job_id)
         if job is None:
-            return jsonify({'error': 'Report job not found.'}), 404
+            return jsonify({'error': t('Report job not found.')}), 404
         return jsonify(_serialize_job(job))
     except PyMongoError:
-        return jsonify({'error': 'Unable to load report job.'}), 503
+        return jsonify({'error': t('Unable to load report job.')}), 503
 
 
 def _send_job_html(job_id, as_attachment):
     job = _get_job(job_id)
     if job is None or (as_attachment and job.get('status') != 'completed'):
-        return jsonify({'error': 'Completed report not found.'}), 404
+        return jsonify({'error': t('Completed report not found.')}), 404
     language = request.args.get('language') or job.get('effective_report_language', job.get('report_language', 'en'))
     if language not in ('en', 'zh', 'ch'):
-        return jsonify({'error': 'Invalid report language.'}), 400
+        return jsonify({'error': t('Invalid report language.')}), 400
 
     stored_html = _translation_html_for_job(job, language)
     if stored_html is not None:
@@ -271,7 +272,7 @@ def _send_job_html(job_id, as_attachment):
                 language,
             )
     if report is None:
-        return jsonify({'error': 'Completed report not found.'}), 404
+        return jsonify({'error': t('Completed report not found.')}), 404
 
     job.setdefault('source_count', len(report.get('highlights') or []))
     job.setdefault('effective_report_language', job.get('report_language', 'en'))

@@ -1,5 +1,7 @@
 from markupsafe import Markup, escape
 
+from core.i18n import catalog, get_locale, html_lang, t
+
 
 def nl2br(value):
     if value is None:
@@ -11,3 +13,13 @@ def nl2br(value):
 
 def register_template_filters(application):
     application.add_template_filter(nl2br, 'nl2br')
+    application.jinja_env.globals['t'] = t
+
+    @application.context_processor
+    def inject_i18n():
+        locale = get_locale()
+        return {
+            'locale': locale,
+            'html_lang': html_lang(locale),
+            'i18n_catalog': catalog(locale),
+        }

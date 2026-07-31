@@ -39,8 +39,8 @@
             const checked = this.checkboxes().filter(function (input) { return input.checked; });
             const toggle = this.element('toggle');
             toggle.textContent = this.allMode || checked.length === 0
-                ? 'All collections'
-                : checked.length === 1 ? checked[0].value : checked.length + ' collections';
+                ? t('All collections')
+                : checked.length === 1 ? checked[0].value : t('{count} collections', {count: checked.length});
         }
 
         render(collections, selected) {

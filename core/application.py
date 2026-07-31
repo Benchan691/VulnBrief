@@ -1,9 +1,10 @@
 from datetime import timedelta
 
-from flask import Flask, redirect, render_template, send_from_directory, url_for
+from flask import Flask, make_response, redirect, render_template, request, send_from_directory, url_for
 
 from core.bootstrap import BASE_DIR, configure_application
 from core.database import get_web_database
+from core.i18n import COOKIE_NAME, normalize_locale
 from core.templating import register_template_filters
 
 
@@ -35,6 +36,16 @@ def create_app():
     @application.route('/')
     def home():
         return redirect(url_for('subscription.subscriptions'))
+
+    @application.route('/locale/<code>')
+    def set_locale(code):
+        locale = normalize_locale(code)
+        next_url = request.args.get('next') or request.referrer or url_for('subscription.subscriptions')
+        if not next_url.startswith('/') or next_url.startswith('//'):
+            next_url = url_for('subscription.subscriptions')
+        response = make_response(redirect(next_url))
+        response.set_cookie(COOKIE_NAME, locale, max_age=365 * 24 * 60 * 60, samesite='Lax')
+        return response
 
     @application.route('/image/<filename>')
     def serve_image(filename):

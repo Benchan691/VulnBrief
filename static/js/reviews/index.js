@@ -73,7 +73,7 @@
 
     function updateSelectedCount() {
         const count = getSelections().length;
-        selectedCount.textContent = count + ' selected';
+        selectedCount.textContent = t('{count} selected', {count: count});
         clearSelection.disabled = count === 0;
         exportButton.disabled = count === 0;
         generateReportButton.classList.toggle('disabled', count === 0);
@@ -239,13 +239,13 @@
 
     function renderHeaders() {
         resultsHead.replaceChildren();
-        addHeader('Select');
-        addHeader('CVE');
-        addHeader('Severity');
-        addHeader('Description');
-        addHeader('Vendor');
-        addHeader('Product');
-        addHeader('Action');
+        addHeader(t('Select'));
+        addHeader(t('CVE'));
+        addHeader(t('Severity'));
+        addHeader(t('Description'));
+        addHeader(t('Vendor'));
+        addHeader(t('Product'));
+        addHeader(t('Action'));
     }
 
     function renderRelatedButtonCell(row, item) {
@@ -254,7 +254,7 @@
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-outline-primary btn-sm';
-        button.textContent = 'Relate (' + related.length + ')';
+        button.textContent = t('Relate ({count})', {count: related.length});
         button.disabled = related.length === 0;
         button.addEventListener('click', function () {
             openRelatedModal(item);
@@ -302,7 +302,7 @@
             checkbox.dataset.selectionCollection = relatedItem.collection;
             checkbox.dataset.selectionId = relatedItem.selection_id;
             checkbox.checked = keys.has(selectionKey(relatedItem.collection, relatedItem.selection_id));
-            checkbox.setAttribute('aria-label', 'Select related ' + (relatedItem.code || relatedItem.title || relatedItem.selection_id));
+            checkbox.setAttribute('aria-label', t('Select related {label}', {label: relatedItem.code || relatedItem.title || relatedItem.selection_id}));
             checkbox.addEventListener('change', function () {
                 updateSelection(relatedItem.collection, relatedItem.selection_id, checkbox.checked);
             });
@@ -318,7 +318,7 @@
             if (relatedItem.is_self) {
                 const self = document.createElement('span');
                 self.className = 'badge text-bg-secondary ms-2';
-                self.textContent = 'self';
+                self.textContent = t('self');
                 codeCell.append(self);
             }
             row.append(codeCell);
@@ -331,9 +331,9 @@
             const viewButton = document.createElement('button');
             viewButton.type = 'button';
             viewButton.className = 'btn btn-outline-primary btn-sm';
-            viewButton.innerHTML = '<i class="bi bi-eye me-1"></i>View';
+            viewButton.innerHTML = '<i class="bi bi-eye me-1"></i>' + t('View');
             viewButton.addEventListener('click', function () {
-                showDocument(relatedItem.collection + ' Document', relatedItem.document, { fromRelatedModal: true });
+                showDocument(relatedItem.collection + ' ' + t('Document'), relatedItem.document, { fromRelatedModal: true });
             });
             actionCell.append(viewButton);
             row.append(actionCell);
@@ -344,8 +344,8 @@
     function openRelatedModal(item) {
         currentRelated = Array.isArray(item.related) ? item.related : [];
         const code = firstValue(item.document, ['code', 'cve']) || item.selection_id;
-        relatedModalTitle.textContent = 'Related CVE Records: ' + code;
-        relatedCount.textContent = currentRelated.length + ' related record' + (currentRelated.length === 1 ? '' : 's');
+        relatedModalTitle.textContent = t('Related CVE Records: {code}', {code: code});
+        relatedCount.textContent = currentRelated.length === 1 ? t('{count} related record', {count: currentRelated.length}) : t('{count} related records', {count: currentRelated.length});
         relatedEmpty.classList.toggle('d-none', currentRelated.length !== 0);
         relatedTableWrap.classList.toggle('d-none', currentRelated.length === 0);
         relatedSelectAll.disabled = currentRelated.length === 0;
@@ -362,7 +362,7 @@
         checkbox.dataset.selectionCollection = item.collection;
         checkbox.dataset.selectionId = item.selection_id;
         checkbox.checked = keys.has(selectionKey(item.collection, item.selection_id));
-        checkbox.setAttribute('aria-label', 'Select review document');
+        checkbox.setAttribute('aria-label', t('Select review document'));
         checkbox.addEventListener('change', function () {
             updateSelection(item.collection, item.selection_id, checkbox.checked);
         });
@@ -375,7 +375,7 @@
         const keys = selectedKeys();
         resultsBody.replaceChildren();
         renderHeaders();
-        resultsTitle.textContent = 'CVE Results';
+        resultsTitle.textContent = t('CVE Results');
 
         body.data.forEach(function (item) {
             const projectedDocument = item.document;
@@ -407,22 +407,24 @@
             const viewButton = document.createElement('button');
             viewButton.type = 'button';
             viewButton.className = 'btn btn-outline-primary btn-sm';
-            viewButton.innerHTML = '<i class="bi bi-eye me-1"></i>View';
+            viewButton.innerHTML = '<i class="bi bi-eye me-1"></i>' + t('View');
             viewButton.addEventListener('click', function () {
-                showDocument(item.collection + ' Document', projectedDocument);
+                showDocument(item.collection + ' ' + t('Document'), projectedDocument);
             });
             actionCell.append(viewButton);
             row.append(actionCell);
             resultsBody.append(row);
         });
 
-        resultsCount.textContent = body.total + ' matching document' + (body.total === 1 ? '' : 's');
+        resultsCount.textContent = body.total === 1
+            ? t('{total} matching document', {total: body.total})
+            : t('{total} matching documents', {total: body.total});
         resultsEmpty.classList.toggle('d-none', body.data.length !== 0);
         resultsTableWrap.classList.toggle('d-none', body.data.length === 0);
         pagination.classList.toggle('d-none', body.total === 0);
         currentPage = body.page;
         totalPages = body.pages;
-        pageLabel.textContent = 'Page ' + currentPage + ' of ' + totalPages;
+        pageLabel.textContent = t('Page {current} of {total}', {current: currentPage, total: totalPages});
         previousPage.disabled = currentPage <= 1;
         nextPage.disabled = currentPage >= totalPages;
     }
@@ -441,7 +443,7 @@
         params.set('page', page);
         params.set('page_size', pageSize.value);
         fetch(searchUrl + '?' + params.toString())
-            .then(function (response) { return parseJsonResponse(response, 'Unable to search review documents.'); })
+            .then(function (response) { return parseJsonResponse(response, t('Unable to search review documents.')); })
             .then(renderResults)
             .catch(function (reason) {
                 showError(reason.message);
@@ -494,7 +496,7 @@
         return ['Critical', 'High', 'Medium', 'Low']
             .map(function (priority) {
                 const count = summary && summary[priority] ? summary[priority] : 0;
-                return count ? priority + ': ' + count : '';
+                return count ? t(priority) + ': ' + count : '';
             })
             .filter(Boolean)
             .join(', ');
@@ -504,21 +506,21 @@
         activeFilters = buildFilterParams();
         const payload = buildAutoSelectPayload();
         if (!payload.count || payload.count < 1 || payload.count > 500) {
-            showError('Auto-select count must be between 1 and 500.');
+            showError(t('Auto-select count must be between 1 and 500.'));
             return;
         }
 
         error.classList.add('d-none');
         statusAlert.classList.add('d-none');
         autoSelectButton.disabled = true;
-        autoSelectButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Selecting...';
+        autoSelectButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' + t('Selecting...');
 
         fetch(autoSelectUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         })
-            .then(function (response) { return parseJsonResponse(response, 'Unable to auto-select review documents.'); })
+            .then(function (response) { return parseJsonResponse(response, t('Unable to auto-select review documents.')); })
             .then(function (body) {
                 const selections = (body.selections || []).map(function (item) {
                     return {
@@ -535,8 +537,10 @@
                 }
                 const summaryText = formatAutoSelectSummary(body.summary);
                 showStatus(
-                    'Auto-selected ' + body.selected + ' of ' + body.matched
-                    + ' matching document' + (body.matched === 1 ? '' : 's')
+                    t('Auto-selected {selected} of {matched}', {selected: body.selected, matched: body.matched})
+                    + ' ' + (body.matched === 1
+                        ? t('{total} matching document', {total: body.matched})
+                        : t('{total} matching documents', {total: body.matched}))
                     + (summaryText ? ' (' + summaryText + ').' : '.')
                 );
             })
@@ -545,7 +549,7 @@
             })
             .finally(function () {
                 autoSelectButton.disabled = false;
-                autoSelectButton.innerHTML = '<i class="bi bi-magic me-1"></i>By importance';
+                autoSelectButton.innerHTML = '<i class="bi bi-magic me-1"></i>' + t('By importance');
             });
     });
 
@@ -561,7 +565,7 @@
 
         error.classList.add('d-none');
         exportButton.disabled = true;
-        exportButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Exporting...';
+        exportButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' + t('Exporting...');
 
         fetch(exportUrl, {
             method: 'POST',
@@ -571,7 +575,7 @@
             .then(function (response) {
                 if (!response.ok) {
                     return response.json().then(function (body) {
-                        throw new Error(body.error || 'Unable to export documents.');
+                        throw new Error(body.error || t('Unable to export documents.'));
                     });
                 }
                 const disposition = response.headers.get('Content-Disposition') || '';
@@ -597,7 +601,7 @@
                 showError(reason.message);
             })
             .finally(function () {
-                exportButton.innerHTML = '<i class="bi bi-download me-1"></i>Export JSON';
+                exportButton.innerHTML = '<i class="bi bi-download me-1"></i>' + t('Export JSON');
                 updateSelectedCount();
             });
     });

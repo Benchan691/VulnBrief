@@ -2,6 +2,7 @@ from flask import Blueprint, redirect, render_template, request, session, url_fo
 from pymongo.errors import PyMongoError
 
 from auth.store import normalize_login, verify_login
+from core.i18n import t
 
 
 auth_blueprint = Blueprint('auth', __name__)
@@ -18,11 +19,11 @@ def login():
             if user is not None:
                 session['username'] = user['username']
                 return redirect(url_for('subscription.subscriptions'))
-            return render_template('auth/login.html', error='Invalid username or password')
+            return render_template('auth/login.html', error=t('Invalid username or password'))
         except PyMongoError:
             return render_template(
                 'auth/login.html',
-                error='Unable to connect to the authentication database.',
+                error=t('Unable to connect to the authentication database.'),
             ), 503
 
     return render_template('auth/login.html')

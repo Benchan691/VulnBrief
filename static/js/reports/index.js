@@ -32,7 +32,9 @@
     }
     function updateSelectionCount() {
         const count = selections().length;
-        document.getElementById('selection-count').textContent = count + ' review selection' + (count === 1 ? '' : 's') + ' available';
+        document.getElementById('selection-count').textContent = count === 1
+            ? t('{count} review selection available', {count: count})
+            : t('{count} review selections available', {count: count});
     }
     function showMessage(text, kind) {
         message.textContent = text;
@@ -49,13 +51,13 @@
         }
     }
     function purgeSearchCache() {
-        if (!confirm('Purge all cached enriched search results? The next enriched weekly run will call Tavily again.')) {
+        if (!confirm(t('Purge all cached enriched search results? The next enriched weekly run will call Tavily again.'))) {
             return;
         }
         purgeSearchCacheButton.disabled = true;
         requestJson(purgeSearchCacheUrl, { method: 'POST' })
             .then(function (body) {
-                showMessage('Purged ' + (body.deleted_count || 0) + ' cached search record(s).', 'success');
+                showMessage(t('Purged {count} cached search record(s).', {count: body.deleted_count || 0}), 'success');
             })
             .catch(function (reason) {
                 showMessage(reason.message, 'danger');
@@ -65,13 +67,13 @@
             });
     }
     function purgeEvidenceCache() {
-        if (!confirm('Purge all cached enriched evidence extractions? The next enriched weekly run will re-call the LLM for evidence.')) {
+        if (!confirm(t('Purge all cached enriched evidence extractions? The next enriched weekly run will re-call the LLM for evidence.'))) {
             return;
         }
         purgeEvidenceCacheButton.disabled = true;
         requestJson(purgeEvidenceCacheUrl, { method: 'POST' })
             .then(function (body) {
-                showMessage('Purged ' + (body.deleted_count || 0) + ' cached evidence record(s).', 'success');
+                showMessage(t('Purged {count} cached evidence record(s).', {count: body.deleted_count || 0}), 'success');
             })
             .catch(function (reason) {
                 showMessage(reason.message, 'danger');
@@ -81,12 +83,12 @@
             });
     }
     function languageName(code) {
-        return { en: 'English', zh: 'Traditional Chinese', ch: 'Simplified Chinese' }[code] || code;
+        return { en: t('English'), zh: t('Traditional Chinese'), ch: t('Simplified Chinese') }[code] || code;
     }
     function requestJson(url, options) {
         return fetch(url, options).then(function (response) {
             return response.json().then(function (body) {
-                if (!response.ok) throw new Error(body.error || 'Request failed.');
+                if (!response.ok) throw new Error(body.error || t('Request failed.'));
                 return body;
             });
         });
@@ -103,26 +105,26 @@
     }
     function formatDuration(seconds) {
         if (seconds === null || seconds === undefined || seconds < 0) return null;
-        if (seconds < 60) return '<1 min';
+        if (seconds < 60) return t('<1 min');
         const hours = Math.floor(seconds / 3600);
         const minutes = Math.floor((seconds % 3600) / 60);
-        if (hours > 0) return hours + 'h ' + minutes + 'm';
-        return minutes + ' min';
+        if (hours > 0) return t('{hours}h {minutes}m', {hours: hours, minutes: minutes});
+        return t('{minutes} min', {minutes: minutes});
     }
     function jobEtaText(job) {
-        if (job.status === 'queued') return 'Estimating\u2026';
+        if (job.status === 'queued') return t('Estimating…');
         if (job.status !== 'running') return null;
         const percent = jobProgressPercent(job);
         if (percent >= 100) return null;
-        if (!percent) return 'Estimating\u2026';
+        if (!percent) return t('Estimating…');
         const duration = formatDuration(job.estimated_seconds_remaining);
-        if (!duration) return 'Estimating\u2026';
-        return '~' + duration + ' left';
+        if (!duration) return t('Estimating…');
+        return t('~{duration} left', {duration: duration});
     }
     function jobFinishTimeText(job) {
         if (job.status !== 'running' || !job.estimated_seconds_remaining) return null;
         const finish = new Date(Date.now() + (job.estimated_seconds_remaining * 1000));
-        return 'Est. finish ' + finish.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        return t('Est. finish {time}', {time: finish.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })});
     }
     function truncateText(text, maxLength) {
         if (!text) return '';
@@ -130,12 +132,12 @@
     }
     function openJobLog(job) {
         const target = document.getElementById('log-content');
-        target.textContent = 'Loading log\u2026';
+        target.textContent = t('Loading log…');
         logModal.show();
         requestJson(logsUrlTemplate.replace('__JOB_ID__', job.id))
             .then(function (body) {
                 const lines = body.logs || [];
-                target.textContent = lines.length ? lines.join('\n') : 'No log entries yet.';
+                target.textContent = lines.length ? lines.join('\n') : t('No log entries yet.');
             })
             .catch(function (reason) {
                 target.textContent = reason.message;
@@ -145,14 +147,14 @@
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-outline-secondary btn-sm view-log-btn ms-1';
-        button.textContent = 'View log';
+        button.textContent = t('View log');
         button.addEventListener('click', function () { openJobLog(job); });
         container.append(button);
     }
     function buildStatusCell(job) {
         const cell = document.createElement('td');
         const primary = document.createElement('div');
-        const statusLabel = job.status.charAt(0).toUpperCase() + job.status.slice(1);
+        const statusLabel = t(job.status.charAt(0).toUpperCase() + job.status.slice(1));
         const percent = jobProgressPercent(job);
         const eta = jobEtaText(job);
         let primaryText = statusLabel;
@@ -195,7 +197,7 @@
             const logButton = document.createElement('button');
             logButton.type = 'button';
             logButton.className = 'btn btn-link btn-sm p-0 mt-1';
-            logButton.textContent = 'View log';
+            logButton.textContent = t('View log');
             logButton.addEventListener('click', function () { openJobLog(job); });
             cell.append(logButton);
         }
@@ -205,13 +207,13 @@
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-outline-danger btn-sm delete-btn ms-1';
-        button.textContent = 'Delete';
+        button.textContent = t('Delete');
         button.addEventListener('click', function () {
-            if (!confirm('Delete this report job?')) return;
+            if (!confirm(t('Delete this report job?'))) return;
             button.disabled = true;
             requestJson(deleteUrlTemplate.replace('__JOB_ID__', job.id), { method: 'DELETE' })
                 .then(function () {
-                    showMessage('Report job deleted.', 'success');
+                    showMessage(t('Report job deleted.'), 'success');
                     loadJobs();
                 })
                 .catch(function (reason) {
@@ -228,7 +230,7 @@
     function updateTranslateModalState() {
         if (!selectedTranslateJob) return;
         translateConfirmButton.disabled = false;
-        translateStatus.textContent = 'A new report history row will be created for the translation.';
+        translateStatus.textContent = t('A new report history row will be created for the translation.');
     }
     function openTranslateDialog(job) {
         selectedTranslateJob = job;
@@ -245,8 +247,8 @@
         })
             .then(function (body) {
                 const messageText = body.status === 'running'
-                    ? 'Translation already in progress.'
-                    : 'Translation job started for ' + languageName(language) + '.';
+                    ? t('Translation already in progress.')
+                    : t('Translation job started for {language}.', {language: languageName(language)});
                 translateModal.hide();
                 showMessage(messageText, 'success');
                 loadJobs();
@@ -261,7 +263,7 @@
         const translateButton = document.createElement('button');
         translateButton.type = 'button';
         translateButton.className = 'btn btn-outline-secondary btn-sm ms-1';
-        translateButton.textContent = 'Translate';
+        translateButton.textContent = t('Translate');
         translateButton.addEventListener('click', function () { openTranslateDialog(job); });
         container.append(translateButton);
     }
@@ -276,10 +278,10 @@
             const legacyModes = { ai: 'enriched_weekly', company_ai: 'enriched_weekly' };
             const requested = legacyModes[job.generation_mode] || job.generation_mode || 'enriched_weekly';
             const effective = legacyModes[job.effective_generation_mode] || job.effective_generation_mode || requested;
-            let generator = requested === 'template' ? 'Fixed Template' : 'Enriched Weekly';
-            if (requested === 'enriched_weekly' && effective === 'template') generator = 'Enriched Weekly \u2192 Fixed Template';
+            let generator = requested === 'template' ? t('Fixed Template') : t('Enriched Weekly');
+            if (requested === 'enriched_weekly' && effective === 'template') generator = t('Enriched Weekly → Fixed Template');
             if (job.input_source === 'translation' || job.job_type === 'translation') {
-                generator += ' (Translation)';
+                generator += ' ' + t('(Translation)');
             }
             const requestedLanguage = job.report_language || 'en';
             const effectiveLanguage = job.effective_report_language || requestedLanguage;
@@ -293,21 +295,21 @@
             if (job.fallback_reason) {
                 const reason = document.createElement('div');
                 reason.className = 'text-warning-emphasis small';
-                reason.textContent = 'Fallback: ' + job.fallback_reason;
+                reason.textContent = t('Fallback: {reason}', {reason: job.fallback_reason});
                 generatorCell.append(reason);
             }
             if (job.translated_from_job_id) {
                 const source = document.createElement('div');
                 source.className = 'text-muted small';
-                source.textContent = 'From report ' + job.translated_from_job_id.slice(-6);
+                source.textContent = t('From report {id}', {id: job.translated_from_job_id.slice(-6)});
                 generatorCell.append(source);
             }
             row.append(generatorCell);
             row.append(buildStatusCell(job));
             const action = document.createElement('td');
             if (job.status === 'completed') {
-                action.innerHTML = '<button class="btn btn-outline-primary btn-sm me-1 preview-btn">Preview</button>' +
-                    '<a class="btn btn-outline-success btn-sm" href="/reports/' + job.id + '/download">Download</a>';
+                action.innerHTML = '<button class="btn btn-outline-primary btn-sm me-1 preview-btn">' + t('Preview') + '</button>' +
+                    '<a class="btn btn-outline-success btn-sm" href="/reports/' + job.id + '/download">' + t('Download') + '</a>';
                 action.querySelector('.preview-btn').addEventListener('click', function () {
                     document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
                     previewModal.show();
@@ -318,14 +320,14 @@
                 const error = document.createElement('span');
                 error.className = 'text-danger small me-1';
                 error.style.whiteSpace = 'pre-wrap';
-                error.title = job.error || 'Generation failed.';
-                error.textContent = job.error || 'Generation failed.';
+                error.title = job.error || t('Generation failed.');
+                error.textContent = job.error || t('Generation failed.');
                 action.append(error);
                 appendViewLogButton(action, job);
                 appendDeleteButton(action, job);
             } else if (job.status === 'cancelled') {
                 if ((job.processed_count || 0) > 0) {
-                    action.innerHTML = '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Partial</button>';
+                    action.innerHTML = '<button class="btn btn-outline-primary btn-sm preview-btn">' + t('Preview Partial') + '</button>';
                     action.querySelector('.preview-btn').addEventListener('click', function () {
                         document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
                         previewModal.show();
@@ -334,14 +336,14 @@
                 } else {
                     const cancelled = document.createElement('span');
                     cancelled.className = 'text-muted small me-1';
-                    cancelled.textContent = 'Cancelled.';
+                    cancelled.textContent = t('Cancelled.');
                     action.append(cancelled);
                     appendDeleteButton(action, job);
                 }
             } else {
-                action.innerHTML = '<button class="btn btn-outline-danger btn-sm cancel-btn me-1">Cancel</button>';
+                action.innerHTML = '<button class="btn btn-outline-danger btn-sm cancel-btn me-1">' + t('Cancel') + '</button>';
                 if ((job.processed_count || 0) > 0) {
-                    action.innerHTML += '<button class="btn btn-outline-primary btn-sm preview-btn">Preview Progress</button>';
+                    action.innerHTML += '<button class="btn btn-outline-primary btn-sm preview-btn">' + t('Preview Progress') + '</button>';
                     action.querySelector('.preview-btn').addEventListener('click', function () {
                         document.getElementById('preview-frame').src = '/reports/' + job.id + '/preview';
                         previewModal.show();
@@ -349,14 +351,14 @@
                 } else {
                     const waiting = document.createElement('span');
                     waiting.className = 'text-muted small';
-                    waiting.textContent = 'Waiting for worker...';
+                    waiting.textContent = t('Waiting for worker...');
                     action.append(waiting);
                 }
                 action.querySelector('.cancel-btn').addEventListener('click', function () {
                     const button = action.querySelector('.cancel-btn');
                     button.disabled = true;
                     requestJson(cancelUrlTemplate.replace('__JOB_ID__', job.id), { method: 'POST' })
-                        .then(function () { showMessage('Report generation cancelled.', 'success'); loadJobs(); })
+                        .then(function () { showMessage(t('Report generation cancelled.'), 'success'); loadJobs(); })
                         .catch(function (reason) {
                             showMessage(reason.message, 'danger');
                             button.disabled = false;
@@ -385,11 +387,11 @@
         const selected = selections();
         if (mode === 'enriched_weekly') {
             if (file) {
-                showMessage('Enriched Weekly reports require cve_review selections, not uploaded JSON.', 'danger');
+                showMessage(t('Enriched Weekly reports require cve_review selections, not uploaded JSON.'), 'danger');
                 return;
             }
             if (!selected.length || selected.some(function (item) { return item.collection !== 'cve_review'; })) {
-                showMessage('Enriched Weekly reports only support cve_review selections.', 'danger');
+                showMessage(t('Enriched Weekly reports only support cve_review selections.'), 'danger');
                 return;
             }
         }
@@ -421,8 +423,8 @@
         requestJson(jobsUrl, options)
             .then(function (body) {
                 const text = body.status === 'running'
-                    ? 'Fixed Template report generation started.'
-                    : 'Company AI report job queued.';
+                    ? t('Fixed Template report generation started.')
+                    : t('Company AI report job queued.');
                 showMessage(text, 'success');
                 loadJobs();
             })

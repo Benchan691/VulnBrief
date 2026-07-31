@@ -25,6 +25,7 @@ from subscriptions.scheduler import (
     next_weekly_run,
     render_newsletter_statistics_html,
 )
+from core.i18n import t
 
 
 subscription_blueprint = Blueprint('subscription', __name__)
@@ -267,7 +268,7 @@ def get_subscriptions():
         data = [_public_subscription(database, item) for item in get_collection().find({})]
         return jsonify({'data': data})
     except (PyMongoError, ValueError):
-        return jsonify({'error': 'Unable to load subscriptions.'}), 503
+        return jsonify({'error': t('Unable to load subscriptions.')}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions', methods=['POST'])
@@ -277,7 +278,7 @@ def add_subscription():
     email = (data.get('email') or '').strip()
     team = (data.get('team') or '').strip()
     if not email or not team:
-        return jsonify({'error': 'Email and team are required.'}), 400
+        return jsonify({'error': t('Email and team are required.')}), 400
     try:
         database = get_vulnerabilities_database()
         newsletter_value = data.get('newsletter_profile')
@@ -295,7 +296,7 @@ def add_subscription():
         newsletter_profile = _with_statistic_next_run(newsletter_profile)
         report_profile = _with_next_run(report_profile)
         if get_collection().find_one({'email': email}):
-            return jsonify({'error': 'A subscription already exists for this email.'}), 409
+            return jsonify({'error': t('A subscription already exists for this email.')}), 409
         now = datetime.now(timezone.utc)
         get_collection().insert_one({
             'email': email,
@@ -325,13 +326,13 @@ def add_subscription():
                 'Subscription confirmation email could not be sent to %s.', email,
             )
             return jsonify({
-                'error': 'Subscription was saved, but the confirmation email could not be sent.',
+                'error': t('Subscription was saved, but the confirmation email could not be sent.'),
             }), 503
         return jsonify({'success': True}), 201
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to add subscription.'}), 503
+        return jsonify({'error': t('Unable to add subscription.')}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions/<path:email>', methods=['PUT'])
@@ -342,7 +343,7 @@ def edit_subscription(email):
         database = get_vulnerabilities_database()
         existing = get_collection().find_one({'email': email})
         if existing is None:
-            return jsonify({'error': 'Subscription not found.'}), 404
+            return jsonify({'error': t('Subscription not found.')}), 404
         current = normalize_subscription(database, existing)
         data.setdefault('newsletter_profile', current['newsletter_profile'])
         if 'report_profile' not in data and 'subscriptions' not in data:
@@ -401,13 +402,13 @@ def edit_subscription(email):
                     'Subscription update email could not be sent to %s.', email,
                 )
                 return jsonify({
-                    'error': 'Subscription was updated, but the notification email could not be sent.',
+                    'error': t('Subscription was updated, but the notification email could not be sent.'),
                 }), 503
         return jsonify({'success': True})
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to update subscription.'}), 503
+        return jsonify({'error': t('Unable to update subscription.')}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions/<path:email>', methods=['DELETE'])
@@ -417,11 +418,11 @@ def remove_subscription(email):
         database = get_vulnerabilities_database()
         raw = get_collection().find_one({'email': email})
         if raw is None:
-            return jsonify({'error': 'Subscription not found.'}), 404
+            return jsonify({'error': t('Subscription not found.')}), 404
         subscription = normalize_subscription(database, raw)
         result = get_collection().delete_one({'email': email})
         if not result.deleted_count:
-            return jsonify({'error': 'Subscription not found.'}), 404
+            return jsonify({'error': t('Subscription not found.')}), 404
         try:
             with Mailer(current_app.config) as mailer:
                 mailer.send_email(
@@ -433,11 +434,11 @@ def remove_subscription(email):
                 'Subscription cancellation email could not be sent to %s.', email,
             )
             return jsonify({
-                'error': 'Subscription was cancelled, but the notification email could not be sent.',
+                'error': t('Subscription was cancelled, but the notification email could not be sent.'),
             }), 503
         return jsonify({'success': True})
     except PyMongoError:
-        return jsonify({'error': 'Unable to remove subscription.'}), 503
+        return jsonify({'error': t('Unable to remove subscription.')}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions/<path:email>/run', methods=['POST'])
@@ -448,10 +449,10 @@ def run_subscription(email):
         database = get_vulnerabilities_database()
         raw = get_collection().find_one({'email': email})
         if raw is None:
-            return jsonify({'error': 'Subscription not found.'}), 404
+            return jsonify({'error': t('Subscription not found.')}), 404
         subscription = normalize_subscription(database, raw)
         if not subscription['report_profile']['enabled']:
-            return jsonify({'error': 'Report profile is disabled.'}), 400
+            return jsonify({'error': t('Report profile is disabled.')}), 400
         profile = profile_with_window(subscription['report_profile'], data)
         profile = validate_profile(database, profile, 'report')
         matches = query_profile_matches(database, profile)
@@ -465,7 +466,7 @@ def run_subscription(email):
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to run subscription.'}), 503
+        return jsonify({'error': t('Unable to run subscription.')}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions/report-preview', methods=['POST'])
@@ -488,9 +489,9 @@ def preview_subscription_report():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to preview report profile.'}), 503
+        return jsonify({'error': t('Unable to preview report profile.')}), 503
     except Exception as exc:
-        return jsonify({'error': str(exc) or 'Unable to preview report profile.'}), 500
+        return jsonify({'error': str(exc) or t('Unable to preview report profile.')}), 500
 
 
 @subscription_blueprint.route('/api/subscriptions/<path:email>/send-statistic', methods=['POST'])
@@ -500,10 +501,10 @@ def send_subscription_statistic(email):
         database = get_vulnerabilities_database()
         raw = get_collection().find_one({'email': email})
         if raw is None:
-            return jsonify({'error': 'Subscription not found.'}), 404
+            return jsonify({'error': t('Subscription not found.')}), 404
         subscription = normalize_subscription(database, raw)
         if not subscription['newsletter_profile']['enabled']:
-            return jsonify({'error': 'Newsletter feed is disabled for this subscription.'}), 400
+            return jsonify({'error': t('Newsletter feed is disabled for this subscription.')}), 400
         stats = newsletter_delivery_statistics(email)
         with Mailer(current_app.config) as mailer:
             mailer.send_email(email, {
@@ -512,12 +513,12 @@ def send_subscription_statistic(email):
             })
         return jsonify({
             'success': True,
-            'message': 'Newsletter statistics email sent.',
+            'message': t('Newsletter statistics email sent.'),
             'statistics': stats,
         })
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to send newsletter statistics.'}), 503
+        return jsonify({'error': t('Unable to send newsletter statistics.')}), 503
     except Exception as exc:
         return jsonify({'error': str(exc)}), 502

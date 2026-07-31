@@ -34,6 +34,7 @@ from reviews.repository import (
     resolve_vulnerability_document,
 )
 from reviews.scoring import AUTO_SELECT_SCAN_LIMIT, rank_scored_selections
+from core.i18n import t
 
 
 review_blueprint = Blueprint('review', __name__)
@@ -53,13 +54,13 @@ def review_collection(collection_name):
             return render_template(
                 'reviews/collection.html',
                 collection_name=collection_name,
-                initial_error='Review collection not found.',
+                initial_error=t('Review collection not found.'),
             ), 404
     except PyMongoError:
         return render_template(
             'reviews/collection.html',
             collection_name=collection_name,
-            initial_error='Unable to connect to the vulnerabilities database.',
+            initial_error=t('Unable to connect to the vulnerabilities database.'),
         ), 503
 
     return render_template(
@@ -85,7 +86,7 @@ def get_review_collections():
         ]
         return jsonify({'data': data})
     except PyMongoError as exc:
-        return jsonify({'error': 'Unable to connect to the vulnerabilities database.'}), 503
+        return jsonify({'error': t('Unable to connect to the vulnerabilities database.')}), 503
 
 
 def _view_source_name(view):
@@ -251,10 +252,10 @@ def search_review_documents():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError as exc:
-        return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
+        return jsonify({'error': t('Unable to query the vulnerabilities database.')}), 503
     except Exception:
         current_app.logger.exception('Unexpected review search failure.')
-        return jsonify({'error': 'Unable to search review documents.'}), 500
+        return jsonify({'error': t('Unable to search review documents.')}), 500
 
 
 @review_blueprint.route('/api/reviews/<collection_name>')
@@ -264,7 +265,7 @@ def get_review_documents(collection_name):
         database = get_vulnerabilities_database()
         view = _review_views(database).get(collection_name)
         if view is None:
-            return jsonify({'error': 'Review collection not found.'}), 404
+            return jsonify({'error': t('Review collection not found.')}), 404
 
         page = max(request.args.get('page', 1, type=int), 1)
         page_size = min(max(request.args.get('page_size', 25, type=int), 1), 100)
@@ -297,7 +298,7 @@ def get_review_documents(collection_name):
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
+        return jsonify({'error': t('Unable to query the vulnerabilities database.')}), 503
 
 
 @review_blueprint.route('/api/reviews/auto-select', methods=['POST'])
@@ -307,7 +308,7 @@ def auto_select_review_documents():
     try:
         count = int(data.get('count', 0))
     except (TypeError, ValueError):
-        return jsonify({'error': 'count must be an integer.'}), 400
+        return jsonify({'error': t('count must be an integer.')}), 400
     if count < 1 or count > MAX_EXPORT_SELECTIONS:
         return jsonify({
             'error': f'Select between 1 and {MAX_EXPORT_SELECTIONS} vulnerability records.',
@@ -363,10 +364,10 @@ def auto_select_review_documents():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': 'Unable to query the vulnerabilities database.'}), 503
+        return jsonify({'error': t('Unable to query the vulnerabilities database.')}), 503
     except Exception:
         current_app.logger.exception('Unexpected review auto-select failure.')
-        return jsonify({'error': 'Unable to auto-select review documents.'}), 500
+        return jsonify({'error': t('Unable to auto-select review documents.')}), 500
 
 
 @review_blueprint.route('/api/reviews/export-json', methods=['POST'])
@@ -375,7 +376,7 @@ def export_review_documents():
     data = request.get_json(silent=True) or {}
     selections = data.get('selections')
     if not isinstance(selections, list) or not selections:
-        return jsonify({'error': 'Select at least one document to export.'}), 400
+        return jsonify({'error': t('Select at least one document to export.')}), 400
     if len(selections) > MAX_EXPORT_SELECTIONS:
         return jsonify({
             'error': f'Export is limited to {MAX_EXPORT_SELECTIONS} documents.',
@@ -388,12 +389,12 @@ def export_review_documents():
 
         for selection in selections:
             if not isinstance(selection, dict):
-                return jsonify({'error': 'Invalid selection.'}), 400
+                return jsonify({'error': t('Invalid selection.')}), 400
 
             collection_name = selection.get('collection')
             selection_id = selection.get('selection_id')
             if not isinstance(collection_name, str) or not isinstance(selection_id, str):
-                return jsonify({'error': 'Invalid selection.'}), 400
+                return jsonify({'error': t('Invalid selection.')}), 400
 
             view = views.get(collection_name)
             if view is None:
@@ -415,4 +416,4 @@ def export_review_documents():
             headers={'Content-Disposition': f'attachment; filename="{filename}"'},
         )
     except PyMongoError:
-        return jsonify({'error': 'Unable to export vulnerability documents.'}), 503
+        return jsonify({'error': t('Unable to export vulnerability documents.')}), 503

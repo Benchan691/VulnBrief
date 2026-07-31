@@ -33,7 +33,7 @@
         return fetch(url, { headers: { Accept: 'application/json' } }).then(function (response) {
             return response.json().then(function (body) {
                 if (!response.ok) {
-                    throw new Error((body && body.error) || 'Request failed.');
+                    throw new Error((body && body.error) || t('Request failed.'));
                 }
                 return body;
             });
@@ -50,14 +50,14 @@
             : '—';
         banner.innerHTML =
             '<div class="d-flex flex-wrap justify-content-between gap-2">' +
-            '<div><strong>Scheduler:</strong> ' + (alive ? 'Alive' : 'Stale / not running') + '</div>' +
-            '<div class="small">Last tick: ' + formatTime(scheduler && scheduler.last_tick_at) + '</div>' +
+            '<div><strong>' + t('Scheduler:') + '</strong> ' + (alive ? t('Alive') : t('Stale / not running')) + '</div>' +
+            '<div class="small">' + t('Last tick:') + ' ' + formatTime(scheduler && scheduler.last_tick_at) + '</div>' +
             '</div>' +
             '<div class="small mt-2">' +
-            'Host: ' + escapeHtml((scheduler && scheduler.hostname) || '—') +
-            ' · PID: ' + escapeHtml((scheduler && scheduler.pid) != null ? scheduler.pid : '—') +
-            ' · Retention last run: ' + formatTime(retention.last_run_at) +
-            ' · Retention result: ' + escapeHtml(retentionResult) +
+            t('Host:') + ' ' + escapeHtml((scheduler && scheduler.hostname) || '—') +
+            ' · ' + t('PID:') + ' ' + escapeHtml((scheduler && scheduler.pid) != null ? scheduler.pid : '—') +
+            ' · ' + t('Retention last run:') + ' ' + formatTime(retention.last_run_at) +
+            ' · ' + t('Retention result:') + ' ' + escapeHtml(retentionResult) +
             '</div>';
     }
 
@@ -73,10 +73,10 @@
         rows.forEach(function (row) {
             const delivery = row.delivery || {};
             const schedule = row.schedule_enabled
-                ? escapeHtml(row.schedule_weekday) + ' ' + escapeHtml(row.schedule_time) + ' HKT'
-                : 'Off';
+                ? escapeHtml(row.schedule_weekday) + ' ' + escapeHtml(row.schedule_time) + ' ' + t('HKT')
+                : t('Off');
             const next = row.due
-                ? '<span class="badge text-bg-warning">Due</span> ' + formatTime(row.next_run_at)
+                ? '<span class="badge text-bg-warning">' + t('Due') + '</span> ' + formatTime(row.next_run_at)
                 : formatTime(row.next_run_at);
             const deliveryText = delivery.delivery_status
                 ? escapeHtml(delivery.delivery_status) + ' / ' + escapeHtml(delivery.status || '—')
@@ -85,20 +85,20 @@
             tr.innerHTML =
                 '<td><div class="fw-semibold">' + escapeHtml(row.email) + '</div>' +
                 '<div class="small text-muted">' + escapeHtml(row.team || '') + '</div>' +
-                '<div class="small">' + (row.enabled ? 'Enabled' : 'Disabled') +
+                '<div class="small">' + (row.enabled ? t('Enabled') : t('Disabled')) +
                 ' · ' + escapeHtml(row.generation_mode || '') + '</div></td>' +
                 '<td>' + schedule + '</td>' +
                 '<td>' + next +
                 (row.schedule_claim_owner
-                    ? '<div class="small text-muted">Claim: ' + escapeHtml(row.schedule_claim_owner) + '</div>'
+                    ? '<div class="small text-muted">' + t('Claim:') + ' ' + escapeHtml(row.schedule_claim_owner) + '</div>'
                     : '') +
                 '</td>' +
                 '<td>' + formatTime(row.last_run_at) +
                 (row.last_job_id
-                    ? '<div class="small text-muted">Job ' + escapeHtml(row.last_job_id) + '</div>'
+                    ? '<div class="small text-muted">' + t('Job') + ' ' + escapeHtml(row.last_job_id) + '</div>'
                     : '') +
                 (row.last_match_count != null
-                    ? '<div class="small text-muted">Matches ' + escapeHtml(row.last_match_count) + '</div>'
+                    ? '<div class="small text-muted">' + t('Matches') + ' ' + escapeHtml(row.last_match_count) + '</div>'
                     : '') +
                 '</td>' +
                 '<td>' + deliveryText +
@@ -125,7 +125,7 @@
             tr.innerHTML =
                 '<td><div class="fw-semibold">' + escapeHtml(row.email) + '</div>' +
                 '<div class="small text-muted">' + escapeHtml(row.team || '') + '</div></td>' +
-                '<td>' + (row.enabled ? 'Yes' : 'No') + '</td>' +
+                '<td>' + (row.enabled ? t('Yes') : t('No')) + '</td>' +
                 '<td class="small">' + escapeHtml(row.delivery_cursor || '—') + '</td>' +
                 '<td class="small">' + escapeHtml(row.cve_delivery_cutoff || '—') + '</td>' +
                 '<td>' + escapeHtml(row.total_delivered) + '</td>';
@@ -176,20 +176,20 @@
             const detail = document.createElement('div');
             detail.className = 'small text-muted';
             detail.textContent = row.source_timestamp
-                ? 'Newest source record: ' + formatTime(row.source_timestamp)
-                : 'No source record available.';
+                ? t('Newest source record: {time}', {time: formatTime(row.source_timestamp)})
+                : t('No source record available.');
             header.append(title, detail);
             card.append(header);
             if (row.selection_id) {
                 const frame = document.createElement('iframe');
                 frame.className = 'template-preview-frame';
-                frame.title = row.source_collection + ' email template preview';
+                frame.title = t('{collection} email template preview', {collection: row.source_collection});
                 frame.src = previewUrl(row);
                 card.append(frame);
             } else {
                 const unavailable = document.createElement('div');
                 unavailable.className = 'card-body text-muted py-5';
-                unavailable.textContent = 'No source record available for this active review collection.';
+                unavailable.textContent = t('No source record available for this active review collection.');
                 card.append(unavailable);
             }
             column.append(card);
@@ -207,7 +207,7 @@
                 renderDeliveries(body.recent_newsletter_deliveries || []);
             })
             .catch(function (error) {
-                showMessage(error.message || 'Unable to load scheduler health.', 'danger');
+                showMessage(error.message || t('Unable to load scheduler health.'), 'danger');
             });
     }
 
@@ -221,7 +221,7 @@
                 templatesLoaded = true;
             })
             .catch(function (error) {
-                showMessage(error.message || 'Unable to load email templates.', 'danger');
+                showMessage(error.message || t('Unable to load email templates.'), 'danger');
             })
             .finally(function () {
                 loading.classList.add('d-none');

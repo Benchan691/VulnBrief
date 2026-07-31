@@ -18,37 +18,37 @@
     function newsletterFilterMarkup() {
         return '<div class="row g-2">' +
         '<div class="col-md-6">' +
-        '<label for="newsletter-collections-toggle" class="form-label small">Collections</label>' +
+        '<label for="newsletter-collections-toggle" class="form-label small">' + t('Collections') + '</label>' +
         '<div class="dropdown w-100">' +
-        '<button id="newsletter-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">All collections</button>' +
+        '<button id="newsletter-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">' + t('All collections') + '</button>' +
         '<div id="newsletter-collections-menu" class="dropdown-menu w-100 shadow-sm p-2">' +
-        '<input id="newsletter-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="Search collections..." autocomplete="off">' +
+        '<input id="newsletter-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="' + t('Search collections...') + '" autocomplete="off">' +
         '<div id="newsletter-collections-options" class="subscription-collections-options"></div>' +
         '<div class="dropdown-divider my-2"></div>' +
         '<div class="d-flex justify-content-between px-1">' +
-        '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">Select all</button>' +
-        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="reset">Reset to all</button>' +
+        '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">' + t('Select all') + '</button>' +
+        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="reset">' + t('Reset to all') + '</button>' +
         '</div></div></div></div></div>';
     }
 
     function reportFilterMarkup() {
         return '<div class="row g-2">' +
-        '<div class="col-12"><label class="form-label small">Severity / status</label><div class="d-flex flex-wrap gap-3">' +
+        '<div class="col-12"><label class="form-label small">' + t('Severity / status') + '</label><div class="d-flex flex-wrap gap-3">' +
         severityLevels.map(function (level) {
-            return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + level + '</label></div>';
+            return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + t(level) + '</label></div>';
         }).join('') +
-        '</div><div class="form-text">Leave all unchecked to match all known severities.</div></div>' +
-        '<div class="col-12"><label class="form-label small" for="report-keyword-input">Keywords</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-keyword-input" type="search" class="form-control" placeholder="Add keyword..." autocomplete="off"><button id="report-keyword-add" class="btn btn-outline-primary" type="button">Add</button><button id="report-keyword-clear" class="btn btn-outline-secondary" type="button">Clear</button></div><div id="report-keywords" class="d-flex flex-wrap gap-1 mt-2"></div></div>' +
-        '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">Include unknown severity</label></div></div>' +
+        '</div><div class="form-text">' + t('Leave all unchecked to match all known severities.') + '</div></div>' +
+        '<div class="col-12"><label class="form-label small" for="report-keyword-input">' + t('Keywords') + '</label><div class="input-group input-group-sm"><span class="input-group-text"><i class="bi bi-search"></i></span><input id="report-keyword-input" type="search" class="form-control" placeholder="' + t('Add keyword...') + '" autocomplete="off"><button id="report-keyword-add" class="btn btn-outline-primary" type="button">' + t('Add') + '</button><button id="report-keyword-clear" class="btn btn-outline-secondary" type="button">' + t('Clear') + '</button></div><div id="report-keywords" class="d-flex flex-wrap gap-1 mt-2"></div></div>' +
+        '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">' + t('Include unknown severity') + '</label></div></div>' +
         timeWindowMarkup('report') +
         '</div>';
     }
 
     function timeWindowMarkup(prefix) {
-        return '<div class="col-md-6"><label class="form-label small">Time window</label><select id="' + prefix + '-time-window" class="form-select form-select-sm"><option value="all">All time</option><option value="daily">Today</option><option value="week">Last 7 days</option><option value="custom">Custom</option></select></div>' +
+        return '<div class="col-md-6"><label class="form-label small">' + t('Time window') + '</label><select id="' + prefix + '-time-window" class="form-select form-select-sm"><option value="all">' + t('All time') + '</option><option value="daily">' + t('Today') + '</option><option value="week">' + t('Last 7 days') + '</option><option value="custom">' + t('Custom') + '</option></select></div>' +
         '<div id="' + prefix + '-custom-window" class="col-12 d-none"><div class="row g-2">' +
-        '<div class="col-md-6"><label class="form-label small">Start</label><input id="' + prefix + '-start" type="datetime-local" class="form-control form-control-sm"></div>' +
-        '<div class="col-md-6"><label class="form-label small">End</label><input id="' + prefix + '-end" type="datetime-local" class="form-control form-control-sm"></div></div></div>';
+        '<div class="col-md-6"><label class="form-label small">' + t('Start') + '</label><input id="' + prefix + '-start" type="datetime-local" class="form-control form-control-sm"></div>' +
+        '<div class="col-md-6"><label class="form-label small">' + t('End') + '</label><input id="' + prefix + '-end" type="datetime-local" class="form-control form-control-sm"></div></div></div>';
     }
 
     document.getElementById('newsletter-fields').innerHTML = newsletterFilterMarkup();
@@ -70,9 +70,9 @@
         const label = button.querySelector('.send-statistic-label');
         button.disabled = busy;
         if (busy) {
-            label.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Sending...';
+            label.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>' + t('Sending...');
         } else {
-            label.textContent = 'Send Statistic';
+            label.textContent = t('Send Statistic');
         }
     }
     function requestJson(url, options) {
@@ -80,11 +80,11 @@
             const contentType = (response.headers.get('content-type') || '').toLowerCase();
             if (!contentType.includes('application/json')) {
                 return response.text().then(function () {
-                    throw new Error('Server returned HTML instead of JSON.');
+                    throw new Error(t('Server returned HTML instead of JSON.'));
                 });
             }
             return response.json().then(function (body) {
-                if (!response.ok) throw new Error(body.error || 'Request failed.');
+                if (!response.ok) throw new Error(body.error || t('Request failed.'));
                 return body;
             });
         });
@@ -112,7 +112,7 @@
         if (!reportKeywords.length) {
             const empty = document.createElement('div');
             empty.className = 'text-muted small';
-            empty.textContent = 'No keywords selected.';
+            empty.textContent = t('No keywords selected.');
             box.append(empty);
             scheduleReportPreview();
             return;
@@ -217,13 +217,13 @@
     }
     function refreshReportPreview() {
         if (!document.getElementById('report-enabled').checked) {
-            setReportPreview('Report profile is disabled.', 'secondary');
+            setReportPreview(t('Report profile is disabled.'), 'secondary');
             return;
         }
         if (previewAbortController) previewAbortController.abort();
         previewAbortController = new AbortController();
         const requestId = ++previewRequestId;
-        setReportPreview('Loading preview...', 'light');
+        setReportPreview(t('Loading preview...'), 'light');
         requestJson(previewUrl, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -231,8 +231,8 @@
             signal: previewAbortController.signal
         }).then(function (body) {
             if (requestId !== previewRequestId) return;
-            const top = body.top_cves && body.top_cves.length ? body.top_cves.join(', ') : 'No example CVEs yet';
-            setReportPreview(body.count + ' matching CVE(s). Top examples: ' + top + '.', body.count ? 'info' : 'warning');
+            const top = body.top_cves && body.top_cves.length ? body.top_cves.join(', ') : t('No example CVEs yet');
+            setReportPreview(t('{count} matching CVE(s). Top examples: {top}.', {count: body.count, top: top}), body.count ? 'info' : 'warning');
         }).catch(function (e) {
             if (e.name === 'AbortError') return;
             if (requestId !== previewRequestId) return;
@@ -245,7 +245,7 @@
     }
     function openEditor(subscription) {
         editingEmail = subscription ? subscription.email : null;
-        document.getElementById('modal-title').textContent = subscription ? 'Edit Subscription' : 'Add Subscription';
+        document.getElementById('modal-title').textContent = subscription ? t('Edit Subscription') : t('Add Subscription');
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
         const newsletter = subscription ? subscription.newsletter_profile : {enabled:false,filters:{}};
@@ -281,12 +281,13 @@
             const tr = document.createElement('tr');
             tr.innerHTML = '<td><strong></strong><div class="text-muted small"></div></td><td></td><td></td><td></td>';
             tr.children[0].querySelector('strong').textContent = item.email; tr.children[0].querySelector('div').textContent = item.team;
-            tr.children[1].textContent = item.newsletter_profile.enabled ? 'Enabled · ' + (item.newsletter_profile.filters.collections.length || 'all') + ' collection(s)' : 'Disabled';
-            tr.children[2].textContent = item.report_profile.enabled ? ('Enabled' + (item.report_profile.schedule_enabled ? ' · weekly ' + (item.report_profile.schedule_weekday || '') + ' ' + (item.report_profile.schedule_time || '') + ' HKT' : '')) : 'Disabled';
+            const collectionCount = item.newsletter_profile.filters.collections.length;
+            tr.children[1].textContent = item.newsletter_profile.enabled ? (collectionCount ? t('Enabled · {count} collection(s)', {count: collectionCount}) : t('Enabled · all collection(s)')) : t('Disabled');
+            tr.children[2].textContent = item.report_profile.enabled ? (item.report_profile.schedule_enabled ? t('Enabled · weekly {weekday} {time} HKT', {weekday: item.report_profile.schedule_weekday || '', time: item.report_profile.schedule_time || ''}) : t('Enabled')) : t('Disabled');
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
-            actions.innerHTML = '<button class="btn btn-outline-primary btn-sm edit" type="button">Edit</button><button class="btn btn-outline-danger btn-sm remove" type="button">Delete</button>';
+            actions.innerHTML = '<button class="btn btn-outline-primary btn-sm edit" type="button">' + t('Edit') + '</button><button class="btn btn-outline-danger btn-sm remove" type="button">' + t('Delete') + '</button>';
             actions.querySelector('.edit').onclick = function () { openEditor(item); };
-            actions.querySelector('.remove').onclick = function () { if (confirm('Delete subscription for ' + item.email + '?')) requestJson(apiUrl(item.email), {method:'DELETE'}).then(load).catch(function(e){showMessage(e.message,'danger');}); };
+            actions.querySelector('.remove').onclick = function () { if (confirm(t('Delete subscription for {email}?', {email: item.email}))) requestJson(apiUrl(item.email), {method:'DELETE'}).then(load).catch(function(e){showMessage(e.message,'danger');}); };
             tr.children[3].append(actions); rows.append(tr);
         });
     }
@@ -324,10 +325,10 @@
     document.getElementById('newsletter-send-statistic').addEventListener('click', function () {
         if (!editingEmail || document.getElementById('newsletter-send-statistic').disabled) return;
         setSendStatisticBusy(true);
-        setSendStatisticStatus('Sending statistics email...', 'info');
+        setSendStatisticStatus(t('Sending statistics email...'), 'info');
         requestJson(apiUrl(editingEmail, '/send-statistic'), {method: 'POST'})
             .then(function (body) {
-                const text = body.message || 'Newsletter statistics email sent.';
+                const text = body.message || t('Newsletter statistics email sent.');
                 setSendStatisticStatus(text, 'success');
                 showMessage(text, 'success');
             })
@@ -348,7 +349,7 @@
                 statistic_schedule_enabled:document.getElementById('newsletter-statistic-schedule-enabled').checked
             },
             report_profile: buildReportProfilePayload().report_profile };
-        requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage('Subscription saved.','success');return load();}).catch(function(e){showMessage(e.message,'danger');});
+        requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load();}).catch(function(e){showMessage(e.message,'danger');});
     };
     requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});
 })();

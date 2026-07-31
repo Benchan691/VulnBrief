@@ -42,7 +42,7 @@
 
     function updateSelectedCount() {
         const count = getSelections().length;
-        selectedCount.textContent = count + ' selected';
+        selectedCount.textContent = t('{count} selected', {count: count});
         clearSelection.disabled = count === 0;
     }
 
@@ -96,7 +96,7 @@
             checkbox.className = 'form-check-input document-selection';
             checkbox.dataset.selectionId = item.selection_id;
             checkbox.checked = selectedKeys.has(selectionKey(collectionName, item.selection_id));
-            checkbox.setAttribute('aria-label', 'Select ' + (document.code || document.cve || document.title || 'document'));
+            checkbox.setAttribute('aria-label', t('Select {label}', {label: document.code || document.cve || document.title || t('document')}));
             selectCell.append(checkbox);
             tr.append(selectCell);
             addCell(tr, document.code || document.cve, 'fw-medium');
@@ -109,7 +109,7 @@
             button.className = 'btn btn-outline-primary btn-sm';
             button.type = 'button';
             button.dataset.index = index;
-            button.innerHTML = '<i class="bi bi-eye me-1"></i>View';
+            button.innerHTML = '<i class="bi bi-eye me-1"></i>' + t('View');
             action.append(button);
             tr.append(action);
             rows.append(tr);
@@ -133,7 +133,7 @@
         fetch(apiUrl + '?' + parameters.toString())
             .then(function (response) {
                 return response.json().then(function (body) {
-                    if (!response.ok) throw new Error(body.error || 'Unable to load documents.');
+                    if (!response.ok) throw new Error(body.error || t('Unable to load documents.'));
                     return body;
                 });
             })
@@ -142,8 +142,10 @@
                 pages = body.pages;
                 renderDocuments(body.data);
                 empty.classList.toggle('d-none', body.data.length !== 0);
-                resultCount.textContent = body.total + ' matching document' + (body.total === 1 ? '' : 's');
-                pageLabel.textContent = 'Page ' + body.page + ' of ' + body.pages;
+                resultCount.textContent = body.total === 1
+                    ? t('{total} matching document', {total: body.total})
+                    : t('{total} matching documents', {total: body.total});
+                pageLabel.textContent = t('Page {current} of {total}', {current: body.page, total: body.pages});
                 previous.disabled = body.page <= 1;
                 next.disabled = body.page >= body.pages;
             })
@@ -162,7 +164,7 @@
         const button = event.target.closest('button[data-index]');
         if (!button) return;
         const document = currentDocuments[Number(button.dataset.index)].document;
-        detailTitle.textContent = document.code || document.cve || document.title || 'Document Detail';
+        detailTitle.textContent = document.code || document.cve || document.title || t('Document Detail');
         detailJson.textContent = JSON.stringify(document, null, 2);
         modal.show();
     });
