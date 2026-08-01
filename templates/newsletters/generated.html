@@ -76,20 +76,6 @@
     {% elif field == 'related_links' %}
     <p><b>{{ newsletter.labels.related_links }}</b></p>
     <ul>{% for value in newsletter.related_links %}<li><a href="{{ value }}" rel="noopener">{{ value }}</a></li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>
-
-    {% elif field.startswith('details.') and newsletter.raw_fields.get(field) %}
-    {% set raw_field = newsletter.raw_fields.get(field) %}
-    <p><b>{{ raw_field.label }}</b></p>
-    {% if raw_field.kind == 'table' %}
-    <table>
-        <thead><tr>{% for header in raw_field.headers %}<th>{{ header }}</th>{% endfor %}</tr></thead>
-        <tbody>{% for row in raw_field.rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody>
-    </table>
-    {% elif raw_field.kind == 'list' %}
-    <ul>{% for value in raw_field.values %}<li>{{ value }}</li>{% endfor %}</ul>
-    {% else %}
-    <div class="indent">{{ raw_field.value }}</div>
-    {% endif %}
     {% endif %}
     {% endfor %}
 

@@ -2,7 +2,7 @@
     const pageConfig = JSON.parse(document.getElementById('page-config').textContent);
     const refreshMs = 20000;
     let templatesLoaded = false;
-    const editorState = { data: null, currentSource: '', dirty: false, previewToken: 0, commonBound: false, fieldControlsBound: false };
+    const editorState = { data: null, currentSource: '', dirty: false, previewToken: 0, commonBound: false };
 
     function showMessage(text, type) {
         const box = document.getElementById('message');
@@ -209,65 +209,31 @@
             : t('There is no recent record for this source yet.');
         document.getElementById('template-field-count').textContent = t('{count} selected', {count: row.fields.length});
         const catalog = row.field_catalog || editorState.data.field_catalog || [];
-        const search = (document.getElementById('template-field-search').value || '').trim().toLowerCase();
-        const showAdvanced = document.getElementById('template-show-advanced').checked;
-        const availableFields = catalog.filter(function (field) {
-            const text = [field.label, field.id, field.description, field.group].join(' ').toLowerCase();
-            return row.fields.indexOf(field.id) === -1 &&
-                (showAdvanced || !field.advanced) &&
-                (!search || text.indexOf(search) !== -1);
-        });
-        const groups = availableFields.reduce(function (result, field) {
-            const group = field.group || t('Other fields');
-            (result[group] = result[group] || []).push(field);
-            return result;
-        }, {});
-        Object.keys(groups).sort().forEach(function (group) {
-            const heading = document.createElement('div');
-            heading.className = 'template-field-group';
-            heading.textContent = group;
-            available.appendChild(heading);
-            groups[group].forEach(function (field) {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'template-field-option';
-                const type = field.type ? String(field.type).replace(/^./, function (letter) { return letter.toUpperCase(); }) : t('Text');
-                const availability = field.available
-                    ? '<span class="badge text-bg-success-subtle text-success-emphasis">' + t('Available') + '</span>'
-                    : '<span class="badge text-bg-light text-muted">' + t('Not in latest record') + '</span>';
-                button.innerHTML = '<span class="flex-grow-1"><span class="d-block fw-semibold">' + escapeHtml(field.label) + '</span>' +
-                    '<span class="small text-muted d-block">' + escapeHtml(field.description || field.id) + '</span>' +
-                    '<span class="template-field-meta"><span class="badge text-bg-light">' + escapeHtml(type) + '</span>' + availability + '</span></span>' +
-                    '<i class="bi bi-plus-circle text-primary"></i>';
-                button.addEventListener('click', function () {
-                    row.fields.push(field.id);
-                    renderFieldEditor();
-                    renderSourceList();
-                    markEditorDirty();
-                });
-                available.appendChild(button);
+        catalog.filter(function (field) { return row.fields.indexOf(field.id) === -1; }).forEach(function (field) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'template-field-option';
+            button.innerHTML = '<span><span class="d-block fw-semibold">' + escapeHtml(field.label) + '</span>' +
+                '<span class="small text-muted">' + escapeHtml(field.description) + '</span></span>' +
+                '<i class="bi bi-plus-circle text-primary"></i>';
+            button.addEventListener('click', function () {
+                row.fields.push(field.id);
+                renderFieldEditor();
+                renderSourceList();
+                markEditorDirty();
             });
+            available.appendChild(button);
         });
         if (!available.children.length) {
             available.innerHTML = '<div class="template-list-empty"><i class="bi bi-check2-circle"></i><span>' + t('All available fields are in the email.') + '</span></div>';
         }
         row.fields.forEach(function (fieldId, index) {
-            const field = catalog.find(function (item) { return item.id === fieldId; }) || {
-                id: fieldId,
-                label: fieldId,
-                description: t('Saved field not seen in the current source sample.'),
-                type: 'text',
-                available: false,
-            };
+            const field = catalog.find(function (item) { return item.id === fieldId; }) || {id: fieldId, label: fieldId, description: ''};
             const item = document.createElement('div');
             item.className = 'template-selected-item';
-            const selectedStatus = field.available
-                ? '<span class="badge text-bg-success-subtle text-success-emphasis">' + t('Available') + '</span>'
-                : '<span class="badge text-bg-warning-subtle text-warning-emphasis">' + t('Unavailable in latest record') + '</span>';
             item.innerHTML = '<span class="template-drag-handle"><i class="bi bi-grip-vertical"></i></span>' +
                 '<span class="flex-grow-1"><span class="d-block fw-semibold">' + escapeHtml(field.label) + '</span>' +
-                '<span class="small text-muted d-block">' + escapeHtml(field.description || field.id) + '</span>' +
-                '<span class="template-field-meta"><span class="badge text-bg-light">' + escapeHtml(field.type || t('Text')) + '</span>' + selectedStatus + '</span></span>' +
+                '<span class="small text-muted">' + escapeHtml(field.description) + '</span></span>' +
                 '<span class="template-order-actions">' +
                 '<button type="button" class="btn btn-sm btn-light" data-move="up" title="' + t('Move up') + '" ' + (index === 0 ? 'disabled' : '') + '><i class="bi bi-arrow-up"></i></button>' +
                 '<button type="button" class="btn btn-sm btn-light" data-move="down" title="' + t('Move down') + '" ' + (index === row.fields.length - 1 ? 'disabled' : '') + '><i class="bi bi-arrow-down"></i></button>' +
@@ -357,11 +323,6 @@
             });
             editorState.commonBound = true;
         }
-        if (!editorState.fieldControlsBound) {
-            document.getElementById('template-field-search').addEventListener('input', renderFieldEditor);
-            document.getElementById('template-show-advanced').addEventListener('change', renderFieldEditor);
-            editorState.fieldControlsBound = true;
-        }
     }
 
     function saveEditor() {
@@ -376,11 +337,11 @@
             editorState.data.common = body.data.common;
             editorState.dirty = false;
             setSaveState(t('All changes saved'), 'text-success');
-            showMessage(t('Email Editor saved.'), 'success');
+            showMessage(t('Email template saved.'), 'success');
         }).catch(function (error) {
             editorState.dirty = true;
             setSaveState(t('Could not save'), 'text-danger');
-            showMessage(error.message || t('Unable to save Email Editor.'), 'danger');
+            showMessage(error.message || t('Unable to save email templates.'), 'danger');
         }).finally(function () {
             button.disabled = false;
         });
@@ -416,7 +377,7 @@
                 templatesLoaded = true;
             })
             .catch(function (error) {
-                showMessage(error.message || t('Unable to load Email Editor.'), 'danger');
+                showMessage(error.message || t('Unable to load email templates.'), 'danger');
             })
             .finally(function () {
                 loading.classList.add('d-none');

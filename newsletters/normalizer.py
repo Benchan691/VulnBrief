@@ -5,13 +5,6 @@ import bleach
 import markdown
 from flask import render_template
 from markupsafe import Markup
-from newsletters.detail_fields import (
-    detail_field_label,
-    extract_detail_path,
-    is_detail_path,
-    scalar_values,
-    table_values,
-)
 from reviews.normalizer import extract_document_cve_id
 
 ALLOWED_TAGS = {
@@ -618,8 +611,7 @@ def _template_field_order(template_config, source_collection):
     if not isinstance(fields, list):
         return list(TEMPLATE_FIELD_ORDER)
     return list(dict.fromkeys(
-        str(field).strip() for field in fields
-        if str(field).strip() in TEMPLATE_FIELD_ORDER or is_detail_path(str(field).strip())
+        str(field).strip() for field in fields if str(field).strip() in TEMPLATE_FIELD_ORDER
     ))
 
 
@@ -635,56 +627,13 @@ def _template_subject(template, newsletter):
     return subject
 
 
-def _raw_detail_field(path, details):
-    value = extract_detail_path(details, path)
-    if value in (None, '', [], {}):
-        return None
-    table = table_values(value)
-    if table:
-        return {
-            'label': detail_field_label(path),
-            'kind': 'table',
-            'headers': table['headers'],
-            'rows': [
-                [_safe_html(cell) for cell in row]
-                for row in table['rows']
-            ],
-        }
-    values = scalar_values(value)
-    if isinstance(value, list) or len(values) > 1:
-        if not values:
-            return None
-        return {
-            'label': detail_field_label(path),
-            'kind': 'list',
-            'values': [_safe_html(item) for item in values],
-        }
-    if values:
-        return {
-            'label': detail_field_label(path),
-            'kind': 'text',
-            'value': _safe_html(values[0]),
-        }
-    return None
-
-
-def _apply_template_config(newsletter, source_collection, template_config, document=None):
+def _apply_template_config(newsletter, source_collection, template_config):
     config = template_config if isinstance(template_config, dict) else {}
     common = config.get('common') if isinstance(config.get('common'), dict) else {}
-    field_order = _template_field_order(config, source_collection)
-    details = (document or {}).get('details') if isinstance(document, dict) else {}
-    raw_fields = {
-        field: detail
-        for field in field_order
-        if is_detail_path(field)
-        for detail in [_raw_detail_field(field, details)]
-        if detail is not None
-    }
     extra = _safe_html(common.get('extra')) if common.get('extra') else Markup('')
     footer = _safe_html(common.get('footer')) if common.get('footer') else Markup(newsletter['labels']['footer'])
     newsletter.update({
-        'field_order': field_order,
-        'raw_fields': raw_fields,
+        'field_order': _template_field_order(config, source_collection),
         'extra': extra,
         'footer': footer,
         'subject': _template_subject(common.get('subject'), newsletter),
@@ -694,5 +643,5 @@ def _apply_template_config(newsletter, source_collection, template_config, docum
 
 def render_newsletter(document, source_collection, template_config=None):
     newsletter = normalize_newsletter(document, source_collection)
-    _apply_template_config(newsletter, source_collection, template_config, document)
+    _apply_template_config(newsletter, source_collection, template_config)
     return render_template('newsletters/generated.html', newsletter=newsletter), newsletter
