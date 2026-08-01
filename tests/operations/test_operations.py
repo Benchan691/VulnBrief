@@ -48,7 +48,7 @@ def test_operations_page_requires_authentication():
     page_config = json.loads(match.group(1))
     assert page_config['healthUrl'] == '/api/operations/health'
     assert page_config['templatesUrl'] == '/api/operations/newsletter-templates'
-    assert b'Email Templates' in page.data
+    assert b'Email Editor' in page.data
 
 
 def test_latest_newsletter_templates_uses_active_sources_and_newest_timestamp(monkeypatch):

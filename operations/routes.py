@@ -40,7 +40,7 @@ def get_newsletter_templates():
     try:
         return jsonify({'data': latest_newsletter_templates(get_vulnerabilities_database())})
     except PyMongoError:
-        return jsonify({'error': t('Unable to load email templates.')}), 503
+        return jsonify({'error': t('Unable to load Email Editor.')}), 503
 
 
 @operations_blueprint.route('/api/operations/newsletter-editor')
@@ -52,19 +52,23 @@ def get_newsletter_editor():
             get_web_database(),
         )})
     except PyMongoError:
-        return jsonify({'error': t('Unable to load email templates.')}), 503
+        return jsonify({'error': t('Unable to load Email Editor.')}), 503
 
 
 @operations_blueprint.route('/api/operations/newsletter-editor', methods=['PUT'])
 @login_required
 def save_newsletter_editor():
     try:
-        config = save_newsletter_template_config(get_web_database(), request.get_json(silent=True) or {})
+        config = save_newsletter_template_config(
+            get_web_database(),
+            request.get_json(silent=True) or {},
+            get_vulnerabilities_database(),
+        )
         return jsonify({'data': config})
     except (TypeError, ValueError) as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
-        return jsonify({'error': t('Unable to save email templates.')}), 503
+        return jsonify({'error': t('Unable to save Email Editor.')}), 503
 
 
 @operations_blueprint.route('/api/operations/newsletter-editor/preview', methods=['POST'])

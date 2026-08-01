@@ -35,6 +35,33 @@ def test_generic_newsletter_has_required_sections_and_sanitizes_source_html():
     assert 'Impacts:' not in html
 
 
+def test_render_newsletter_supports_details_table_fields_and_sanitizes_values():
+    document = {
+        'title': 'Raw detail field example',
+        'details': {
+            'example': {
+                'affected': [
+                    {'vendor': 'Acme', 'product': '<script>bad</script>Widget'},
+                    {'vendor': 'Beta', 'product': 'Gadget'},
+                ],
+            },
+        },
+    }
+    config = {
+        'sources': {
+            'example': {'fields': ['title', 'details.example.affected']},
+        },
+    }
+
+    with app.app_context():
+        html, _ = render_newsletter(document, 'example', config)
+
+    assert 'Raw detail field example' in html
+    assert 'Affected' in html
+    assert 'badWidget' in html
+    assert '<script>' not in html
+
+
 def test_github_advisory_renders_markdown_and_safe_images_for_email():
     document = {
         'title': 'Gogs Mirror Settings bypass',

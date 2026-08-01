@@ -62,6 +62,7 @@
 }
 
 .template-field-list, .template-selected-list { display: grid; gap: .6rem; }
+.template-field-group { color: #7a849a; font-size: .68rem; font-weight: 700; letter-spacing: .07em; margin-top: .45rem; text-transform: uppercase; }
 .template-field-option, .template-selected-item {
     align-items: center;
     background: #fff;
@@ -78,6 +79,8 @@
 .template-field-option { transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .template-field-option:hover { border-color: #aeb8f2; box-shadow: 0 .2rem .7rem rgba(42, 55, 116, .08); transform: translateY(-1px); }
 .template-selected-item { background: #fbfcff; }
+.template-field-meta { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .35rem; }
+.template-field-meta .badge { font-size: .62rem; font-weight: 600; }
 .template-drag-handle { color: #a1a8b8; }
 .template-order-actions { display: inline-flex; gap: .25rem; }
 .template-order-actions .btn { align-items: center; display: inline-flex; height: 1.9rem; justify-content: center; padding: 0; width: 1.9rem; }
