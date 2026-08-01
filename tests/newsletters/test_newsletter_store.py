@@ -1,10 +1,45 @@
 from app import app
 from newsletters.normalizer import (
     SOURCE_TEMPLATE_KEYS,
+    extract_cvss_string,
     normalize_newsletter,
     render_newsletter,
     template_key_for_source,
 )
+
+
+def test_cvss_string_is_extracted_from_common_source_shapes():
+    document = {
+        'details': {
+            'metrics': {
+                'cvss_v31': [{
+                    'cvssData': {
+                        'version': '3.1',
+                        'vectorString': 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',
+                        'baseScore': 9.8,
+                        'baseSeverity': 'CRITICAL',
+                    },
+                }],
+            },
+        },
+    }
+
+    assert extract_cvss_string(document, document['details']) == (
+        'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H (9.8 CRITICAL)'
+    )
+    assert normalize_newsletter(document, 'cve')['cvss']
+    with app.app_context():
+        html, _ = render_newsletter(document, 'cve', {
+            'sources': {'cve': {'fields': ['title', 'cvss']}},
+        })
+    assert 'CVSS:' in html
+    assert '9.8 CRITICAL' in html
+
+
+def test_cvss_field_is_omitted_when_source_does_not_provide_cvss():
+    normalized = normalize_newsletter({'details': {'summary': 'No score'}}, 'cve')
+
+    assert normalized['cvss'] == ''
 
 
 def test_generic_newsletter_has_required_sections_and_sanitizes_source_html():

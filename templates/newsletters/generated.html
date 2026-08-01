@@ -42,6 +42,9 @@
     <p><b>{{ newsletter.labels.severity }}</b></p>
     <ul>{% for value in newsletter.severity %}<li>{{ value }}</li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>
 
+    {% elif field == 'cvss' and newsletter.cvss %}
+    <p><b>{{ newsletter.labels.cvss }}</b> {{ newsletter.cvss }}</p>
+
     {% elif field == 'impacts' and newsletter.show_impacts %}
     <p><b>{{ newsletter.labels.impacts }}</b></p>
     <ul>{% for value in newsletter.impacts %}<li>{{ value }}</li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>

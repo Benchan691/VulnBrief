@@ -13,6 +13,7 @@ TEMPLATE_FIELD_CATALOG = (
     {'id': 'overview', 'label': 'Overview', 'description': 'The source summary or description.'},
     {'id': 'table', 'label': 'Source table', 'description': 'A structured table supplied by the source.'},
     {'id': 'severity', 'label': 'Severity', 'description': 'Severity or risk rating.'},
+    {'id': 'cvss', 'label': 'CVSS', 'description': 'CVSS score or vector supplied by the source.'},
     {'id': 'impacts', 'label': 'Impacts', 'description': 'The effects or consequences described by the source.'},
     {'id': 'affected', 'label': 'Affected systems', 'description': 'Products, systems, or versions that are affected.'},
     {'id': 'cves', 'label': 'CVE identifiers', 'description': 'CVE identifiers found in the record.'},
@@ -21,7 +22,7 @@ TEMPLATE_FIELD_CATALOG = (
     {'id': 'related_links', 'label': 'Related links', 'description': 'Additional source or related URLs.'},
 )
 TEMPLATE_FIELD_IDS = tuple(field['id'] for field in TEMPLATE_FIELD_CATALOG)
-DEFAULT_FIELD_ORDER = list(TEMPLATE_FIELD_IDS)
+DEFAULT_FIELD_ORDER = [field_id for field_id in TEMPLATE_FIELD_IDS if field_id != 'cvss']
 DEFAULT_TEMPLATE_COMMON = {
     'subject': 'Security newsletter: {{title}}',
     'extra': '',
@@ -161,6 +162,8 @@ def _field_available(newsletter, field_id):
         return bool(newsletter.get('table'))
     if field_id == 'severity':
         return bool(newsletter.get('show_severity') and newsletter.get('severity'))
+    if field_id == 'cvss':
+        return bool(newsletter.get('cvss'))
     if field_id == 'impacts':
         return bool(newsletter.get('show_impacts') and newsletter.get('impacts'))
     if field_id == 'affected':
@@ -181,10 +184,12 @@ def newsletter_editor_rows(vulnerability_database, web_database):
         newsletter = normalize_newsletter(latest or {}, source)
         source_config = config['sources'].get(source) or {'fields': list(DEFAULT_FIELD_ORDER)}
         fields = _clean_fields(source_config.get('fields'))
-        catalog = [
-            {**field, 'available': _field_available(newsletter, field['id'])}
-            for field in TEMPLATE_FIELD_CATALOG
-        ]
+        catalog = []
+        for field in TEMPLATE_FIELD_CATALOG:
+            available = _field_available(newsletter, field['id'])
+            if field['id'] == 'cvss' and not available and field['id'] not in fields:
+                continue
+            catalog.append({**field, 'available': available})
         rows.append({
             **row,
             'fields': fields,

@@ -27,6 +27,7 @@ ENGLISH_LABELS = {
     'greeting': 'Dear Valued Customer,',
     'overview': 'Overview:',
     'severity': 'Severity:',
+    'cvss': 'CVSS:',
     'impacts': 'Impacts:',
     'affected': 'Affected system:',
     'cves': 'CVEs:',
@@ -42,6 +43,7 @@ CHINESE_LABELS = {
     'greeting': '尊敬的客户：',
     'overview': '概述：',
     'severity': '严重程度：',
+    'cvss': 'CVSS：',
     'impacts': '影响：',
     'affected': '受影响系统：',
     'cves': 'CVE：',
@@ -180,6 +182,77 @@ def _cve_values(values):
                 seen.add(cve)
                 cves.append(cve)
     return cves
+
+
+def _cvss_object_text(value):
+    if not isinstance(value, dict):
+        return ''
+    normalized = {
+        str(key).replace('-', '_').casefold(): item
+        for key, item in value.items()
+    }
+    vector = normalized.get('vector_string') or normalized.get('vectorstring') or normalized.get('vector')
+    score = normalized.get('base_score') or normalized.get('basescore') or normalized.get('score')
+    severity = normalized.get('base_severity') or normalized.get('baseseverity') or normalized.get('severity')
+    version = normalized.get('version')
+    if vector not in (None, ''):
+        text = str(vector)
+        if score not in (None, ''):
+            text += f' ({score}'
+            if severity not in (None, ''):
+                text += f' {severity}'
+            text += ')'
+        return text
+    if score not in (None, ''):
+        text = str(score)
+        if severity not in (None, ''):
+            text += f' ({severity})'
+        elif version not in (None, ''):
+            text += f' (v{version})'
+        return text
+    if severity not in (None, ''):
+        return str(severity)
+    return ''
+
+
+CVSS_VALUE_KEYS = {
+    'base_score', 'basescore', 'score', 'base_severity', 'baseseverity',
+    'severity', 'rating', 'base_rating', 'vector', 'vector_string',
+    'vectorstring', 'version',
+}
+
+
+def _cvss_values(value, *, in_cvss=False, key=''):
+    current = in_cvss or 'cvss' in key.casefold()
+    if isinstance(value, dict):
+        formatted = _cvss_object_text(value) if current else ''
+        if formatted:
+            return [formatted]
+        result = []
+        for child_key, child in value.items():
+            normalized_key = str(child_key).replace('-', '_').casefold()
+            child_current = current or 'cvss' in normalized_key
+            if child_current or isinstance(child, (dict, list)):
+                result.extend(_cvss_values(child, in_cvss=child_current, key=normalized_key))
+        return result
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(_cvss_values(item, in_cvss=current, key=key))
+        return result
+    normalized_key = key.replace('-', '_').casefold()
+    if current and (normalized_key in CVSS_VALUE_KEYS or 'cvss' in normalized_key) and value not in (None, ''):
+        return [str(value)]
+    return []
+
+
+def extract_cvss_string(document, details=None):
+    """Return a readable CVSS score/vector when the source provides one."""
+    values = _cvss_values(document if isinstance(document, dict) else {})
+    if isinstance(details, dict):
+        values.extend(_cvss_values(details))
+    unique = list(dict.fromkeys(value for value in values if value))
+    return '; '.join(unique)
 
 
 def template_key_for_source(source_collection):
@@ -487,7 +560,7 @@ SEVERITY_DOCUMENT_SOURCES = {
     'huawei_sa', 'juniper', 'paloalto', 'qianxin', 'splunk',
 }
 TEMPLATE_FIELD_ORDER = (
-    'title', 'collection', 'overview', 'table', 'severity', 'impacts',
+    'title', 'collection', 'overview', 'table', 'severity', 'cvss', 'impacts',
     'affected', 'cves', 'recommendations', 'references', 'related_links',
 )
 
@@ -564,6 +637,7 @@ def normalize_newsletter(document, source_collection):
         details, document, 'cve', 'cve_ids', 'cveCode', 'cve_id',
         'vulnerability_identifiers',
     ))
+    cvss = extract_cvss_string(document, details)
     template_key = template_key_for_source(source_collection)
     is_chinese = template_key in CHINESE_TEMPLATE_KEYS
     severity = fields['impacts']
@@ -586,6 +660,7 @@ def normalize_newsletter(document, source_collection):
         'collection': source_collection,
         'overview': overview,
         'severity': severity,
+        'cvss': _safe_html(cvss),
         'impacts': impacts,
         'affected': fields['affected'],
         'recommendations': fields['recommendations'],
