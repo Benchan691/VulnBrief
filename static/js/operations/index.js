@@ -2,6 +2,7 @@
     const pageConfig = JSON.parse(document.getElementById('page-config').textContent);
     const refreshMs = 20000;
     let templatesLoaded = false;
+    const editorState = { data: null, currentSource: '', dirty: false, previewToken: 0, commonBound: false };
 
     function showMessage(text, type) {
         const box = document.getElementById('message');
@@ -29,8 +30,10 @@
         return escapeHtml(date.toLocaleString());
     }
 
-    function requestJson(url) {
-        return fetch(url, { headers: { Accept: 'application/json' } }).then(function (response) {
+    function requestJson(url, options) {
+        const requestOptions = Object.assign({ headers: { Accept: 'application/json' } }, options || {});
+        requestOptions.headers = Object.assign({ Accept: 'application/json' }, requestOptions.headers || {});
+        return fetch(url, requestOptions).then(function (response) {
             return response.json().then(function (body) {
                 if (!response.ok) {
                     throw new Error((body && body.error) || t('Request failed.'));
@@ -153,48 +156,201 @@
         });
     }
 
-    function previewUrl(row) {
-        return '/generated-newsletters/' + encodeURIComponent(row.source_collection) + '/'
-            + encodeURIComponent(row.selection_id) + '/preview';
+    function currentRow() {
+        return (editorState.data.sources || []).find(function (row) {
+            return row.source_collection === editorState.currentSource;
+        }) || null;
     }
 
-    function renderTemplates(rows) {
-        const cards = document.getElementById('template-cards');
-        const empty = document.getElementById('templates-empty');
-        cards.replaceChildren();
-        empty.classList.toggle('d-none', rows.length !== 0);
-        rows.forEach(function (row) {
-            const column = document.createElement('div');
-            column.className = 'col-12 col-xl-6';
-            const card = document.createElement('article');
-            card.className = 'card shadow-sm border-0 overflow-hidden';
-            const header = document.createElement('div');
-            header.className = 'card-header bg-white';
-            const title = document.createElement('h2');
-            title.className = 'h6 mb-1';
-            title.textContent = row.source_collection;
-            const detail = document.createElement('div');
-            detail.className = 'small text-muted';
-            detail.textContent = row.source_timestamp
-                ? t('Newest source record: {time}', {time: formatTime(row.source_timestamp)})
-                : t('No source record available.');
-            header.append(title, detail);
-            card.append(header);
-            if (row.selection_id) {
-                const frame = document.createElement('iframe');
-                frame.className = 'template-preview-frame';
-                frame.title = t('{collection} email template preview', {collection: row.source_collection});
-                frame.src = previewUrl(row);
-                card.append(frame);
-            } else {
-                const unavailable = document.createElement('div');
-                unavailable.className = 'card-body text-muted py-5';
-                unavailable.textContent = t('No source record available for this active review collection.');
-                card.append(unavailable);
-            }
-            column.append(card);
-            cards.append(column);
+    function setSaveState(text, className) {
+        const state = document.getElementById('template-save-state');
+        state.textContent = text || '';
+        state.className = 'small ' + (className || 'text-muted');
+    }
+
+    function markEditorDirty() {
+        editorState.dirty = true;
+        setSaveState(t('Unsaved changes'), 'text-warning');
+        updatePreview();
+    }
+
+    function renderSourceList() {
+        const list = document.getElementById('template-source-list');
+        list.replaceChildren();
+        (editorState.data.sources || []).forEach(function (row) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'template-source-item' + (row.source_collection === editorState.currentSource ? ' is-active' : '');
+            button.innerHTML =
+                '<span class="template-source-dot"><i class="bi bi-collection"></i></span>' +
+                '<span class="flex-grow-1 text-start"><span class="d-block fw-semibold">' + escapeHtml(row.source_collection) + '</span>' +
+                '<span class="small text-muted">' + (row.selection_id ? t('{count} fields selected', {count: row.fields.length}) : t('No recent record')) + '</span></span>' +
+                '<i class="bi bi-chevron-right small text-muted"></i>';
+            button.addEventListener('click', function () {
+                editorState.currentSource = row.source_collection;
+                renderSourceList();
+                renderFieldEditor();
+                updatePreview();
+            });
+            list.appendChild(button);
         });
+    }
+
+    function renderFieldEditor() {
+        const row = currentRow();
+        const available = document.getElementById('template-available-fields');
+        const selected = document.getElementById('template-selected-fields');
+        available.replaceChildren();
+        selected.replaceChildren();
+        if (!row) return;
+        document.getElementById('template-source-title').textContent = row.source_collection;
+        document.getElementById('template-source-meta').textContent = row.source_timestamp
+            ? t('Previewing newest record from {time}', {time: formatTime(row.source_timestamp)})
+            : t('There is no recent record for this source yet.');
+        document.getElementById('template-field-count').textContent = t('{count} selected', {count: row.fields.length});
+        const catalog = row.field_catalog || editorState.data.field_catalog || [];
+        catalog.filter(function (field) { return row.fields.indexOf(field.id) === -1; }).forEach(function (field) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'template-field-option';
+            button.innerHTML = '<span><span class="d-block fw-semibold">' + escapeHtml(field.label) + '</span>' +
+                '<span class="small text-muted">' + escapeHtml(field.description) + '</span></span>' +
+                '<i class="bi bi-plus-circle text-primary"></i>';
+            button.addEventListener('click', function () {
+                row.fields.push(field.id);
+                renderFieldEditor();
+                renderSourceList();
+                markEditorDirty();
+            });
+            available.appendChild(button);
+        });
+        if (!available.children.length) {
+            available.innerHTML = '<div class="template-list-empty"><i class="bi bi-check2-circle"></i><span>' + t('All available fields are in the email.') + '</span></div>';
+        }
+        row.fields.forEach(function (fieldId, index) {
+            const field = catalog.find(function (item) { return item.id === fieldId; }) || {id: fieldId, label: fieldId, description: ''};
+            const item = document.createElement('div');
+            item.className = 'template-selected-item';
+            item.innerHTML = '<span class="template-drag-handle"><i class="bi bi-grip-vertical"></i></span>' +
+                '<span class="flex-grow-1"><span class="d-block fw-semibold">' + escapeHtml(field.label) + '</span>' +
+                '<span class="small text-muted">' + escapeHtml(field.description) + '</span></span>' +
+                '<span class="template-order-actions">' +
+                '<button type="button" class="btn btn-sm btn-light" data-move="up" title="' + t('Move up') + '" ' + (index === 0 ? 'disabled' : '') + '><i class="bi bi-arrow-up"></i></button>' +
+                '<button type="button" class="btn btn-sm btn-light" data-move="down" title="' + t('Move down') + '" ' + (index === row.fields.length - 1 ? 'disabled' : '') + '><i class="bi bi-arrow-down"></i></button>' +
+                '<button type="button" class="btn btn-sm btn-light text-danger" data-move="remove" title="' + t('Remove') + '"><i class="bi bi-x-lg"></i></button>' +
+                '</span>';
+            item.querySelectorAll('[data-move]').forEach(function (button) {
+                button.addEventListener('click', function () {
+                    const action = button.dataset.move;
+                    if (action === 'remove') row.fields.splice(index, 1);
+                    if (action === 'up' && index > 0) [row.fields[index - 1], row.fields[index]] = [row.fields[index], row.fields[index - 1]];
+                    if (action === 'down' && index < row.fields.length - 1) [row.fields[index + 1], row.fields[index]] = [row.fields[index], row.fields[index + 1]];
+                    renderFieldEditor();
+                    renderSourceList();
+                    markEditorDirty();
+                });
+            });
+            selected.appendChild(item);
+        });
+        if (!selected.children.length) {
+            selected.innerHTML = '<div class="template-list-empty"><i class="bi bi-layout-text-sidebar-reverse"></i><span>' + t('Add fields from the left to build the email.') + '</span></div>';
+        }
+    }
+
+    function syncCommonSettings() {
+        editorState.data.common.subject = document.getElementById('template-subject').value.trim();
+        editorState.data.common.extra = document.getElementById('template-extra').value;
+        editorState.data.common.footer = document.getElementById('template-footer').value;
+    }
+
+    function editorConfig() {
+        syncCommonSettings();
+        return {
+            common: editorState.data.common,
+            sources: (editorState.data.sources || []).reduce(function (result, row) {
+                result[row.source_collection] = {fields: row.fields};
+                return result;
+            }, {}),
+        };
+    }
+
+    function updatePreview() {
+        const row = currentRow();
+        const frame = document.getElementById('template-editor-preview');
+        const empty = document.getElementById('template-preview-empty');
+        const subject = document.getElementById('template-preview-subject');
+        if (!row || !row.selection_id) {
+            frame.classList.add('d-none');
+            empty.classList.remove('d-none');
+            subject.textContent = '';
+            return;
+        }
+        frame.classList.remove('d-none');
+        empty.classList.add('d-none');
+        const token = ++editorState.previewToken;
+        requestJson(pageConfig.editorPreviewUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                source_collection: row.source_collection,
+                selection_id: row.selection_id,
+                config: editorConfig(),
+            }),
+        }).then(function (body) {
+            if (token !== editorState.previewToken) return;
+            frame.srcdoc = body.html || '';
+            subject.textContent = body.subject ? t('Subject: {subject}', {subject: body.subject}) : '';
+        }).catch(function (error) {
+            if (token === editorState.previewToken) showMessage(error.message || t('Unable to render generated newsletter.'), 'danger');
+        });
+    }
+
+    function renderEditor(data) {
+        editorState.data = data || {common: {}, sources: [], field_catalog: []};
+        editorState.data.common = editorState.data.common || {};
+        document.getElementById('template-subject').value = editorState.data.common.subject || '';
+        document.getElementById('template-extra').value = editorState.data.common.extra || '';
+        document.getElementById('template-footer').value = editorState.data.common.footer || '';
+        editorState.currentSource = (editorState.data.sources[0] || {}).source_collection || '';
+        document.getElementById('template-editor').classList.remove('d-none');
+        renderSourceList();
+        renderFieldEditor();
+        updatePreview();
+        setSaveState(t('All changes saved'), 'text-success');
+        if (!editorState.commonBound) {
+            ['template-subject', 'template-extra', 'template-footer'].forEach(function (id) {
+                document.getElementById(id).addEventListener('input', markEditorDirty);
+            });
+            editorState.commonBound = true;
+        }
+    }
+
+    function saveEditor() {
+        const button = document.getElementById('save-template-btn');
+        button.disabled = true;
+        setSaveState(t('Saving...'), 'text-muted');
+        requestJson(pageConfig.editorUrl, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(editorConfig()),
+        }).then(function (body) {
+            editorState.data.common = body.data.common;
+            editorState.dirty = false;
+            setSaveState(t('All changes saved'), 'text-success');
+            showMessage(t('Email template saved.'), 'success');
+        }).catch(function (error) {
+            editorState.dirty = true;
+            setSaveState(t('Could not save'), 'text-danger');
+            showMessage(error.message || t('Unable to save email templates.'), 'danger');
+        }).finally(function () {
+            button.disabled = false;
+        });
+    }
+
+    function renderTemplates(data) {
+        const empty = document.getElementById('templates-empty');
+        empty.classList.toggle('d-none', (data.sources || []).length !== 0);
+        if (data.sources && data.sources.length) renderEditor(data);
     }
 
     function loadHealth() {
@@ -214,7 +370,7 @@
     function loadTemplates() {
         const loading = document.getElementById('templates-loading');
         loading.classList.remove('d-none');
-        return requestJson(pageConfig.templatesUrl)
+        return requestJson(pageConfig.editorUrl)
             .then(function (body) {
                 clearMessage();
                 renderTemplates(body.data || []);
@@ -238,6 +394,7 @@
             loadHealth();
         }
     });
+    document.getElementById('save-template-btn').addEventListener('click', saveEditor);
     loadHealth();
     setInterval(loadHealth, refreshMs);
 })();

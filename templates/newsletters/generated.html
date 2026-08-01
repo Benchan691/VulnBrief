@@ -14,15 +14,21 @@
     </style>
 </head>
 <body>
-    <h1><b>{{ newsletter.title }}</b></h1>
-    {% block greeting %}<p>{{ newsletter.labels.greeting }}</p>{% endblock %}
+    <p>{{ newsletter.labels.greeting }}</p>
+    {% if newsletter.extra %}<div class="template-extra">{{ newsletter.extra }}</div>{% endif %}
 
+    {% for field in newsletter.field_order %}
+    {% if field == 'title' %}
+    <h1><b>{{ newsletter.title }}</b></h1>
+
+    {% elif field == 'collection' %}
     <p><b>{{ newsletter.labels.collection }}</b> {{ newsletter.collection }}</p>
 
+    {% elif field == 'overview' %}
     <p><b>{{ newsletter.labels.overview }}</b></p>
     <div class="indent">{{ newsletter.overview }}</div>
 
-    {% block source_table %}{% if newsletter.table %}
+    {% elif field == 'table' and newsletter.table %}
     <table>
         <thead><tr>{% for header in newsletter.table.headers %}<th>{{ header }}</th>{% endfor %}</tr></thead>
         <tbody>
@@ -31,19 +37,16 @@
         {% endfor %}
         </tbody>
     </table>
-    {% endif %}{% endblock %}
 
-    {% if newsletter.show_severity %}
+    {% elif field == 'severity' and newsletter.show_severity %}
     <p><b>{{ newsletter.labels.severity }}</b></p>
     <ul>{% for value in newsletter.severity %}<li>{{ value }}</li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>
-    {% endif %}
 
-    {% if newsletter.show_impacts %}
+    {% elif field == 'impacts' and newsletter.show_impacts %}
     <p><b>{{ newsletter.labels.impacts }}</b></p>
     <ul>{% for value in newsletter.impacts %}<li>{{ value }}</li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>
-    {% endif %}
 
-    {% if newsletter.show_affected %}
+    {% elif field == 'affected' and newsletter.show_affected %}
     <p><b>{{ newsletter.labels.affected }}</b></p>
     {% if newsletter.affected_table %}
     <table>
@@ -57,22 +60,25 @@
     {% else %}
     <ul>{% for value in newsletter.affected %}<li>{{ value }}</li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>
     {% endif %}
-    {% endif %}
 
-    {% if newsletter.cves %}
+    {% elif field == 'cves' and newsletter.cves %}
     <p><b>{{ newsletter.labels.cves }}</b></p>
     <ul>{% for value in newsletter.cves %}<li>{{ value }}</li>{% endfor %}</ul>
-    {% endif %}
 
+    {% elif field == 'recommendations' %}
     <p><b>{{ newsletter.labels.recommendations }}</b></p>
     <ul>{% for value in newsletter.recommendations %}<li>{{ value }}</li>{% else %}<li>{{ newsletter.labels.default_recommendation }}</li>{% endfor %}</ul>
 
+    {% elif field == 'references' %}
     <p><b>{{ newsletter.labels.references }}</b></p>
     <ul>{% for value in newsletter.references %}<li><a href="{{ value }}" rel="noopener">{{ value }}</a></li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>
 
+    {% elif field == 'related_links' %}
     <p><b>{{ newsletter.labels.related_links }}</b></p>
     <ul>{% for value in newsletter.related_links %}<li><a href="{{ value }}" rel="noopener">{{ value }}</a></li>{% else %}<li>{{ newsletter.labels.not_specified }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% endfor %}
 
-    {% block footer %}<p>{{ newsletter.labels.footer }}</p>{% endblock %}
+    <p>{{ newsletter.footer }}</p>
 </body>
 </html>

@@ -486,6 +486,10 @@ SEVERITY_DOCUMENT_SOURCES = {
     'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'github_advisory', 'hikvision',
     'huawei_sa', 'juniper', 'paloalto', 'qianxin', 'splunk',
 }
+TEMPLATE_FIELD_ORDER = (
+    'title', 'collection', 'overview', 'table', 'severity', 'impacts',
+    'affected', 'cves', 'recommendations', 'references', 'related_links',
+)
 
 
 def _default_source_fields(document, details):
@@ -599,6 +603,45 @@ def normalize_newsletter(document, source_collection):
     return result
 
 
-def render_newsletter(document, source_collection):
+def _template_field_order(template_config, source_collection):
+    config = template_config if isinstance(template_config, dict) else {}
+    sources = config.get('sources') if isinstance(config.get('sources'), dict) else {}
+    source = sources.get(source_collection) if isinstance(sources.get(source_collection), dict) else {}
+    fields = source.get('fields')
+    if not isinstance(fields, list):
+        return list(TEMPLATE_FIELD_ORDER)
+    return list(dict.fromkeys(
+        str(field).strip() for field in fields if str(field).strip() in TEMPLATE_FIELD_ORDER
+    ))
+
+
+def _template_subject(template, newsletter):
+    subject = str(template or '').strip() or 'Security newsletter: {{title}}'
+    replacements = {
+        '{{title}}': str(newsletter.get('title') or ''),
+        '{{collection}}': str(newsletter.get('collection') or ''),
+        '{{source_collection}}': str(newsletter.get('collection') or ''),
+    }
+    for token, value in replacements.items():
+        subject = subject.replace(token, value)
+    return subject
+
+
+def _apply_template_config(newsletter, source_collection, template_config):
+    config = template_config if isinstance(template_config, dict) else {}
+    common = config.get('common') if isinstance(config.get('common'), dict) else {}
+    extra = _safe_html(common.get('extra')) if common.get('extra') else Markup('')
+    footer = _safe_html(common.get('footer')) if common.get('footer') else Markup(newsletter['labels']['footer'])
+    newsletter.update({
+        'field_order': _template_field_order(config, source_collection),
+        'extra': extra,
+        'footer': footer,
+        'subject': _template_subject(common.get('subject'), newsletter),
+    })
+    return newsletter
+
+
+def render_newsletter(document, source_collection, template_config=None):
     newsletter = normalize_newsletter(document, source_collection)
+    _apply_template_config(newsletter, source_collection, template_config)
     return render_template('newsletters/generated.html', newsletter=newsletter), newsletter

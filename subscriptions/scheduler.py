@@ -1,4 +1,5 @@
 import os
+import inspect
 import socket
 import threading
 import time
@@ -10,6 +11,7 @@ from pymongo.errors import DuplicateKeyError
 from core.database import get_config, get_vulnerabilities_database, get_web_database
 from integrations.email import Mailer
 from newsletters.normalizer import render_newsletter
+from operations.templates import get_newsletter_template_config
 from reports.progress import append_job_log
 from reports.harness import _render_job_html, run_job
 from reviews.repository import resolve_vulnerability_document, review_views
@@ -768,6 +770,13 @@ def _newsletter_delivery_filter_overrides(profile):
     return {'cve_review': cve_filters}
 
 
+def _render_configured_newsletter(document, source_collection, template_config):
+    """Keep delivery-compatible with simple renderer fakes used by integrations/tests."""
+    if len(inspect.signature(render_newsletter).parameters) >= 3:
+        return render_newsletter(document, source_collection, template_config)
+    return render_newsletter(document, source_collection)
+
+
 def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER_SEND_LIMIT):
     now = now or _now()
     web_database = get_web_database()
@@ -789,6 +798,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
         return {'sent': 0, 'cursor_initialized': True, 'delivery_cursor': cursor_value}
 
     vuln_database = get_vulnerabilities_database()
+    template_config = get_newsletter_template_config(web_database)
     database_name = _vulnerabilities_database_name()
     matches = query_profile_matches(
         vuln_database,
@@ -830,10 +840,12 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
                 if observed_at > max_cursor:
                     max_cursor = observed_at
                 continue
-            html, newsletter = render_newsletter(source_document, source_collection)
+            html, newsletter = _render_configured_newsletter(
+                source_document, source_collection, template_config,
+            )
             title = newsletter.get('title') or selection_id
             mailer.send_email(subscription['email'], {
-                'subject': f'Security newsletter: {title}',
+                'subject': newsletter.get('subject') or f'Security newsletter: {title}',
                 'html': html,
             })
             recorded = _record_newsletter_delivery(

@@ -89,10 +89,107 @@
     </section>
 
     <section class="tab-pane fade" id="templates-panel" role="tabpanel" aria-labelledby="templates-tab">
-        <p class="text-muted small">{{ t('The newest source record from each active review collection, rendered with its newsletter template.') }}</p>
         <div id="templates-loading" class="text-center text-muted py-5 d-none">{{ t('Loading email templates...') }}</div>
         <div id="templates-empty" class="text-center text-muted py-5 d-none">{{ t('No active review collections found.') }}</div>
-        <div id="template-cards" class="row g-4"></div>
+
+        <div id="template-editor" class="template-editor d-none">
+            <div class="template-editor-heading d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+                <div>
+                    <div class="template-kicker">{{ t('Email template editor') }}</div>
+                    <h2 class="h4 mb-1">{{ t('Build a newsletter that fits your team') }}</h2>
+                    <p class="text-muted mb-0">{{ t('Choose the fields for each source, arrange them in the order readers should see, then preview the result.') }}</p>
+                </div>
+                <div class="d-flex align-items-center gap-3">
+                    <span id="template-save-state" class="small text-muted"></span>
+                    <button class="btn btn-primary" id="save-template-btn" type="button">
+                        <i class="bi bi-check2 me-1"></i>{{ t('Save template') }}
+                    </button>
+                </div>
+            </div>
+
+            <div class="row g-4">
+                <aside class="col-12 col-xl-4">
+                    <div class="card border-0 shadow-sm mb-4">
+                        <div class="card-body">
+                            <div class="d-flex align-items-start gap-3 mb-3">
+                                <span class="template-section-icon"><i class="bi bi-sliders2"></i></span>
+                                <div>
+                                    <h3 class="h6 mb-1">{{ t('Common email settings') }}</h3>
+                                    <p class="small text-muted mb-0">{{ t('These settings apply to every newsletter.') }}</p>
+                                </div>
+                            </div>
+                            <label class="form-label small fw-semibold" for="template-subject">{{ t('Subject line') }}</label>
+                            <input class="form-control form-control-sm mb-1" id="template-subject" type="text" maxlength="180">
+                            <div class="form-text mb-3">{{ t('Use {{title}} or {{collection}} to insert record details.') }}</div>
+
+                            <label class="form-label small fw-semibold" for="template-extra">{{ t('Extra content') }}</label>
+                            <textarea class="form-control form-control-sm mb-1" id="template-extra" rows="3" placeholder="{{ t('Optional welcome message or admin note') }}"></textarea>
+                            <div class="form-text mb-3">{{ t('Simple HTML such as &lt;strong&gt; and &lt;p&gt; is supported.') }}</div>
+
+                            <label class="form-label small fw-semibold" for="template-footer">{{ t('Footer') }}</label>
+                            <textarea class="form-control form-control-sm" id="template-footer" rows="3" placeholder="{{ t('Leave blank to use the language default') }}"></textarea>
+                        </div>
+                    </div>
+
+                    <div class="card border-0 shadow-sm">
+                        <div class="card-body p-0">
+                            <div class="p-3 border-bottom">
+                                <h3 class="h6 mb-1">{{ t('Collection sources') }}</h3>
+                                <p class="small text-muted mb-0">{{ t('Each source can have its own field order.') }}</p>
+                            </div>
+                            <div id="template-source-list" class="template-source-list"></div>
+                        </div>
+                    </div>
+                </aside>
+
+                <main class="col-12 col-xl-8">
+                    <div class="card border-0 shadow-sm mb-4">
+                        <div class="card-body">
+                            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                                <div>
+                                    <div class="template-kicker">{{ t('Editing source') }}</div>
+                                    <h3 class="h5 mb-1" id="template-source-title">—</h3>
+                                    <div class="small text-muted" id="template-source-meta"></div>
+                                </div>
+                                <span class="badge rounded-pill text-bg-light" id="template-field-count"></span>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-12 col-md-5">
+                                    <div class="template-panel-heading">
+                                        <div>
+                                            <h4 class="h6 mb-1">{{ t('Available fields') }}</h4>
+                                            <p class="small text-muted mb-0">{{ t('Add a field to the email') }}</p>
+                                        </div>
+                                    </div>
+                                    <div id="template-available-fields" class="template-field-list mt-3"></div>
+                                </div>
+                                <div class="col-12 col-md-7">
+                                    <div class="template-panel-heading">
+                                        <div>
+                                            <h4 class="h6 mb-1">{{ t('Email order') }}</h4>
+                                            <p class="small text-muted mb-0">{{ t('Move fields up or down') }}</p>
+                                        </div>
+                                    </div>
+                                    <div id="template-selected-fields" class="template-selected-list mt-3"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card border-0 shadow-sm overflow-hidden">
+                        <div class="card-header bg-white d-flex justify-content-between align-items-center gap-2">
+                            <div>
+                                <h3 class="h6 mb-1"><i class="bi bi-eye me-2 text-primary"></i>{{ t('Live preview') }}</h3>
+                                <p class="small text-muted mb-0" id="template-preview-subject"></p>
+                            </div>
+                            <span class="small text-muted"><i class="bi bi-arrow-repeat me-1"></i>{{ t('Updates as you edit') }}</span>
+                        </div>
+                        <iframe id="template-editor-preview" class="template-editor-preview" title="{{ t('Email template preview') }}"></iframe>
+                        <div id="template-preview-empty" class="text-center text-muted py-5 d-none">{{ t('Select a source with a recent record to preview it.') }}</div>
+                    </div>
+                </main>
+            </div>
+        </div>
     </section>
     </div>
 </div>
@@ -101,6 +198,8 @@
 <script id="page-config" type="application/json">{{ {
     'healthUrl': url_for('operations.get_operations_health'),
     'templatesUrl': url_for('operations.get_newsletter_templates'),
+    'editorUrl': url_for('operations.get_newsletter_editor'),
+    'editorPreviewUrl': url_for('operations.preview_newsletter_editor'),
 } | tojson }}</script>
 <script src="{{ url_for('static', filename='js/operations/index.js') }}"></script>
 {% endblock %}
