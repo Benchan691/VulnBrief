@@ -1,0 +1,4 @@
+vendor,product,vendor_aliases,product_aliases
+Red Hat,Enterprise Linux,"Red Hat, Inc.|RedHat",RHEL|Red Hat Enterprise Linux
+Microsoft,Windows Server,Microsoft Corporation,Windows Server 2019|Windows Server 2022
+Apache Software Foundation,HTTP Server,Apache|ASF,Apache HTTPD|httpd

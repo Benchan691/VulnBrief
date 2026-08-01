@@ -193,7 +193,7 @@
             error.textContent = job.error;
             cell.append(error);
         }
-        if (job.status === 'queued' || job.status === 'running' || job.status === 'failed') {
+        if (job.status === 'queued' || job.status === 'running' || job.status === 'failed' || job.status === 'skipped') {
             const logButton = document.createElement('button');
             logButton.type = 'button';
             logButton.className = 'btn btn-link btn-sm p-0 mt-1';
@@ -340,6 +340,13 @@
                     action.append(cancelled);
                     appendDeleteButton(action, job);
                 }
+            } else if (job.status === 'skipped') {
+                const skipped = document.createElement('span');
+                skipped.className = 'text-muted small me-1';
+                skipped.textContent = t('No matching CVEs; no report was generated.');
+                action.append(skipped);
+                appendViewLogButton(action, job);
+                appendDeleteButton(action, job);
             } else {
                 action.innerHTML = '<button class="btn btn-outline-danger btn-sm cancel-btn me-1">' + t('Cancel') + '</button>';
                 if ((job.processed_count || 0) > 0) {

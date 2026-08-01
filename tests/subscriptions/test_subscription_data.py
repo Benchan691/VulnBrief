@@ -8,7 +8,21 @@ from subscriptions.profiles import (
     validate_filters,
     validate_profile,
 )
-from subscriptions.query import build_match_filter, query_profile_matches
+from subscriptions.query import (
+    build_match_filter,
+    count_profile_matches_by_confidence,
+    preview_profile_matches,
+    query_profile_matches,
+)
+
+
+def _inventory_row(vendor='Acme', product='Widget'):
+    return {
+        'vendor': vendor,
+        'product': product,
+        'vendor_aliases': [],
+        'product_aliases': [],
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -207,9 +221,19 @@ def test_enriched_weekly_profile_forces_cve_review_only():
         }, 'report')
 
 
-def test_enriched_filters_include_keywords_threshold_and_scope_limit():
+def test_enriched_filters_include_vendor_product_inventory_threshold_and_scope_limit():
     filters = validate_filters(FakeDatabase(), {
-        'keywords': ['Acme Widget'],
+        'vendor_product_filter': {
+            'enabled': True,
+            'schema_version': 1,
+            'include_possible_matches': False,
+            'rows': [{
+                'vendor': 'Acme',
+                'product': 'Widget',
+                'vendor_aliases': [],
+                'product_aliases': [],
+            }],
+        },
         'severity_threshold': 'High',
         'report_scope': {'max_count': 3, 'kev_only': True},
     })
@@ -218,12 +242,31 @@ def test_enriched_filters_include_keywords_threshold_and_scope_limit():
     assert '$and' in mongo_filter
     assert filters['report_scope']['max_count'] == 3
     assert filters['report_scope']['kev_only'] is True
-    assert any('details.affected.vendor' in str(clause) for clause in mongo_filter['$and'])
-    assert any('details.affected.product' in str(clause) for clause in mongo_filter['$and'])
+    assert 'details.affected.product' in str(mongo_filter)
+    assert "'product'" in str(mongo_filter)
     assert any('details.kev' in str(clause) for clause in mongo_filter['$and'])
 
     profile = {'generation_mode': 'enriched_weekly', 'filters': filters}
     assert query_profile_matches(FakeDatabase(), profile, limit=10) == []
+
+
+def test_report_profile_rejects_new_keywords_but_can_normalize_legacy_records():
+    value = {
+        'generation_mode': 'enriched_weekly',
+        'filters': {'keywords': ['Red Hat']},
+    }
+
+    with pytest.raises(ValueError, match='no longer supported'):
+        validate_profile(FakeDatabase(), value, 'report')
+
+    legacy = validate_profile(
+        FakeDatabase(),
+        value,
+        'report',
+        allow_legacy_report_keywords=True,
+    )
+    assert legacy['legacy_keyword_filter'] is True
+    assert legacy['filters']['keywords'] == ['Red Hat']
 
 
 def test_keywords_deduplicate_blanks_and_legacy_cpe_pairs_are_ignored():
@@ -268,6 +311,188 @@ def test_keyword_filter_combines_with_other_filters():
     keyword_clause = mongo_filter['$and'][0]
     assert '$or' in keyword_clause
     assert len(keyword_clause['$or']) == 2
+
+
+def test_inventory_count_and_selection_use_the_same_confidence_classifier():
+    documents = [
+        {
+            '_id': 'confirmed',
+            'details': {'affected': [{'vendor': 'Acme', 'product': 'Widget'}]},
+        },
+        {
+            '_id': 'probable',
+            'description': 'Security update for Acme Widget deployments.',
+        },
+        {
+            '_id': 'possible',
+            'description': 'Security update for Widget deployments.',
+        },
+        {
+            '_id': 'rejected-cross-pair',
+            'details': {'affected': [
+                {'vendor': 'Acme', 'product': 'Other'},
+                {'vendor': 'Other', 'product': 'Widget'},
+            ]},
+        },
+    ]
+
+    class Collection:
+        def aggregate(self, pipeline):
+            return iter(documents)
+
+    class Database(FakeDatabase):
+        def __getitem__(self, name):
+            return Collection()
+
+    filters = validate_filters(Database(), {
+        'collections': ['cve_review'],
+        'include_unknown': True,
+        'vendor_product_filter': {
+            'enabled': True,
+            'schema_version': 1,
+            'include_possible_matches': True,
+            'rows': [{
+                'vendor': 'Acme',
+                'product': 'Widget',
+                'vendor_aliases': [],
+                'product_aliases': [],
+            }],
+        },
+    })
+    profile = {'filters': filters}
+
+    counts = count_profile_matches_by_confidence(Database(), profile)
+    matches = query_profile_matches(Database(), profile, limit=10)
+
+    assert counts == {
+        'count': 3,
+        'confirmed_count': 1,
+        'probable_count': 1,
+        'possible_count': 1,
+    }
+    assert [item['selection_id'] for item in matches] == [
+        'confirmed', 'probable', 'possible',
+    ]
+    assert [item['vendor_product_match']['confidence'] for item in matches] == [
+        'confirmed', 'probable', 'possible',
+    ]
+
+
+def test_inventory_preview_counts_and_samples_in_one_database_scan():
+    documents = [
+        {
+            '_id': f'cve-{index}',
+            'details': {'affected': [{'vendor': 'Acme', 'product': 'Widget'}]},
+        }
+        for index in range(3)
+    ]
+
+    class Collection:
+        def __init__(self):
+            self.aggregate_calls = 0
+
+        def aggregate(self, pipeline):
+            self.aggregate_calls += 1
+            return iter(documents)
+
+    collection = Collection()
+
+    class Database(FakeDatabase):
+        def __getitem__(self, name):
+            return collection
+
+    filters = validate_filters(Database(), {
+        'collections': ['cve_review'],
+        'include_unknown': True,
+        'vendor_product_filter': {
+            'enabled': True,
+            'rows': [_inventory_row()],
+        },
+    })
+
+    counts, samples = preview_profile_matches(
+        Database(), {'filters': filters}, sample_limit=2,
+    )
+
+    assert collection.aggregate_calls == 1
+    assert counts['count'] == 3
+    assert counts['confirmed_count'] == 3
+    assert [item['selection_id'] for item in samples] == ['cve-0', 'cve-1']
+
+
+def test_inventory_projection_keeps_every_supported_top_level_evidence_root(monkeypatch):
+    class CapturingCollection:
+        def __init__(self):
+            self.pipeline = None
+
+        def aggregate(self, pipeline):
+            self.pipeline = pipeline
+            return iter([])
+
+    collection = CapturingCollection()
+
+    class Database(FakeDatabase):
+        def __getitem__(self, name):
+            return collection
+
+    filters = validate_filters(Database(), {
+        'collections': ['cve_review'],
+        'include_unknown': True,
+        'vendor_product_filter': {
+            'enabled': True,
+            'rows': [_inventory_row()],
+        },
+    })
+
+    query_profile_matches(Database(), {'filters': filters}, limit=10)
+
+    projection = collection.pipeline[0]['$project']
+    for field in (
+        'containers', 'descriptions', 'systems_affected', 'products', 'impacts',
+    ):
+        assert projection[field] == 1
+
+
+def test_enriched_scope_limit_caps_both_confidence_count_and_selection():
+    documents = [
+        {
+            '_id': f'confirmed-{index}',
+            'details': {'affected': [{'vendor': 'Acme', 'product': 'Widget'}]},
+        }
+        for index in range(3)
+    ]
+
+    class Collection:
+        def aggregate(self, pipeline):
+            return iter(documents)
+
+    class Database(FakeDatabase):
+        def __getitem__(self, name):
+            return Collection()
+
+    filters = validate_filters(Database(), {
+        'collections': ['cve_review'],
+        'include_unknown': True,
+        'report_scope': {'max_count': 2},
+        'vendor_product_filter': {
+            'enabled': True,
+            'rows': [_inventory_row()],
+        },
+    })
+    profile = {'generation_mode': 'enriched_weekly', 'filters': filters}
+
+    counts = count_profile_matches_by_confidence(Database(), profile)
+    matches = query_profile_matches(Database(), profile)
+
+    assert counts == {
+        'count': 2,
+        'confirmed_count': 2,
+        'probable_count': 0,
+        'possible_count': 0,
+    }
+    assert [match['selection_id'] for match in matches] == [
+        'confirmed-0', 'confirmed-1',
+    ]
 
 
 def test_ensure_sub_account_collection_creates_empty_collection():

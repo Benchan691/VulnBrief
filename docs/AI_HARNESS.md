@@ -39,9 +39,83 @@ items must also contain a `details` object. Useless configured fields are remove
 recursively and JSON is minified before it is sent to AI (`reports.template_builder.compact_details`).
 
 Subscriptions are managed at `/subscriptions`. Each subscriber has independent
-newsletter and report profiles using the same validated curated filters.
+newsletter and report profiles. Report profiles can use a vendor/product CSV
+inventory in place of free-form keyword filtering.
 Report profile Run actions prepare the browser's Vulnerability Reviews selection
 list for manual report generation on the Reports page.
+
+## Report vendor/product CSV filters
+
+The v1 CSV contract has exactly four columns, in this order:
+
+```csv
+vendor,product,vendor_aliases,product_aliases
+```
+
+| Column | Required | Meaning |
+|---|---:|---|
+| `vendor` | yes | Canonical manufacturer or publisher name. |
+| `product` | yes | Canonical product, package, family, or model name. |
+| `vendor_aliases` | no | Exact alternate vendor names, separated with `\|`. |
+| `product_aliases` | no | Exact alternate product names, separated with `\|`. |
+
+Each row is one vendor/product pair. Pairing is significant: do not put several
+unrelated products into one cell. Use aliases only for real naming variants,
+for example `RHEL|Red Hat Enterprise Linux`; broad terms such as `server` make
+product-only evidence unreliable. Explicit aliases can also cover source
+variants such as compatibility-width Unicode text.
+
+- `vendor` and `product` are required on every non-blank row. Placeholder or
+  punctuation-only identities such as `Unknown`, `N/A`, `*`, or `+++` are
+  rejected.
+- Files must be RFC 4180-compatible CSV encoded as UTF-8. A UTF-8 byte-order
+  mark (BOM) is accepted. Quote cells that contain commas, double quotes, or
+  line breaks according to normal CSV rules.
+- A file may be at most 1 MiB with at most 500 data rows. Each cell may contain
+  at most 200 characters, and each alias column may contain at most 10 aliases.
+  Extremely complex inventories can require fewer rows or aliases to keep the
+  database query safely below MongoDB's BSON command limit.
+- Duplicate normalized vendor/product pairs are merged and reported as a
+  warning. The import is atomic: any invalid row rejects the whole file.
+- v1 deliberately does not accept or apply version filters. CVE version data is
+  too incomplete and inconsistent to use as a safe exclusion rule.
+
+A ready-to-edit example is available at
+[`docs/vendor_product_filter_template.csv`](vendor_product_filter_template.csv).
+
+New report profiles reject keyword filters. Existing stored keyword profiles are
+kept read-only until an administrator loads a valid CSV and saves the
+subscription (which replaces them atomically), or disables the report profile.
+This compatibility rule prevents a routine edit from silently broadening an
+active schedule to every product.
+
+Matching preserves the vendor/product relationship within each CSV row and
+assigns a confidence level:
+
+- **Confirmed** means the vendor and product match the same structured affected
+  product entry in the CVE data.
+- **Probable** means both names match bounded values in supported
+  less-structured CVE text fields, and the source does not provide a complete
+  conflicting affected-product pair.
+- **Possible** means distinctive product evidence exists while structured
+  vendor evidence is missing. It is opt-in, suppressed when the same product
+  identity belongs to multiple imported vendors, and suppressed when the same
+  text segment names another known inventory vendor. A vendor not present in
+  the inventory cannot always be recognized from arbitrary prose, so possible
+  matches must be reviewed as a recall-oriented queue rather than treated as
+  confirmed attribution.
+
+Confirmed and probable matches are included normally. Enabling **Include
+possible matches** also includes possible matches, improving recall for
+incomplete CVEs at the cost of more false positives. Leave it disabled when
+precision is more important, and add aliases for known publisher naming
+variants rather than using broad product terms.
+
+A CVE with no usable vendor, product, alias, or other identity evidence cannot
+be associated reliably with any inventory row. Such records remain unmatched
+even when possible matches are included; otherwise every metadata-poor CVE
+would become a false positive. The preview reports confidence counts so this
+data-quality limitation is visible before the subscription is saved or run.
 
 ## Enriched Weekly configuration
 

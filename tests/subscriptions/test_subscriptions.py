@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 from zoneinfo import ZoneInfo
@@ -82,6 +84,8 @@ def test_subscriptions_requires_authentication(client):
     assert client.get('/subscriptions').status_code == 302
     assert client.get('/api/subscriptions').status_code == 401
     assert client.post('/api/subscriptions', json={}).status_code == 401
+    assert client.get('/api/subscriptions/vendor-product-template.csv').status_code == 401
+    assert client.post('/api/subscriptions/vendor-product-import').status_code == 401
 
 
 def test_subscriptions_crud_validates_review_views(client):
@@ -92,6 +96,8 @@ def test_subscriptions_crud_validates_review_views(client):
     assert b'/static/js/shared/collection-picker.js' in page.data
     assert b'/static/js/subscriptions/index.js' in page.data
     assert b'id="page-config"' in page.data
+    assert b'vendorProductImportUrl' in page.data
+    assert b'vendorProductTemplateUrl' in page.data
 
     invalid = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
@@ -283,6 +289,67 @@ def test_unchanged_subscription_update_does_not_send_email(client, monkeypatch):
     assert sent == []
 
 
+def test_existing_report_keywords_are_preserved_until_csv_replaces_them(client):
+    authenticate(client)
+    with app.app_context():
+        get_web_database()[SUB_ACCOUNT_COLLECTION].insert_one({
+            'email': TEST_EMAIL,
+            'team': 'Legacy',
+            'newsletter_profile': {'enabled': False, 'filters': {}},
+            'report_profile': {
+                'enabled': True,
+                'generation_mode': 'enriched_weekly',
+                'filters': {'keywords': ['Red Hat']},
+            },
+        })
+
+    public = next(
+        item for item in client.get('/api/subscriptions').get_json()['data']
+        if item['email'] == TEST_EMAIL
+    )
+    assert public['report_profile']['legacy_keyword_filter'] is True
+
+    unchanged = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={'team': 'Renamed'})
+    assert unchanged.status_code == 200
+    with app.app_context():
+        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+    assert stored['report_profile']['filters']['keywords'] == ['Red Hat']
+
+    report = public['report_profile']
+    report_without_replacement = {
+        **report,
+        'filters': {
+            **report['filters'],
+            'keywords': [],
+        },
+    }
+    rejected = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={
+        'report_profile': report_without_replacement,
+    })
+    assert rejected.status_code == 400
+    assert 'cannot be removed from an active profile' in rejected.get_json()['error']
+
+    report['filters']['vendor_product_filter'] = {
+        'enabled': True,
+        'schema_version': 1,
+        'include_possible_matches': False,
+        'rows': [{
+            'vendor': 'Red Hat',
+            'product': 'Enterprise Linux',
+            'vendor_aliases': [],
+            'product_aliases': ['RHEL'],
+        }],
+    }
+    replaced = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={
+        'report_profile': report,
+    })
+    assert replaced.status_code == 200
+    with app.app_context():
+        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+    assert stored['report_profile']['filters']['keywords'] == []
+    assert stored['report_profile']['filters']['vendor_product_filter']['enabled'] is True
+
+
 def test_subscription_cancellation_sends_branded_confirmation(client, monkeypatch):
     authenticate(client)
     assert client.post('/api/subscriptions', json={
@@ -390,12 +457,29 @@ def test_subscription_report_preview_returns_count_and_top_cves(client, monkeypa
     authenticate(client)
 
     monkeypatch.setattr(
-        'subscriptions.routes.query_profile_matches',
-        lambda database, profile, limit=None, include_documents=False, allow_partial=False: [
+        'subscriptions.routes.preview_profile_matches',
+        lambda database, profile, sample_limit: ({
+            'count': 3,
+            'confirmed_count': 2,
+            'probable_count': 1,
+            'possible_count': 0,
+        }, [
             {
                 'collection': 'cve_review',
                 'source_collection': 'cve',
                 'selection_id': '1',
+                'vendor_product_match': {
+                    'confidence': 'confirmed',
+                    'matched_vendor': 'Acme',
+                    'matched_product': 'Widget',
+                    'row_number': 2,
+                    'evidence': {
+                        'type': 'structured_pair',
+                        'source': 'details.affected[0]',
+                        'vendor': 'Acme',
+                        'product': 'Widget',
+                    },
+                },
                 'document': {
                     'code': 'CVE-2026-0001',
                     'severity': 'Critical',
@@ -422,22 +506,37 @@ def test_subscription_report_preview_returns_count_and_top_cves(client, monkeypa
                     'details': {'cve': {'description': 'Moderate impact'}},
                 },
             },
-        ],
+        ]),
     )
-    monkeypatch.setattr('subscriptions.routes.count_profile_matches', lambda database, profile: 3)
 
     response = client.post('/api/subscriptions/report-preview', json={
         'report_profile': {
             'enabled': True,
             'generation_mode': 'enriched_weekly',
             'report_language': 'en',
-            'filters': {},
+            'filters': {
+                'vendor_product_filter': {
+                    'enabled': True,
+                    'rows': [{
+                        'vendor': 'Acme',
+                        'product': 'Widget',
+                        'vendor_aliases': [],
+                        'product_aliases': [],
+                    }],
+                },
+            },
         },
     })
 
     assert response.status_code == 200
     body = response.get_json()
     assert body['count'] == 3
+    assert body['confirmed_count'] == 2
+    assert body['probable_count'] == 1
+    assert body['possible_count'] == 0
+    assert body['vendor_product_filter_enabled'] is True
+    assert body['match_examples'][0]['confidence'] == 'confirmed'
+    assert body['match_examples'][0]['evidence']['source'] == 'details.affected[0]'
     assert body['top_cves'][0] == 'CVE-2026-0001'
     assert len(body['top_cves']) == 3
 
@@ -458,12 +557,10 @@ def test_subscription_report_preview_rejects_invalid_profile(client):
 
 def test_subscription_report_preview_returns_json_for_unexpected_error(client, monkeypatch):
     authenticate(client)
-    monkeypatch.setattr('subscriptions.routes.count_profile_matches', lambda database, profile: 1)
-
     def fail_preview(*args, **kwargs):
         raise RuntimeError('Preview exploded')
 
-    monkeypatch.setattr('subscriptions.routes.query_profile_matches', fail_preview)
+    monkeypatch.setattr('subscriptions.routes.preview_profile_matches', fail_preview)
 
     response = client.post('/api/subscriptions/report-preview', json={
         'report_profile': {
@@ -671,8 +768,49 @@ def test_subscription_rejects_invalid_severity_choice(client):
     assert response.get_json()['error'].startswith('Severity/status must be')
 
 
-def test_report_profile_accepts_schedule_and_keywords(client):
+def test_vendor_product_template_and_import_endpoints(client):
     authenticate(client)
+
+    template = client.get('/api/subscriptions/vendor-product-template.csv')
+    assert template.status_code == 200
+    assert template.headers['Content-Disposition'].startswith('attachment;')
+    assert template.headers['Content-Type'] == 'text/csv; charset=utf-8'
+    assert template.data.startswith(b'vendor,product,vendor_aliases,product_aliases')
+
+    imported = client.post(
+        '/api/subscriptions/vendor-product-import',
+        data={
+            'file': (
+                BytesIO(
+                    b'vendor,product,vendor_aliases,product_aliases\n'
+                    b'Microsoft,Exchange Server,Microsoft Corporation,Exchange\n'
+                ),
+                'inventory.csv',
+            ),
+        },
+        content_type='multipart/form-data',
+    )
+
+    assert imported.status_code == 200
+    inventory = imported.get_json()['vendor_product_filter']
+    assert inventory['enabled'] is True
+    assert inventory['rows'][0]['vendor'] == 'Microsoft'
+    assert inventory['rows'][0]['product'] == 'Exchange Server'
+
+
+def test_report_profile_accepts_schedule_and_vendor_product_inventory(client):
+    authenticate(client)
+    vendor_product_filter = {
+        'enabled': True,
+        'schema_version': 1,
+        'include_possible_matches': False,
+        'rows': [{
+            'vendor': 'Red Hat',
+            'product': 'Enterprise Linux',
+            'vendor_aliases': ['RedHat'],
+            'product_aliases': ['RHEL'],
+        }],
+    }
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
@@ -684,7 +822,7 @@ def test_report_profile_accepts_schedule_and_keywords(client):
             'schedule_weekday': 'fri',
             'schedule_time': '14:30',
             'filters': {
-                'keywords': [' Red Hat ', 'redhat', 'Enterprise Linux'],
+                'vendor_product_filter': vendor_product_filter,
             },
         },
     })
@@ -695,7 +833,14 @@ def test_report_profile_accepts_schedule_and_keywords(client):
     assert item['report_profile']['schedule_weekday'] == 'fri'
     assert item['report_profile']['schedule_time'] == '14:30'
     assert item['report_profile']['next_run_at']
-    assert item['report_profile']['filters']['keywords'] == ['Red Hat', 'Enterprise Linux']
+    assert item['report_profile']['filters']['keywords'] == []
+    stored_inventory = item['report_profile']['filters']['vendor_product_filter']
+    assert stored_inventory['enabled'] is True
+    assert stored_inventory['include_possible_matches'] is False
+    assert stored_inventory['rows'][0] == {
+        **vendor_product_filter['rows'][0],
+        'row_number': 2,
+    }
 
 
 def test_newsletter_profile_accepts_monthly_statistic_schedule(client):
@@ -717,7 +862,7 @@ def test_newsletter_profile_accepts_monthly_statistic_schedule(client):
     assert item['newsletter_profile']['statistic_next_run_at']
 
 
-def test_report_profile_rejects_invalid_schedule_and_keywords(client):
+def test_report_profile_rejects_invalid_schedule_and_legacy_keywords(client):
     authenticate(client)
     bad_schedule = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
@@ -729,6 +874,7 @@ def test_report_profile_rejects_invalid_schedule_and_keywords(client):
     bad_keywords = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
-        'report_profile': {'filters': {'keywords': 'redhat'}},
+        'report_profile': {'filters': {'keywords': ['redhat']}},
     })
     assert bad_keywords.status_code == 400
+    assert 'no longer supported' in bad_keywords.get_json()['error']

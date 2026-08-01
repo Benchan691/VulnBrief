@@ -27,8 +27,9 @@
 <div class="modal fade" id="subscription-modal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <form id="subscription-form" class="modal-content">
-            <div class="modal-header"><h5 id="modal-title" class="modal-title">{{ t('Add Subscription') }}</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-header"><h5 id="modal-title" class="modal-title">{{ t('Add Subscription') }}</h5><button class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('Close') }}"></button></div>
             <div class="modal-body">
+                <div id="subscription-modal-message" class="alert d-none" role="alert" aria-live="assertive"></div>
                 <div class="row g-3 mb-4">
                     <div class="col-md-6"><label class="form-label">{{ t('Email') }}</label><input id="email" type="email" class="form-control" required></div>
                     <div class="col-md-6"><label class="form-label">{{ t('Team') }}</label><input id="team" class="form-control" required></div>
@@ -56,9 +57,10 @@
                         <div class="card h-100"><div class="card-body">
                             <div class="form-check form-switch mb-3"><input id="report-enabled" class="form-check-input" type="checkbox" checked><label class="form-check-label fw-semibold" for="report-enabled">{{ t('Report profile enabled') }}</label></div>
                             <div id="report-fields"></div>
-                            <div id="report-preview" class="alert alert-light border small mt-3 mb-0">
+                            <div id="report-preview" class="alert alert-light border small mt-3 mb-0" role="status" aria-live="polite">
                                 <div class="fw-semibold mb-1">{{ t('Report Preview') }}</div>
                                 <div id="report-preview-summary" class="text-muted">{{ t('Adjust report filters to preview matches.') }}</div>
+                                <ul id="report-preview-examples" class="small mt-2 mb-0 ps-3 d-none"></ul>
                             </div>
                             <hr>
                             <div class="row g-2">
@@ -83,6 +85,8 @@
     'subscriptionsUrl': url_for('subscription.get_subscriptions'),
     'previewUrl': url_for('subscription.preview_subscription_report'),
     'reviewsUrl': url_for('review.get_review_collections'),
+    'vendorProductImportUrl': url_for('subscription.import_vendor_products'),
+    'vendorProductTemplateUrl': url_for('subscription.vendor_product_template'),
 }|tojson }}</script>
 <script src="{{ url_for('static', filename='js/shared/collection-picker.js') }}"></script>
 <script src="{{ url_for('static', filename='js/subscriptions/index.js') }}"></script>

@@ -4,9 +4,13 @@ from datetime import datetime, timedelta, timezone
 from reviews.repository import MAX_EXPORT_SELECTIONS, review_views
 from subscriptions.profiles import (
     HONG_KONG,
-    KEYWORD_SEARCH_FIELDS,
+    LEGACY_KEYWORD_SEARCH_FIELDS,
     build_observed_at_window,
     parse_hong_kong_datetime,
+)
+from subscriptions.vendor_products import (
+    build_vendor_product_candidate_clause,
+    compile_vendor_product_matcher,
 )
 
 
@@ -113,12 +117,17 @@ def _broad_text_clause(value, fields):
     }
 
 
-def _keyword_clause(value):
+def _legacy_keyword_clause(value):
     compact = re.sub(r'\s+', '', str(value or '')).lower()
     if not compact:
         return None
     pattern = r'\s*'.join(re.escape(char) for char in compact)
-    return {'$or': [{field: {'$regex': pattern, '$options': 'i'}} for field in KEYWORD_SEARCH_FIELDS]}
+    return {
+        '$or': [
+            {field: {'$regex': pattern, '$options': 'i'}}
+            for field in LEGACY_KEYWORD_SEARCH_FIELDS
+        ],
+    }
 
 
 def build_match_filter(filters, now=None):
@@ -136,12 +145,19 @@ def build_match_filter(filters, now=None):
         value = filters.get(parameter, '')
         if value:
             clauses.append(_broad_text_clause(value, fields))
+    # Keywords remain queryable only for stored legacy profiles and newsletter
+    # compatibility. New report profiles are validated against CSV inventory.
     keyword_clauses = [
-        clause for clause in (_keyword_clause(keyword) for keyword in filters.get('keywords', []))
+        clause for clause in (_legacy_keyword_clause(keyword) for keyword in filters.get('keywords', []))
         if clause
     ]
     if keyword_clauses:
         clauses.append(keyword_clauses[0] if len(keyword_clauses) == 1 else {'$or': keyword_clauses})
+    vendor_product_clause = build_vendor_product_candidate_clause(
+        filters.get('vendor_product_filter'),
+    )
+    if vendor_product_clause:
+        clauses.append(vendor_product_clause)
     status = filters.get('status', '')
     include_unknown = filters.get('include_unknown', False)
     severity_clause = build_severity_filter(status, include_unknown)
@@ -210,6 +226,12 @@ def _projection_pipeline(view):
         'cve_ids': 1,
         'source_url': {'$ifNull': ['$source.detail_url', '$source.url']},
     })
+    for field in (
+        'title', 'summary', 'description', 'details', 'vendor', 'product',
+        'affected', 'affected_products', 'containers', 'descriptions',
+        'systems_affected', 'products', 'impacts',
+    ):
+        projection.setdefault(field, 1)
     first['$project'] = projection
     return [first, *pipeline[1:]]
 
@@ -223,23 +245,142 @@ def _profile_collection_names(database, profile):
     return filters, views, collection_names
 
 
-def count_profile_matches(database, profile):
+def _inventory_filter(filters):
+    value = filters.get('vendor_product_filter') or {}
+    return value if value.get('enabled') else None
+
+
+def _report_scope_limit(profile, filters):
+    if profile.get('generation_mode') != 'enriched_weekly':
+        return None
+    value = (filters.get('report_scope') or {}).get('max_count')
+    return int(value) if value else None
+
+
+def count_profile_matches_by_confidence(database, profile):
     filters, views, collection_names = _profile_collection_names(database, profile)
     mongo_filter = build_match_filter(filters)
-    total = 0
+    inventory_filter = _inventory_filter(filters)
+    inventory_matcher = (
+        compile_vendor_product_matcher(inventory_filter)
+        if inventory_filter else None
+    )
+    scope_limit = _report_scope_limit(profile, filters)
+    counts = {
+        'count': 0,
+        'confirmed_count': 0,
+        'probable_count': 0,
+        'possible_count': 0,
+    }
     for view_name in collection_names:
         view = views[view_name]
         pipeline = _projection_pipeline(view)
-        pipeline.extend([
-            {'$match': mongo_filter},
-            {'$count': 'count'},
-        ])
-        count = 0
+        pipeline.append({'$match': mongo_filter})
+        if inventory_filter:
+            pipeline.append({'$sort': {'observed_at': 1, '_id': 1}})
+            for document in database[view['options']['viewOn']].aggregate(pipeline):
+                match = inventory_matcher(document)
+                if not match:
+                    continue
+                confidence = match['confidence']
+                counts['count'] += 1
+                counts[f'{confidence}_count'] += 1
+                if scope_limit is not None and counts['count'] >= scope_limit:
+                    return counts
+            continue
+        pipeline.append({'$count': 'count'})
         for row in database[view['options']['viewOn']].aggregate(pipeline):
             count = int(row.get('count') or 0)
+            if scope_limit is not None:
+                count = min(count, max(scope_limit - counts['count'], 0))
+            counts['count'] += count
+            # With no inventory filter there is no vendor/product confidence
+            # distinction; retain the total for backward-compatible consumers.
+            counts['confirmed_count'] += count
             break
-        total += count
-    return total
+        if scope_limit is not None and counts['count'] >= scope_limit:
+            return counts
+    return counts
+
+
+def count_profile_matches(database, profile):
+    return count_profile_matches_by_confidence(database, profile)['count']
+
+
+def _selection_item(
+    document,
+    view_name,
+    source_collection,
+    *,
+    inventory_match=None,
+    include_document=False,
+):
+    document = dict(document)
+    selection_id = str(document.pop('_id'))
+    item = {
+        'collection': view_name,
+        'source_collection': source_collection,
+        'selection_id': selection_id,
+    }
+    if inventory_match:
+        item['vendor_product_match'] = inventory_match
+    if include_document:
+        item['document'] = document
+    return item
+
+
+def preview_profile_matches(database, profile, sample_limit):
+    """Return confidence counts and samples, scanning inventory candidates once."""
+    filters, views, collection_names = _profile_collection_names(database, profile)
+    inventory_filter = _inventory_filter(filters)
+    if not inventory_filter:
+        return (
+            count_profile_matches_by_confidence(database, profile),
+            query_profile_matches(
+                database,
+                profile,
+                limit=sample_limit,
+                include_documents=True,
+                allow_partial=True,
+            ),
+        )
+
+    matcher = compile_vendor_product_matcher(inventory_filter)
+    mongo_filter = build_match_filter(filters)
+    scope_limit = _report_scope_limit(profile, filters)
+    counts = {
+        'count': 0,
+        'confirmed_count': 0,
+        'probable_count': 0,
+        'possible_count': 0,
+    }
+    samples = []
+    for view_name in collection_names:
+        view = views[view_name]
+        source_collection = view['options']['viewOn']
+        pipeline = _projection_pipeline(view)
+        pipeline.extend([
+            {'$match': mongo_filter},
+            {'$sort': {'observed_at': 1, '_id': 1}},
+        ])
+        for document in database[source_collection].aggregate(pipeline):
+            match = matcher(document)
+            if not match:
+                continue
+            confidence = match['confidence']
+            counts['count'] += 1
+            counts[f'{confidence}_count'] += 1
+            if len(samples) < sample_limit:
+                samples.append(_selection_item(
+                    document,
+                    view_name,
+                    source_collection,
+                    inventory_match=match,
+                    include_document=True,
+                ))
+            if scope_limit is not None and counts['count'] >= scope_limit:
+                return counts, samples
+    return counts, samples
 
 
 def query_profile_matches(
@@ -251,35 +392,46 @@ def query_profile_matches(
     collection_filter_overrides=None,
 ):
     filters, views, collection_names = _profile_collection_names(database, profile)
-    if profile.get('generation_mode') == 'enriched_weekly':
-        scope_limit = (filters.get('report_scope') or {}).get('max_count')
-        if scope_limit:
-            limit = min(limit, int(scope_limit)) if limit is not None else int(scope_limit)
+    scope_limit = _report_scope_limit(profile, filters)
+    if scope_limit:
+        limit = min(limit, scope_limit) if limit is not None else scope_limit
     collection_filter_overrides = collection_filter_overrides or {}
     results = []
     for view_name in collection_names:
         view = views[view_name]
         view_filters = collection_filter_overrides.get(view_name, filters)
+        inventory_filter = _inventory_filter(view_filters)
+        inventory_matcher = (
+            compile_vendor_product_matcher(inventory_filter)
+            if inventory_filter else None
+        )
         mongo_filter = build_match_filter(view_filters)
         pipeline = _projection_pipeline(view)
         pipeline.extend([
             {'$match': mongo_filter},
             {'$sort': {'observed_at': 1, '_id': 1}},
         ])
-        if limit is not None:
+        # Inventory matching has a deterministic post-query confidence check.
+        # Applying Mongo's limit first could let rejected broad candidates hide
+        # a valid paired match later in the result set.
+        if limit is not None and not inventory_filter:
             pipeline.append({'$limit': limit + 1})
         for document in database[view['options']['viewOn']].aggregate(pipeline):
-            selection_id = str(document.pop('_id'))
-            item = {
-                'collection': view_name,
-                'source_collection': view['options']['viewOn'],
-                'selection_id': selection_id,
-            }
-            if include_documents:
-                item['document'] = document
-            results.append(item)
+            inventory_match = (
+                inventory_matcher(document)
+                if inventory_filter else None
+            )
+            if inventory_filter and not inventory_match:
+                continue
+            results.append(_selection_item(
+                document,
+                view_name,
+                view['options']['viewOn'],
+                inventory_match=inventory_match,
+                include_document=include_documents,
+            ))
             if limit is not None and len(results) > limit:
-                if allow_partial:
+                if allow_partial or scope_limit is not None:
                     return results[:limit]
                 raise ValueError(f'Filter result exceeds the {limit}-document limit.')
     return results

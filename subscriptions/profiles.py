@@ -5,6 +5,10 @@ from zoneinfo import ZoneInfo
 
 from core.database import get_web_database
 from reviews.repository import MAX_EXPORT_SELECTIONS, review_views
+from subscriptions.vendor_products import (
+    DEFAULT_VENDOR_PRODUCT_FILTER,
+    validate_vendor_product_filter,
+)
 
 
 SUB_ACCOUNT_COLLECTION = 'sub_account'
@@ -25,7 +29,7 @@ HONG_KONG = ZoneInfo('Asia/Hong_Kong')
 FILTER_TEXT_FIELDS = (
     'search', 'code', 'title', 'impact', 'affected', 'source',
 )
-KEYWORD_SEARCH_FIELDS = (
+LEGACY_KEYWORD_SEARCH_FIELDS = (
     'code', 'cve_ids', 'title', 'description', 'impacts', 'affected',
     'recommendation', 'related_link',
     'details.affected.vendor', 'vendor',
@@ -49,6 +53,7 @@ DEFAULT_FILTERS = {
     'include_unknown': False,
     'source': '',
     'keywords': [],
+    'vendor_product_filter': DEFAULT_VENDOR_PRODUCT_FILTER,
     'time_window': 'all',
     'start': '',
     'end': '',
@@ -192,6 +197,9 @@ def validate_filters(database, value):
     if 'kev_only' in report_scope:
         report_scope['kev_only'] = bool(report_scope['kev_only'])
     filters['report_scope'] = report_scope
+    filters['vendor_product_filter'] = validate_vendor_product_filter(
+        value.get('vendor_product_filter'),
+    )
     keywords = value.get('keywords') or []
     if not isinstance(keywords, list):
         raise ValueError('Keywords must be a list.')
@@ -207,7 +215,7 @@ def validate_filters(database, value):
     return filters
 
 
-def validate_profile(database, value, profile_type):
+def validate_profile(database, value, profile_type, *, allow_legacy_report_keywords=False):
     if value is None:
         value = {}
     if not isinstance(value, dict):
@@ -216,6 +224,9 @@ def validate_profile(database, value, profile_type):
     profile = deepcopy(default)
     profile['enabled'] = bool(value.get('enabled', default['enabled']))
     profile['filters'] = validate_filters(database, value.get('filters'))
+    vendor_product_filter = profile['filters']['vendor_product_filter']
+    if profile_type == 'newsletter' and vendor_product_filter['enabled']:
+        raise ValueError('Vendor/product CSV filtering is only supported for report profiles.')
     if profile_type == 'newsletter':
         if 'delivery_cursor' in value:
             profile['delivery_cursor'] = value.get('delivery_cursor') or ''
@@ -229,6 +240,20 @@ def validate_profile(database, value, profile_type):
                 profile[field] = value[field]
         return profile
     if profile_type == 'report':
+        legacy_keywords = profile['filters'].get('keywords') or []
+        if vendor_product_filter['enabled']:
+            # A validated inventory atomically replaces the old keyword filter.
+            profile['filters']['keywords'] = []
+        elif legacy_keywords:
+            if not allow_legacy_report_keywords:
+                raise ValueError(
+                    'Report keyword filters are no longer supported. '
+                    'Import a vendor/product CSV instead.'
+                )
+            # Existing records retain their old behavior until an administrator
+            # imports a replacement CSV. This prevents an edit from silently
+            # broadening a scheduled report to every vendor and product.
+            profile['legacy_keyword_filter'] = True
         profile['generation_mode'] = value.get('generation_mode', default['generation_mode'])
         if profile['generation_mode'] in {'company_ai', 'ai'}:
             profile['generation_mode'] = 'enriched_weekly'
@@ -276,7 +301,12 @@ def normalize_subscription(database, document):
             'filters': {'collections': legacy_collections},
         }
     normalized['newsletter_profile'] = validate_profile(database, newsletter_value, 'newsletter')
-    normalized['report_profile'] = validate_profile(database, report_value, 'report')
+    normalized['report_profile'] = validate_profile(
+        database,
+        report_value,
+        'report',
+        allow_legacy_report_keywords=True,
+    )
     normalized.pop('subscriptions', None)
     return normalized
 

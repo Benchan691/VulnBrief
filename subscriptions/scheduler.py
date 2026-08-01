@@ -236,13 +236,16 @@ def _queue_subscription_job_inputs(job_id, matches, generation_mode):
             item.get('collection') != 'cve_review' or item.get('source_collection') != 'cve'
         ):
             raise ValueError('enriched_weekly reports only support cve_review selections.')
-        queued_inputs.append({
+        queued_input = {
             'job_id': ObjectId(job_id),
             'position': position,
             'source_collection': item['source_collection'],
             'selection_id': item['selection_id'],
             'identifier': item['selection_id'],
-        })
+        }
+        if item.get('vendor_product_match'):
+            queued_input['vendor_product_match'] = dict(item['vendor_product_match'])
+        queued_inputs.append(queued_input)
     web_database = get_web_database()
     web_database['report_job_inputs'].delete_many({'job_id': ObjectId(job_id)})
     web_database['report_job_inputs'].insert_many(queued_inputs)
@@ -289,6 +292,31 @@ def deliver_subscription_report_job(
     append_job_log(job_id, 'Finding matching CVEs.')
     matches = query_profile_matches(get_vulnerabilities_database(), profile)
     append_job_log(job_id, f'Found {len(matches)} matching CVE(s).')
+    if not matches:
+        completed_at = _now()
+        append_job_log(job_id, 'No matching CVEs; completed without sending email.')
+        jobs.update_one(
+            {'_id': ObjectId(job_id)},
+            {'$set': {
+                'status': 'skipped',
+                'delivery_status': 'completed',
+                'delivery_error': '',
+                'source_count': 0,
+                'processed_count': 0,
+                'progress_percent': 100,
+                'progress_current': 1,
+                'progress_total': 1,
+                'progress_label': 'Skipped',
+                'status_message': 'No matching CVEs; no email was sent.',
+                'completed_at': completed_at,
+                'updated_at': completed_at,
+            }},
+        )
+        return {
+            'job_id': job_id,
+            'job': jobs.find_one({'_id': ObjectId(job_id)}),
+            'match_count': 0,
+        }
     append_job_log(job_id, 'Creating report job inputs.')
     _queue_subscription_job_inputs(job_id, matches, profile['generation_mode'])
     jobs.update_one(

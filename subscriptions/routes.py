@@ -1,7 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from core.auth import login_required
@@ -12,13 +12,13 @@ from subscriptions.profiles import (
     get_sub_account_collection,
     normalize_subscription,
     profile_with_window,
-    validate_filters,
     validate_profile,
 )
 from subscriptions.query import (
-    count_profile_matches,
+    preview_profile_matches,
     query_profile_matches,
 )
+from subscriptions.vendor_products import MAX_CSV_BYTES, parse_vendor_product_csv
 from subscriptions.scheduler import (
     newsletter_delivery_statistics,
     next_monthly_statistic_run,
@@ -31,6 +31,11 @@ from core.i18n import t
 subscription_blueprint = Blueprint('subscription', __name__)
 
 REPORT_PREVIEW_SAMPLE_LIMIT = 25
+VENDOR_PRODUCT_CSV_TEMPLATE = """vendor,product,vendor_aliases,product_aliases
+Red Hat,Enterprise Linux,"Red Hat, Inc.|RedHat",RHEL|Red Hat Enterprise Linux
+Microsoft,Windows Server,Microsoft Corporation,Windows Server 2019|Windows Server 2022
+Apache Software Foundation,HTTP Server,Apache|ASF,Apache HTTPD|httpd
+"""
 
 FILTER_LABELS = {
     'search': 'Search',
@@ -66,13 +71,18 @@ def _public_subscription(database, document):
     return normalized
 
 
-def _profiles(database, data):
+def _profiles(database, data, *, allow_legacy_report_keywords=False):
     newsletter_value = data.get('newsletter_profile')
     report_value = data.get('report_profile')
     if report_value is None and 'subscriptions' in data:
         report_value = {'enabled': True, 'filters': {'collections': data.get('subscriptions')}}
     newsletter_profile = validate_profile(database, newsletter_value, 'newsletter')
-    report_profile = validate_profile(database, report_value, 'report')
+    report_profile = validate_profile(
+        database,
+        report_value,
+        'report',
+        allow_legacy_report_keywords=allow_legacy_report_keywords,
+    )
     return newsletter_profile, report_profile
 
 
@@ -108,6 +118,14 @@ def _filter_summary(filters):
         parts.append('Include unknown severity: yes')
     if filters.get('keywords'):
         parts.append(f"Keywords: {', '.join(filters['keywords'])}")
+    vendor_product_filter = filters.get('vendor_product_filter') or {}
+    if vendor_product_filter.get('enabled'):
+        row_count = len(vendor_product_filter.get('rows') or [])
+        parts.append(f'Vendor/product inventory: {row_count} target(s)')
+        parts.append(
+            'Product-only possible matches: '
+            + ('included' if vendor_product_filter.get('include_possible_matches') else 'excluded')
+        )
     if filters.get('time_window') and filters['time_window'] != 'all':
         window = filters['time_window']
         if window == 'custom':
@@ -248,9 +266,19 @@ def _report_preview(matches, count=None):
         for item in rank_scored_selections(scored, 3)
         if item.get('cve_id') or item.get('selection_id')
     ]
+    match_examples = []
+    for item in matches[:3]:
+        match = item.get('vendor_product_match')
+        if not match:
+            continue
+        match_examples.append({
+            'cve': item.get('cve_id') or item.get('selection_id'),
+            **match,
+        })
     return {
         'count': len(matches) if count is None else count,
         'top_cves': top_cves,
+        'match_examples': match_examples,
     }
 
 
@@ -258,6 +286,35 @@ def _report_preview(matches, count=None):
 @login_required
 def subscriptions():
     return render_template('subscriptions/index.html')
+
+
+@subscription_blueprint.route('/api/subscriptions/vendor-product-template.csv')
+@login_required
+def vendor_product_template():
+    return Response(
+        VENDOR_PRODUCT_CSV_TEMPLATE,
+        content_type='text/csv; charset=utf-8',
+        headers={
+            'Content-Disposition': 'attachment; filename="vendor_product_filter_template.csv"',
+        },
+    )
+
+
+@subscription_blueprint.route('/api/subscriptions/vendor-product-import', methods=['POST'])
+@login_required
+def import_vendor_products():
+    uploaded = request.files.get('file')
+    if uploaded is None or not uploaded.filename:
+        return jsonify({'error': t('Choose a vendor/product CSV file.')}), 400
+    try:
+        payload = uploaded.stream.read(MAX_CSV_BYTES + 1)
+        vendor_product_filter, warnings = parse_vendor_product_csv(payload)
+        return jsonify({
+            'vendor_product_filter': vendor_product_filter,
+            'warnings': warnings,
+        })
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 @subscription_blueprint.route('/api/subscriptions')
@@ -363,7 +420,30 @@ def edit_subscription(email):
                 'cve_delivery_cutoff': current['newsletter_profile'].get('cve_delivery_cutoff') or '',
             }
             data['newsletter_profile'] = newsletter_value
-        newsletter_profile, report_profile = _profiles(database, data)
+        current_legacy_keywords = (
+            current['report_profile'].get('filters', {}).get('keywords') or []
+        )
+        newsletter_profile, report_profile = _profiles(
+            database,
+            data,
+            allow_legacy_report_keywords=bool(current_legacy_keywords),
+        )
+        updated_legacy_keywords = report_profile.get('filters', {}).get('keywords') or []
+        inventory_enabled = bool(
+            report_profile.get('filters', {})
+            .get('vendor_product_filter', {})
+            .get('enabled')
+        )
+        if (
+            current_legacy_keywords
+            and updated_legacy_keywords != current_legacy_keywords
+            and report_profile.get('enabled')
+            and not inventory_enabled
+        ):
+            raise ValueError(
+                'Legacy report keywords cannot be removed from an active profile. '
+                'Import a vendor/product CSV to replace them, or disable the report profile.'
+            )
         newsletter_profile = _with_statistic_next_run(newsletter_profile)
         report_profile = _with_next_run(report_profile)
         team = (data.get('team') or '').strip() or current.get('team', '')
@@ -454,7 +534,12 @@ def run_subscription(email):
         if not subscription['report_profile']['enabled']:
             return jsonify({'error': t('Report profile is disabled.')}), 400
         profile = profile_with_window(subscription['report_profile'], data)
-        profile = validate_profile(database, profile, 'report')
+        profile = validate_profile(
+            database,
+            profile,
+            'report',
+            allow_legacy_report_keywords=bool(profile.get('legacy_keyword_filter')),
+        )
         matches = query_profile_matches(database, profile)
         return jsonify({
             'selections': [
@@ -477,15 +562,15 @@ def preview_subscription_report():
         database = get_vulnerabilities_database()
         profile = validate_profile(database, data.get('report_profile'), 'report')
         profile = profile_with_window(profile, data)
-        count = count_profile_matches(database, profile)
-        matches = query_profile_matches(
-            database,
-            profile,
-            limit=REPORT_PREVIEW_SAMPLE_LIMIT,
-            include_documents=True,
-            allow_partial=True,
+        counts, matches = preview_profile_matches(
+            database, profile, REPORT_PREVIEW_SAMPLE_LIMIT,
         )
-        return jsonify(_report_preview(matches, count=count))
+        preview = _report_preview(matches, count=counts['count'])
+        preview.update(counts)
+        preview['vendor_product_filter_enabled'] = bool(
+            profile['filters'].get('vendor_product_filter', {}).get('enabled')
+        )
+        return jsonify(preview)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:

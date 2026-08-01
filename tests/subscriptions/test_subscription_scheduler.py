@@ -177,7 +177,18 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
         })
         def fake_query_profile_matches(database, profile):
             queried_profiles.append(profile)
-            return [{'collection': 'cve_review', 'source_collection': 'cve', 'selection_id': 'cve:1'}]
+            return [{
+                'collection': 'cve_review',
+                'source_collection': 'cve',
+                'selection_id': 'cve:1',
+                'vendor_product_match': {
+                    'confidence': 'confirmed',
+                    'matched_vendor': 'Acme',
+                    'matched_product': 'Widget',
+                    'row_number': 2,
+                    'evidence': {'type': 'structured_pair'},
+                },
+            }]
         monkeypatch.setattr(subscriptions.scheduler, 'query_profile_matches', fake_query_profile_matches)
         def fake_run_job(app_obj, job_id):
             web['report_jobs'].update_one(
@@ -227,9 +238,72 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
         assert queried_profiles[0]['filters']['end'] == 'y'
         assert sent['to'] == 'scheduled@example.com'
         assert sent['html'] == '<h1>Report</h1>'
+        queued_input = web['report_job_inputs'].find_one({
+            'job_id': ObjectId(stored['report_profile']['last_job_id']),
+        })
+        assert queued_input['vendor_product_match']['confidence'] == 'confirmed'
 
         web['sub_account'].delete_many({'_id': subscription_id})
+        web['report_job_inputs'].delete_many({
+            'job_id': ObjectId(stored['report_profile']['last_job_id']),
+        })
         web['report_jobs'].delete_many({'_id': ObjectId(stored['report_profile']['last_job_id'])})
+
+
+def test_run_scheduled_report_completes_without_email_when_inventory_has_no_matches(monkeypatch):
+    with app.app_context():
+        web = get_web_database()
+        subscription_id = ObjectId()
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['sub_account'].insert_one({
+            '_id': subscription_id,
+            'email': 'no-matches@example.com',
+            'team': 'No matches',
+            'report_profile': {
+                'enabled': True,
+                'generation_mode': 'template',
+                'report_language': 'en',
+                'schedule_enabled': True,
+                'schedule_weekday': 'fri',
+                'schedule_time': '09:30',
+                'filters': {},
+            },
+        })
+
+        monkeypatch.setattr(subscriptions.scheduler, 'get_vulnerabilities_database', lambda: object())
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'normalize_subscription',
+            lambda database, raw: {**raw, 'report_profile': raw['report_profile']},
+        )
+        monkeypatch.setattr(subscriptions.scheduler, 'query_profile_matches', lambda *args: [])
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'run_job',
+            lambda *args, **kwargs: pytest.fail('report generation should not run'),
+        )
+
+        class UnexpectedMailer:
+            def __init__(self, config):
+                pytest.fail('email should not be sent')
+
+        monkeypatch.setattr(subscriptions.scheduler, 'Mailer', UnexpectedMailer)
+
+        run_scheduled_report(app, str(subscription_id))
+
+        stored = web['sub_account'].find_one({'_id': subscription_id})
+        job_id = ObjectId(stored['report_profile']['last_job_id'])
+        job = web['report_jobs'].find_one({'_id': job_id})
+        assert stored['report_profile']['last_error'] == ''
+        assert stored['report_profile']['last_match_count'] == 0
+        assert job['status'] == 'skipped'
+        assert job['delivery_status'] == 'completed'
+        assert job['source_count'] == 0
+        assert job['status_message'] == 'No matching CVEs; no email was sent.'
+        assert web['report_job_inputs'].count_documents({'job_id': job_id}) == 0
+
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['report_jobs'].delete_many({'_id': job_id})
 
 
 def test_purge_old_data_removes_old_sources_and_report_artifacts(monkeypatch):
