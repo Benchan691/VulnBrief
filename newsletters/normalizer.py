@@ -18,7 +18,7 @@ ALLOWED_ATTRIBUTES = {
 }
 GITHUB_ADVISORY_IMAGE_ATTRIBUTES = {'src', 'alt', 'title', 'width', 'height'}
 SOURCE_TEMPLATE_KEYS = {
-    'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'github_advisory', 'govcert',
+    'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'fortiguard', 'github_advisory', 'govcert',
     'hikvision', 'hkcert', 'huawei_sa', 'infosec', 'juniper', 'paloalto',
     'qianxin', 'ransomwarelive', 'splunk', 'zeroday',
 }
@@ -507,6 +507,21 @@ def _paloalto_source_fields(fields, document, details):
     fields['recommendations'] = _values([details.get('solution'), details.get('workarounds')])
 
 
+def _fortiguard_source_fields(fields, document, details):
+    fields['overview'] = details.get('summary') or fields['overview']
+    fields['affected'] = _dict_lines(
+        details.get('affected_products'),
+        ('version', 'affected'),
+    )
+    fields['recommendations'] = _dict_lines(
+        details.get('affected_products'),
+        ('solution',),
+    )
+    fields['reference_values'] = _values([
+        details.get('cvrf_url'), details.get('csaf_url'),
+    ])
+
+
 def _qianxin_source_fields(fields, document, details):
     fields['overview'] = (
         _path(details, 'description', 'security_advisory')
@@ -543,6 +558,7 @@ SOURCE_FIELD_OVERRIDES = {
     'cnvd': _cnvd_source_fields,
     'cnnvd': _cnnvd_source_fields,
     'cve': _cve_source_fields,
+    'fortiguard': _fortiguard_source_fields,
     'github_advisory': _github_advisory_source_fields,
     'hkcert': _hkcert_source_fields,
     'huawei_sa': _huawei_sa_source_fields,
@@ -556,7 +572,7 @@ SOURCE_FIELD_OVERRIDES = {
     'zeroday': _zeroday_source_fields,
 }
 SEVERITY_DOCUMENT_SOURCES = {
-    'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'github_advisory', 'hikvision',
+    'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'fortiguard', 'github_advisory', 'hikvision',
     'huawei_sa', 'juniper', 'paloalto', 'qianxin', 'splunk',
 }
 TEMPLATE_FIELD_ORDER = (

@@ -194,6 +194,25 @@ def test_source_specific_newsletter_fields_use_semantic_values():
             ['Router'],
         ),
         (
+            'fortiguard',
+            {
+                'title': 'FortiGuard Advisory',
+                'severity': 'High',
+                'details': {
+                    'summary': 'Broken access control',
+                    'affected_products': [{
+                        'version': 'FortiWeb 8.0',
+                        'affected': '8.0.0 through 8.0.2',
+                        'solution': 'Upgrade to 8.0.3 or above',
+                    }],
+                    'cvrf_url': 'https://www.fortiguard.com/psirt/cvrf/FG-IR-26-158',
+                    'csaf_url': 'https://example.test/csaf.json',
+                },
+            },
+            ['High'],
+            ['FortiWeb 8.0 8.0.0 through 8.0.2'],
+        ),
+        (
             'paloalto',
             {
                 'title': 'Palo Alto Advisory',
