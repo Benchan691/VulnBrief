@@ -194,25 +194,6 @@ def test_source_specific_newsletter_fields_use_semantic_values():
             ['Router'],
         ),
         (
-            'fortiguard',
-            {
-                'title': 'FortiGuard Advisory',
-                'severity': 'High',
-                'details': {
-                    'summary': 'Broken access control',
-                    'affected_products': [{
-                        'version': 'FortiWeb 8.0',
-                        'affected': '8.0.0 through 8.0.2',
-                        'solution': 'Upgrade to 8.0.3 or above',
-                    }],
-                    'cvrf_url': 'https://www.fortiguard.com/psirt/cvrf/FG-IR-26-158',
-                    'csaf_url': 'https://example.test/csaf.json',
-                },
-            },
-            ['High'],
-            ['FortiWeb 8.0 8.0.0 through 8.0.2'],
-        ),
-        (
             'paloalto',
             {
                 'title': 'Palo Alto Advisory',
@@ -250,6 +231,43 @@ def test_source_specific_newsletter_fields_use_semantic_values():
         assert normalized['severity'] == severity
         assert normalized['impacts'] == []
         assert normalized['affected'] == affected
+
+
+def test_fortiguard_newsletter_uses_affected_products_table():
+    document = {
+        'title': 'FortiGuard Advisory',
+        'severity': 'High',
+        'details': {
+            'summary': 'Broken access control',
+            'affected_products': [{
+                'version': 'FortiWeb 8.0',
+                'affected': '8.0.0 through 8.0.2',
+                'solution': 'Upgrade to 8.0.3 or above',
+            }],
+            'cvrf_url': 'https://www.fortiguard.com/psirt/cvrf/FG-IR-26-158',
+            'csaf_url': 'https://example.test/csaf.json',
+        },
+    }
+    normalized = normalize_newsletter(document, 'fortiguard')
+
+    assert normalized['severity'] == ['High']
+    assert normalized['affected'] == []
+    assert normalized['recommendations'] == []
+    assert not normalized['show_recommendations']
+    assert normalized['affected_table'] == {
+        'headers': ['Version', 'Affected', 'Solution'],
+        'rows': [['FortiWeb 8.0', '8.0.0 through 8.0.2', 'Upgrade to 8.0.3 or above']],
+    }
+
+    with app.app_context():
+        html, rendered = render_newsletter(document, 'fortiguard')
+
+    assert rendered['affected_table']['rows'][0][0] == 'FortiWeb 8.0'
+    assert '<table>' in html
+    assert 'FortiWeb 8.0' in html
+    assert 'Upgrade to 8.0.3 or above' in html
+    assert 'Recommendations:' not in html
+    assert 'Affected system:' in html
 
 
 def test_source_specific_newsletter_sections_and_references():

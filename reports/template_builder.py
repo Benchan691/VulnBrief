@@ -425,6 +425,7 @@ def _newsletter_payload(newsletter):
         'show_severity': bool(newsletter.get('show_severity')),
         'show_impacts': bool(newsletter.get('show_impacts')),
         'show_affected': bool(newsletter.get('show_affected')),
+        'show_recommendations': bool(newsletter.get('show_recommendations', True)),
         'labels': newsletter.get('labels') or {},
     }
     return _clean(payload) or {}

@@ -170,6 +170,10 @@ def _field_available(newsletter, field_id):
         return bool(newsletter.get('show_affected') and (
             newsletter.get('affected') or newsletter.get('affected_table')
         ))
+    if field_id == 'recommendations':
+        return bool(
+            newsletter.get('show_recommendations', True) and newsletter.get('recommendations')
+        )
     return bool(newsletter.get(field_id))
 
 

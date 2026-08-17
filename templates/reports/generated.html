@@ -107,7 +107,7 @@
             <ul>{% for value in newsletter.cves %}<li>{{ value }}</li>{% endfor %}</ul>
         </div>
         {% endif %}
-        {% if newsletter.recommendations %}
+        {% if newsletter.show_recommendations and newsletter.recommendations %}
         <div class="newsletter-section">
             <p class="newsletter-section-title">{{ item_labels.recommendations or labels.recommended_actions }}</p>
             <ul>{% for value in newsletter.recommendations %}<li>{{ value }}</li>{% endfor %}</ul>

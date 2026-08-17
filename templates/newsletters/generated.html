@@ -68,7 +68,7 @@
     <p><b>{{ newsletter.labels.cves }}</b></p>
     <ul>{% for value in newsletter.cves %}<li>{{ value }}</li>{% endfor %}</ul>
 
-    {% elif field == 'recommendations' %}
+    {% elif field == 'recommendations' and newsletter.show_recommendations %}
     <p><b>{{ newsletter.labels.recommendations }}</b></p>
     <ul>{% for value in newsletter.recommendations %}<li>{{ value }}</li>{% else %}<li>{{ newsletter.labels.default_recommendation }}</li>{% endfor %}</ul>
 

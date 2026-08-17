@@ -339,6 +339,28 @@ def _dict_lines(values, fields):
     return lines
 
 
+def _fortiguard_affected_table(values):
+    rows = []
+    if not isinstance(values, list):
+        return None
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        row = [
+            str(item.get('version') or ''),
+            str(item.get('affected') or ''),
+            str(item.get('solution') or ''),
+        ]
+        if any(cell.strip() for cell in row) and row not in rows:
+            rows.append(row)
+    if not rows:
+        return None
+    return {
+        'headers': ['Version', 'Affected', 'Solution'],
+        'rows': rows,
+    }
+
+
 def _nested_values(values, field):
     result = []
     if not isinstance(values, list):
@@ -509,14 +531,10 @@ def _paloalto_source_fields(fields, document, details):
 
 def _fortiguard_source_fields(fields, document, details):
     fields['overview'] = details.get('summary') or fields['overview']
-    fields['affected'] = _dict_lines(
-        details.get('affected_products'),
-        ('version', 'affected'),
-    )
-    fields['recommendations'] = _dict_lines(
-        details.get('affected_products'),
-        ('solution',),
-    )
+    fields['affected'] = []
+    fields['recommendations'] = []
+    fields['affected_table'] = _fortiguard_affected_table(details.get('affected_products'))
+    fields['show_recommendations'] = False
     fields['reference_values'] = _values([
         details.get('cvrf_url'), details.get('csaf_url'),
     ])
@@ -619,6 +637,7 @@ def _default_source_fields(document, details):
         ),
         'show_impacts': True,
         'show_affected': True,
+        'show_recommendations': True,
         'affected_table': None,
     }
 
@@ -688,6 +707,7 @@ def normalize_newsletter(document, source_collection):
         'show_severity': fields['show_impacts'],
         'show_impacts': show_impacts,
         'show_affected': fields['show_affected'],
+        'show_recommendations': fields.get('show_recommendations', True),
     }
     if template_key == 'hkcert':
         result['table'] = _hkcert_table(details)
