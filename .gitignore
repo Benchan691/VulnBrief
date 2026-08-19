@@ -10,4 +10,3 @@ cert.pem
 key.pem
 
 .codex/
-docker-compose.yml

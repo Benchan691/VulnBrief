@@ -1,0 +1,16 @@
+services:
+  web:
+    build: .
+    container_name: webserver-web
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    env_file:
+      - .env
+    environment:
+      LOCAL_MONGO_URI: mongodb://host.docker.internal:27017/
+    extra_hosts:
+      # Adjust host gateway IP for your Docker host if needed.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./newsletters:/app/newsletters
