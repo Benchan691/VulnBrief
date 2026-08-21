@@ -11,6 +11,7 @@
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
     let collections = [], subscriptions = [], editingEmail = null;
+    let newsletterVendorProductFilter = emptyVendorProductFilter();
     let reportVendorProductFilter = emptyVendorProductFilter();
     let reportLegacyKeywords = [];
     let reportOriginalLegacyKeywords = [];
@@ -30,6 +31,36 @@
             rows: []
         };
     }
+    function getVendorProductFilter(prefix) {
+        return prefix === 'newsletter' ? newsletterVendorProductFilter : reportVendorProductFilter;
+    }
+    function setVendorProductFilter(prefix, value) {
+        if (prefix === 'newsletter') {
+            newsletterVendorProductFilter = value;
+        } else {
+            reportVendorProductFilter = value;
+        }
+    }
+    function vendorProductImportMarkup(prefix, options) {
+        options = options || {};
+        const warning = options.matchWarning
+            || t('CVE vendor and product data may be incomplete. Matching can produce false positives or false negatives.');
+        const legacyWarning = options.includeLegacyWarning
+            ? '<div id="' + prefix + '-legacy-keywords-warning" class="alert alert-warning small py-2 mt-2 mb-0 d-none" role="alert"></div>'
+            : '';
+        return '<div class="col-12"><div id="' + prefix + '-vendor-product-import" class="subscription-vendor-product-import border rounded p-3">' +
+        '<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2"><label class="form-label small fw-semibold mb-0" for="' + prefix + '-vendor-product-file">' + t('Product inventory (CSV)') + '</label><a id="' + prefix + '-vendor-product-template" class="btn btn-outline-secondary btn-sm" href="#" download><i class="bi bi-download me-1"></i>' + t('Download CSV template') + '</a></div>' +
+        '<input id="' + prefix + '-vendor-product-file" class="form-control form-control-sm" type="file" accept=".csv,text/csv" aria-describedby="' + prefix + '-vendor-product-help">' +
+        '<div id="' + prefix + '-vendor-product-help" class="form-text">' + t('Choose a CSV with vendor and product rows. It is validated and loaded into this form; changes apply only after you save.') + '</div>' +
+        '<div class="subscription-match-warning small mt-2"><i class="bi bi-exclamation-triangle me-1"></i>' + warning + '</div>' +
+        legacyWarning +
+        '<div id="' + prefix + '-vendor-product-status" class="alert small py-2 mt-2 mb-0 d-none" role="status" aria-live="polite"></div>' +
+        '<div id="' + prefix + '-vendor-product-summary" class="small text-muted mt-2"></div>' +
+        '<div id="' + prefix + '-vendor-product-preview" class="table-responsive subscription-vendor-product-preview mt-2 d-none"><table class="table table-sm table-bordered align-middle mb-0"><thead class="table-light"><tr><th>' + t('CSV row') + '</th><th>' + t('Vendor') + '</th><th>' + t('Product') + '</th><th>' + t('Vendor aliases') + '</th><th>' + t('Product aliases') + '</th></tr></thead><tbody id="' + prefix + '-vendor-product-rows"></tbody></table></div>' +
+        '<div id="' + prefix + '-vendor-product-preview-note" class="form-text d-none"></div>' +
+        '<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mt-2"><div class="form-check"><input id="' + prefix + '-include-possible-matches" class="form-check-input" type="checkbox" aria-describedby="' + prefix + '-include-possible-help"><label class="form-check-label small" for="' + prefix + '-include-possible-matches">' + t('Include product-only possible matches when structured vendor data is missing') + '</label><div id="' + prefix + '-include-possible-help" class="form-text">' + t('This may reduce false negatives but increases false-positive risk. Ambiguous products and known conflicting inventory vendors are suppressed.') + '</div></div><button id="' + prefix + '-vendor-product-clear" class="btn btn-outline-danger btn-sm" type="button">' + t('Clear inventory') + '</button></div>' +
+        '</div></div>';
+    }
     function newsletterFilterMarkup() {
         return '<div class="row g-2">' +
         '<div class="col-md-6">' +
@@ -43,7 +74,11 @@
         '<div class="d-flex justify-content-between px-1">' +
         '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">' + t('Select all') + '</button>' +
         '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="reset">' + t('Reset to all') + '</button>' +
-        '</div></div></div></div></div>';
+        '</div></div></div></div>' +
+        vendorProductImportMarkup('newsletter', {
+            matchWarning: t('CVE vendor and product data may be incomplete. Matching can produce false positives or false negatives; only inventory-matched advisories are emailed when an inventory is saved.')
+        }) +
+        '</div>';
     }
 
     function reportFilterMarkup() {
@@ -53,18 +88,10 @@
             return '<div class="form-check"><input id="report-status-' + level + '" class="form-check-input report-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="report-status-' + level + '">' + t(level) + '</label></div>';
         }).join('') +
         '</div><div class="form-text">' + t('Leave all unchecked to match all known severities.') + '</div></div>' +
-        '<div class="col-12"><div id="report-vendor-product-import" class="subscription-vendor-product-import border rounded p-3">' +
-        '<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2"><label class="form-label small fw-semibold mb-0" for="report-vendor-product-file">' + t('Product inventory (CSV)') + '</label><a id="report-vendor-product-template" class="btn btn-outline-secondary btn-sm" href="#" download><i class="bi bi-download me-1"></i>' + t('Download CSV template') + '</a></div>' +
-        '<input id="report-vendor-product-file" class="form-control form-control-sm" type="file" accept=".csv,text/csv" aria-describedby="report-vendor-product-help">' +
-        '<div id="report-vendor-product-help" class="form-text">' + t('Choose a CSV with vendor and product rows. It is validated and loaded into this form; changes apply only after you save.') + '</div>' +
-        '<div class="subscription-match-warning small mt-2"><i class="bi bi-exclamation-triangle me-1"></i>' + t('CVE vendor and product data may be incomplete. Matching can produce false positives or false negatives; review the report preview before saving.') + '</div>' +
-        '<div id="report-legacy-keywords-warning" class="alert alert-warning small py-2 mt-2 mb-0 d-none" role="alert"></div>' +
-        '<div id="report-vendor-product-status" class="alert small py-2 mt-2 mb-0 d-none" role="status" aria-live="polite"></div>' +
-        '<div id="report-vendor-product-summary" class="small text-muted mt-2"></div>' +
-        '<div id="report-vendor-product-preview" class="table-responsive subscription-vendor-product-preview mt-2 d-none"><table class="table table-sm table-bordered align-middle mb-0"><thead class="table-light"><tr><th>' + t('CSV row') + '</th><th>' + t('Vendor') + '</th><th>' + t('Product') + '</th><th>' + t('Vendor aliases') + '</th><th>' + t('Product aliases') + '</th></tr></thead><tbody id="report-vendor-product-rows"></tbody></table></div>' +
-        '<div id="report-vendor-product-preview-note" class="form-text d-none"></div>' +
-        '<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mt-2"><div class="form-check"><input id="report-include-possible-matches" class="form-check-input" type="checkbox" aria-describedby="report-include-possible-help"><label class="form-check-label small" for="report-include-possible-matches">' + t('Include product-only possible matches when structured vendor data is missing') + '</label><div id="report-include-possible-help" class="form-text">' + t('This may reduce false negatives but increases false-positive risk. Ambiguous products and known conflicting inventory vendors are suppressed.') + '</div></div><button id="report-vendor-product-clear" class="btn btn-outline-danger btn-sm" type="button">' + t('Clear inventory') + '</button></div>' +
-        '</div></div>' +
+        vendorProductImportMarkup('report', {
+            matchWarning: t('CVE vendor and product data may be incomplete. Matching can produce false positives or false negatives; review the report preview before saving.'),
+            includeLegacyWarning: true
+        }) +
         '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="report-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="report-include-unknown">' + t('Include unknown severity') + '</label></div></div>' +
         timeWindowMarkup('report') +
         '</div>';
@@ -79,6 +106,7 @@
 
     document.getElementById('newsletter-fields').innerHTML = newsletterFilterMarkup();
     document.getElementById('report-fields').innerHTML = reportFilterMarkup();
+    document.getElementById('newsletter-vendor-product-template').href = vendorProductTemplateUrl;
     document.getElementById('report-vendor-product-template').href = vendorProductTemplateUrl;
 
     function showMessage(text, kind) { message.textContent = text; message.className = 'alert alert-' + kind; }
@@ -195,15 +223,17 @@
             rows: normalizedRows
         };
     }
-    function hasValidVendorProductInventory() {
-        return reportVendorProductFilter.enabled === true && reportVendorProductFilter.rows.length > 0;
+    function hasValidVendorProductInventory(prefix) {
+        const inventory = getVendorProductFilter(prefix);
+        return inventory.enabled === true && inventory.rows.length > 0;
     }
-    function vendorProductFilterPayload() {
+    function vendorProductFilterPayload(prefix) {
+        const inventory = getVendorProductFilter(prefix);
         return {
-            enabled: hasValidVendorProductInventory(),
+            enabled: hasValidVendorProductInventory(prefix),
             schema_version: 1,
-            include_possible_matches: document.getElementById('report-include-possible-matches').checked,
-            rows: reportVendorProductFilter.rows.map(function (row) {
+            include_possible_matches: document.getElementById(prefix + '-include-possible-matches').checked,
+            rows: inventory.rows.map(function (row) {
                 const payloadRow = {
                     vendor: row.vendor,
                     product: row.product,
@@ -219,6 +249,7 @@
     }
     function renderLegacyKeywordWarning() {
         const warning = document.getElementById('report-legacy-keywords-warning');
+        if (!warning) return;
         warning.classList.toggle('d-none', !reportHasLegacyKeywords);
         warning.textContent = reportHasLegacyKeywords
             ? (reportLegacyKeywords.length
@@ -226,19 +257,22 @@
                 : t('A valid product inventory is ready. It will replace the legacy keyword filter when you save.'))
             : '';
     }
-    function renderVendorProductInventory() {
-        const preview = document.getElementById('report-vendor-product-preview');
-        const previewRows = document.getElementById('report-vendor-product-rows');
-        const summary = document.getElementById('report-vendor-product-summary');
-        const note = document.getElementById('report-vendor-product-preview-note');
-        const clearButton = document.getElementById('report-vendor-product-clear');
-        const inventoryRows = reportVendorProductFilter.rows;
+    function renderVendorProductInventory(prefix) {
+        const preview = document.getElementById(prefix + '-vendor-product-preview');
+        const previewRows = document.getElementById(prefix + '-vendor-product-rows');
+        const summary = document.getElementById(prefix + '-vendor-product-summary');
+        const note = document.getElementById(prefix + '-vendor-product-preview-note');
+        const clearButton = document.getElementById(prefix + '-vendor-product-clear');
+        const inventoryRows = getVendorProductFilter(prefix).rows;
         const shownRows = inventoryRows.slice(0, 25);
+        const emptyHint = prefix === 'newsletter'
+            ? t('No vendor/product inventory loaded. Newsletter delivery may include all vendors and products in the selected collections.')
+            : t('No vendor/product inventory loaded. Other report filters may match all vendors and products.');
 
         previewRows.replaceChildren();
         summary.textContent = inventoryRows.length
             ? t('{count} vendor/product row(s) loaded and ready to save.', {count: inventoryRows.length})
-            : t('No vendor/product inventory loaded. Other report filters may match all vendors and products.');
+            : emptyHint;
         preview.classList.toggle('d-none', inventoryRows.length === 0);
         clearButton.disabled = vendorProductImportBusy || inventoryRows.length === 0;
 
@@ -263,10 +297,12 @@
         note.textContent = truncated
             ? t('Showing the first {shown} of {count} loaded rows.', {shown: shownRows.length, count: inventoryRows.length})
             : '';
-        renderLegacyKeywordWarning();
+        if (prefix === 'report') {
+            renderLegacyKeywordWarning();
+        }
     }
-    function setVendorProductImportStatus(text, kind, warnings) {
-        const status = document.getElementById('report-vendor-product-status');
+    function setVendorProductImportStatus(prefix, text, kind, warnings) {
+        const status = document.getElementById(prefix + '-vendor-product-status');
         status.replaceChildren();
         if (!text && (!warnings || !warnings.length)) {
             status.className = 'alert small py-2 mt-2 mb-0 d-none';
@@ -291,24 +327,26 @@
     }
     function setVendorProductImportBusy(busy) {
         vendorProductImportBusy = busy;
-        const container = document.getElementById('report-vendor-product-import');
-        const input = document.getElementById('report-vendor-product-file');
-        const includePossible = document.getElementById('report-include-possible-matches');
         const saveButton = document.querySelector('#subscription-form button[type="submit"]');
-        container.setAttribute('aria-busy', busy ? 'true' : 'false');
-        input.disabled = busy;
-        includePossible.disabled = busy;
         saveButton.disabled = busy;
-        renderVendorProductInventory();
+        ['newsletter', 'report'].forEach(function (prefix) {
+            const container = document.getElementById(prefix + '-vendor-product-import');
+            const input = document.getElementById(prefix + '-vendor-product-file');
+            const includePossible = document.getElementById(prefix + '-include-possible-matches');
+            container.setAttribute('aria-busy', busy ? 'true' : 'false');
+            input.disabled = busy;
+            includePossible.disabled = busy;
+            renderVendorProductInventory(prefix);
+        });
     }
-    function importVendorProductCsv(file) {
+    function importVendorProductCsv(prefix, file) {
         if (!file || vendorProductImportBusy) return;
         const requestId = ++vendorProductImportRequestId;
-        const includePossibleMatches = document.getElementById('report-include-possible-matches').checked;
+        const includePossibleMatches = document.getElementById(prefix + '-include-possible-matches').checked;
         const form = new FormData();
         form.append('file', file);
         setVendorProductImportBusy(true);
-        setVendorProductImportStatus(t('Validating CSV...'), 'info');
+        setVendorProductImportStatus(prefix, t('Validating CSV...'), 'info');
         requestJson(vendorProductImportUrl, {method: 'POST', body: form})
             .then(function (body) {
                 if (requestId !== vendorProductImportRequestId) return;
@@ -317,39 +355,52 @@
                     throw new Error(t('The CSV did not contain any valid vendor/product rows.'));
                 }
                 imported.include_possible_matches = includePossibleMatches;
-                reportVendorProductFilter = imported;
-                reportLegacyKeywords = [];
-                document.getElementById('report-include-possible-matches').checked = includePossibleMatches;
-                renderVendorProductInventory();
+                setVendorProductFilter(prefix, imported);
+                if (prefix === 'report') {
+                    reportLegacyKeywords = [];
+                }
+                document.getElementById(prefix + '-include-possible-matches').checked = includePossibleMatches;
+                renderVendorProductInventory(prefix);
                 setVendorProductImportStatus(
+                    prefix,
                     t('Validated and loaded {count} vendor/product row(s). Save the subscription to apply them.', {count: imported.rows.length}),
                     body.warnings && body.warnings.length ? 'warning' : 'success',
                     body.warnings
                 );
-                scheduleReportPreview();
+                if (prefix === 'report') {
+                    scheduleReportPreview();
+                }
             })
             .catch(function (error) {
                 if (requestId !== vendorProductImportRequestId) return;
-                setVendorProductImportStatus(error.message, 'danger');
+                setVendorProductImportStatus(prefix, error.message, 'danger');
             })
             .finally(function () {
                 if (requestId !== vendorProductImportRequestId) return;
-                document.getElementById('report-vendor-product-file').value = '';
+                document.getElementById(prefix + '-vendor-product-file').value = '';
                 setVendorProductImportBusy(false);
             });
     }
-    function clearVendorProductInventory() {
-        if (!window.confirm(t('Clear the product inventory? Other report filters may then match all vendors and products.'))) {
+    function clearVendorProductInventory(prefix) {
+        const confirmMessage = prefix === 'newsletter'
+            ? t('Clear the product inventory? Newsletter delivery may then include all vendors and products in the selected collections.')
+            : t('Clear the product inventory? Other report filters may then match all vendors and products.');
+        if (!window.confirm(confirmMessage)) {
             return;
         }
-        const includePossibleMatches = document.getElementById('report-include-possible-matches').checked;
-        reportVendorProductFilter = emptyVendorProductFilter();
-        reportVendorProductFilter.include_possible_matches = includePossibleMatches;
-        reportLegacyKeywords = reportOriginalLegacyKeywords.slice();
-        document.getElementById('report-vendor-product-file').value = '';
-        renderVendorProductInventory();
-        setVendorProductImportStatus(t('Product inventory will be cleared when you save.'), 'secondary');
-        scheduleReportPreview();
+        const includePossibleMatches = document.getElementById(prefix + '-include-possible-matches').checked;
+        const cleared = emptyVendorProductFilter();
+        cleared.include_possible_matches = includePossibleMatches;
+        setVendorProductFilter(prefix, cleared);
+        if (prefix === 'report') {
+            reportLegacyKeywords = reportOriginalLegacyKeywords.slice();
+        }
+        document.getElementById(prefix + '-vendor-product-file').value = '';
+        renderVendorProductInventory(prefix);
+        setVendorProductImportStatus(prefix, t('Product inventory will be cleared when you save.'), 'secondary');
+        if (prefix === 'report') {
+            scheduleReportPreview();
+        }
     }
 
     function toggleCustomWindow(prefix) {
@@ -378,20 +429,25 @@
         filters = filters || {};
         if (prefix === 'newsletter') {
             newsletterCollections.render(collections, filters.collections || []);
+            setVendorProductFilter(prefix, normalizeVendorProductFilter(filters.vendor_product_filter));
+            document.getElementById(prefix + '-include-possible-matches').checked = getVendorProductFilter(prefix).include_possible_matches;
+            document.getElementById(prefix + '-vendor-product-file').value = '';
+            setVendorProductImportStatus(prefix, '', '');
+            renderVendorProductInventory(prefix);
             return;
         }
         if (prefix === 'report') {
             const legacyKeywords = Array.isArray(filters.keywords)
                 ? filters.keywords.filter(function (item) { return typeof item === 'string' && item.trim(); })
                 : [];
-            reportVendorProductFilter = normalizeVendorProductFilter(filters.vendor_product_filter);
+            setVendorProductFilter(prefix, normalizeVendorProductFilter(filters.vendor_product_filter));
             reportOriginalLegacyKeywords = legacyKeywords.slice();
             reportHasLegacyKeywords = legacyKeywords.length > 0;
-            reportLegacyKeywords = hasValidVendorProductInventory() ? [] : legacyKeywords.slice();
-            document.getElementById('report-include-possible-matches').checked = reportVendorProductFilter.include_possible_matches;
-            document.getElementById('report-vendor-product-file').value = '';
-            setVendorProductImportStatus('', '');
-            renderVendorProductInventory();
+            reportLegacyKeywords = hasValidVendorProductInventory(prefix) ? [] : legacyKeywords.slice();
+            document.getElementById(prefix + '-include-possible-matches').checked = getVendorProductFilter(prefix).include_possible_matches;
+            document.getElementById(prefix + '-vendor-product-file').value = '';
+            setVendorProductImportStatus(prefix, '', '');
+            renderVendorProductInventory(prefix);
         }
         setStatusFilters(prefix, filters.status || []);
         document.getElementById(prefix + '-include-unknown').checked = filters.include_unknown === true;
@@ -401,14 +457,17 @@
     function readFilters(prefix) {
         const filters = {};
         if (prefix === 'newsletter') {
-            return {collections: newsletterCollections.selectedValues()};
+            return {
+                collections: newsletterCollections.selectedValues(),
+                vendor_product_filter: vendorProductFilterPayload(prefix)
+            };
         } else if (isReportEnriched()) {
             filters.collections = ['cve_review'];
         }
         filters.status = readStatusFilters(prefix);
         if (prefix === 'report') {
-            filters.vendor_product_filter = vendorProductFilterPayload();
-            if (reportLegacyKeywords.length && !hasValidVendorProductInventory()) {
+            filters.vendor_product_filter = vendorProductFilterPayload(prefix);
+            if (reportLegacyKeywords.length && !hasValidVendorProductInventory(prefix)) {
                 filters.keywords = reportLegacyKeywords.slice();
             }
         }
@@ -446,7 +505,7 @@
             setReportPreview(t('Report profile is disabled.'), 'secondary');
             return;
         }
-        if (reportLegacyKeywords.length && !hasValidVendorProductInventory()) {
+        if (reportLegacyKeywords.length && !hasValidVendorProductInventory('report')) {
             setReportPreview(
                 t('Import a vendor/product CSV to replace the legacy keyword filter and preview confidence levels.'),
                 'warning'
@@ -523,21 +582,41 @@
             setSendStatisticBusy(false);
         }
     }
+    function inventorySummarySuffix(filters) {
+        const inventory = (filters && filters.vendor_product_filter) || {};
+        if (inventory.enabled && Array.isArray(inventory.rows) && inventory.rows.length) {
+            return t('{count} product(s)', {count: inventory.rows.length});
+        }
+        return '';
+    }
     function renderRows() {
         rows.replaceChildren(); document.getElementById('empty').classList.toggle('d-none', subscriptions.length !== 0);
         subscriptions.forEach(function (item) {
             const tr = document.createElement('tr');
             tr.innerHTML = '<td><strong></strong><div class="text-muted small"></div></td><td></td><td></td><td></td>';
             tr.children[0].querySelector('strong').textContent = item.email; tr.children[0].querySelector('div').textContent = item.team;
-            const collectionCount = item.newsletter_profile.filters.collections.length;
-            tr.children[1].textContent = item.newsletter_profile.enabled ? (collectionCount ? t('Enabled · {count} collection(s)', {count: collectionCount}) : t('Enabled · all collection(s)')) : t('Disabled');
+            if (item.newsletter_profile.enabled) {
+                const collectionCount = item.newsletter_profile.filters.collections.length;
+                const newsletterSummary = [
+                    collectionCount
+                        ? t('Enabled · {count} collection(s)', {count: collectionCount})
+                        : t('Enabled · all collection(s)')
+                ];
+                const inventorySuffix = inventorySummarySuffix(item.newsletter_profile.filters);
+                if (inventorySuffix) {
+                    newsletterSummary.push(inventorySuffix);
+                }
+                tr.children[1].textContent = newsletterSummary.join(' · ');
+            } else {
+                tr.children[1].textContent = t('Disabled');
+            }
             if (item.report_profile.enabled) {
                 const reportSummary = [item.report_profile.schedule_enabled
                     ? t('Enabled · weekly {weekday} {time} HKT', {weekday: item.report_profile.schedule_weekday || '', time: item.report_profile.schedule_time || ''})
                     : t('Enabled')];
-                const inventory = item.report_profile.filters.vendor_product_filter || {};
-                if (inventory.enabled && Array.isArray(inventory.rows) && inventory.rows.length) {
-                    reportSummary.push(t('{count} product(s)', {count: inventory.rows.length}));
+                const inventorySuffix = inventorySummarySuffix(item.report_profile.filters);
+                if (inventorySuffix) {
+                    reportSummary.push(inventorySuffix);
                 } else if (Array.isArray(item.report_profile.filters.keywords) && item.report_profile.filters.keywords.length) {
                     reportSummary.push(t('legacy keyword filter'));
                 }
@@ -555,13 +634,19 @@
     function load() { return requestJson(subscriptionsUrl).then(function(body){subscriptions=body.data;renderRows();}).catch(function(e){showMessage(e.message,'danger');}).finally(function(){document.getElementById('loading').classList.add('d-none');}); }
     newsletterCollections.wire();
     document.getElementById('report-time-window').addEventListener('change', function () { toggleCustomWindow('report'); });
-    document.getElementById('report-vendor-product-file').addEventListener('change', function (event) {
-        importVendorProductCsv(event.target.files && event.target.files[0]);
-    });
-    document.getElementById('report-vendor-product-clear').addEventListener('click', clearVendorProductInventory);
-    document.getElementById('report-include-possible-matches').addEventListener('change', function (event) {
-        reportVendorProductFilter.include_possible_matches = event.target.checked;
-        scheduleReportPreview();
+    ['newsletter', 'report'].forEach(function (prefix) {
+        document.getElementById(prefix + '-vendor-product-file').addEventListener('change', function (event) {
+            importVendorProductCsv(prefix, event.target.files && event.target.files[0]);
+        });
+        document.getElementById(prefix + '-vendor-product-clear').addEventListener('click', function () {
+            clearVendorProductInventory(prefix);
+        });
+        document.getElementById(prefix + '-include-possible-matches').addEventListener('change', function (event) {
+            getVendorProductFilter(prefix).include_possible_matches = event.target.checked;
+            if (prefix === 'report') {
+                scheduleReportPreview();
+            }
+        });
     });
     document.getElementById('report-enabled').addEventListener('change', refreshReportPreview);
     document.getElementById('report-generation-mode').addEventListener('change', function () {

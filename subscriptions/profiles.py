@@ -225,8 +225,9 @@ def validate_profile(database, value, profile_type, *, allow_legacy_report_keywo
     profile['enabled'] = bool(value.get('enabled', default['enabled']))
     profile['filters'] = validate_filters(database, value.get('filters'))
     vendor_product_filter = profile['filters']['vendor_product_filter']
-    if profile_type == 'newsletter' and vendor_product_filter['enabled']:
-        raise ValueError('Vendor/product CSV filtering is only supported for report profiles.')
+    if vendor_product_filter['enabled']:
+        # A validated inventory atomically replaces the old keyword filter.
+        profile['filters']['keywords'] = []
     if profile_type == 'newsletter':
         if 'delivery_cursor' in value:
             profile['delivery_cursor'] = value.get('delivery_cursor') or ''
@@ -241,10 +242,7 @@ def validate_profile(database, value, profile_type, *, allow_legacy_report_keywo
         return profile
     if profile_type == 'report':
         legacy_keywords = profile['filters'].get('keywords') or []
-        if vendor_product_filter['enabled']:
-            # A validated inventory atomically replaces the old keyword filter.
-            profile['filters']['keywords'] = []
-        elif legacy_keywords:
+        if not vendor_product_filter['enabled'] and legacy_keywords:
             if not allow_legacy_report_keywords:
                 raise ValueError(
                     'Report keyword filters are no longer supported. '

@@ -862,6 +862,63 @@ def test_newsletter_profile_accepts_monthly_statistic_schedule(client):
     assert item['newsletter_profile']['statistic_next_run_at']
 
 
+def test_newsletter_profile_accepts_vendor_product_inventory(client):
+    authenticate(client)
+    vendor_product_filter = {
+        'enabled': True,
+        'schema_version': 1,
+        'include_possible_matches': True,
+        'rows': [{
+            'vendor': 'Red Hat',
+            'product': 'Enterprise Linux',
+            'vendor_aliases': ['RedHat'],
+            'product_aliases': ['RHEL'],
+        }],
+    }
+    response = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {
+                'collections': ['cve_review'],
+                'vendor_product_filter': vendor_product_filter,
+            },
+        },
+        'report_profile': {'enabled': False},
+    })
+
+    assert response.status_code == 201
+    item = next(item for item in client.get('/api/subscriptions').get_json()['data'] if item['email'] == TEST_EMAIL)
+    assert item['newsletter_profile']['filters']['keywords'] == []
+    stored_inventory = item['newsletter_profile']['filters']['vendor_product_filter']
+    assert stored_inventory['enabled'] is True
+    assert stored_inventory['include_possible_matches'] is True
+    assert stored_inventory['rows'][0] == {
+        **vendor_product_filter['rows'][0],
+        'row_number': 2,
+    }
+
+    updated = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {
+                'collections': ['cve_review'],
+                'vendor_product_filter': {
+                    **vendor_product_filter,
+                    'include_possible_matches': False,
+                },
+            },
+        },
+        'report_profile': {'enabled': False},
+    })
+    assert updated.status_code == 200
+    item = next(item for item in client.get('/api/subscriptions').get_json()['data'] if item['email'] == TEST_EMAIL)
+    assert item['newsletter_profile']['filters']['vendor_product_filter']['include_possible_matches'] is False
+
+
 def test_report_profile_rejects_invalid_schedule_and_legacy_keywords(client):
     authenticate(client)
     bad_schedule = client.post('/api/subscriptions', json={

@@ -118,6 +118,28 @@ def test_newsletter_profile_preserves_internal_cve_delivery_cutoff():
     assert profile['cve_delivery_cutoff'] == '2026-07-23T04:00:00+00:00'
 
 
+def test_newsletter_profile_accepts_vendor_product_inventory_and_clears_keywords():
+    profile = validate_profile(FakeDatabase(), {
+        'enabled': True,
+        'filters': {
+            'keywords': ['legacy'],
+            'vendor_product_filter': {
+                'enabled': True,
+                'schema_version': 1,
+                'include_possible_matches': True,
+                'rows': [_inventory_row('Microsoft', 'Exchange Server')],
+            },
+        },
+    }, 'newsletter')
+
+    assert profile['filters']['keywords'] == []
+    inventory = profile['filters']['vendor_product_filter']
+    assert inventory['enabled'] is True
+    assert inventory['include_possible_matches'] is True
+    assert inventory['rows'][0]['vendor'] == 'Microsoft'
+    assert inventory['rows'][0]['product'] == 'Exchange Server'
+
+
 def test_public_subscription_hides_the_internal_cve_delivery_cutoff():
     from subscriptions.routes import _public_subscription
 

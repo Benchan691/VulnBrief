@@ -39,12 +39,13 @@ items must also contain a `details` object. Useless configured fields are remove
 recursively and JSON is minified before it is sent to AI (`reports.template_builder.compact_details`).
 
 Subscriptions are managed at `/subscriptions`. Each subscriber has independent
-newsletter and report profiles. Report profiles can use a vendor/product CSV
-inventory in place of free-form keyword filtering.
+newsletter and report profiles. Both profiles can use a vendor/product CSV
+inventory; newsletter and report inventories are stored separately. When a
+newsletter inventory is enabled, only inventory-matched advisories are emailed.
 Report profile Run actions prepare the browser's Vulnerability Reviews selection
 list for manual report generation on the Reports page.
 
-## Report vendor/product CSV filters
+## Vendor/product CSV filters
 
 The v1 CSV contract has exactly four columns, in this order:
 
