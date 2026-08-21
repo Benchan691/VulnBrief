@@ -94,10 +94,13 @@ Matching preserves the vendor/product relationship within each CSV row and
 assigns a confidence level:
 
 - **Confirmed** means the vendor and product match the same structured affected
-  product entry in the CVE data.
+  product entry (CVE `details.affected` / CVE5 containers, AVD
+  `affected_software`, GitHub Advisory package entries, CNNVD/Qianxin vendor
+  and product fields, and similar structured source shapes).
 - **Probable** means both names match bounded values in supported
-  less-structured CVE text fields, and the source does not provide a complete
-  conflicting affected-product pair.
+  less-structured text fields (including source-specific lists such as
+  HKCERT `systems_affected`, Cisco `product_names`, and Palo Alto `products`),
+  and the source does not provide a complete conflicting affected-product pair.
 - **Possible** means distinctive product evidence exists while structured
   vendor evidence is missing. It is opt-in, suppressed when the same product
   identity belongs to multiple imported vendors, and suppressed when the same

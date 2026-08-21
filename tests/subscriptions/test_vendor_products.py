@@ -250,6 +250,12 @@ def test_candidate_clause_covers_alternate_structured_keys_and_nested_descriptio
     assert 'details.containers.cna.affected.product' in clause_text
     assert 'details.containers.cna.affected.product_name' in clause_text
     assert 'details.descriptions.value' in clause_text
+    assert 'details.affected_software.product' in clause_text
+    assert 'details.systems_affected' in clause_text
+    assert 'details.product_names' in clause_text
+    assert 'details.vulnerabilities.package.name' in clause_text
+    assert 'details.affectedVendor' in clause_text
+    assert 'details.description.vulnerability_information.product' in clause_text
 
 
 def test_unicode_source_variants_are_explicit_aliases_and_preserve_prefilter_parity():
@@ -482,3 +488,114 @@ def test_possible_match_uses_a_script_aware_threshold_for_cjk_products():
     assert classify_vendor_product_match(
         {'description': '软件存在安全更新。'}, generic,
     ) is None
+
+
+def test_avd_affected_software_is_confirmed():
+    product_filter = _filter(_row(vendor='Apache', product='ActiveMQ'))
+    match = classify_vendor_product_match({
+        'details': {
+            'affected_software': [{
+                'vendor': 'apache',
+                'product': 'activemq',
+                'version': '*',
+                'impact': 'Up to 5.19.7',
+            }],
+        },
+    }, product_filter)
+
+    assert match['confidence'] == 'confirmed'
+    assert match['evidence']['source'] == 'details.affected_software[0]'
+
+
+def test_hkcert_systems_affected_supports_probable_and_possible_matches():
+    product_filter = _filter(_row(vendor='Microsoft', product='Exchange Server'))
+    probable = classify_vendor_product_match({
+        'details': {
+            'systems_affected': ['Microsoft Exchange Server 2019'],
+        },
+    }, product_filter)
+    possible = classify_vendor_product_match({
+        'details': {
+            'systems_affected': ['Exchange Server deployments'],
+        },
+    }, _filter(_row(), include_possible=True))
+
+    assert probable['confidence'] == 'probable'
+    assert probable['evidence']['source'] == 'details.systems_affected'
+    assert possible['confidence'] == 'possible'
+    assert possible['evidence']['source'] == 'details.systems_affected'
+
+
+def test_cisco_product_names_and_paloalto_products_are_matched():
+    cisco = classify_vendor_product_match({
+        'details': {'product_names': ['Cisco IOS XE Software']},
+    }, _filter(_row(vendor='Cisco', product='IOS XE')))
+    palo = classify_vendor_product_match({
+        'details': {'products': ['PAN-OS']},
+    }, _filter(_row(vendor='Palo Alto', product='PAN-OS'), include_possible=True))
+
+    assert cisco['confidence'] == 'probable'
+    assert cisco['evidence']['source'] == 'details.product_names'
+    assert palo['confidence'] == 'possible'
+    assert palo['evidence']['source'] == 'details.products'
+
+
+def test_cnnvd_and_qianxin_structured_pairs_are_confirmed():
+    cnnvd = classify_vendor_product_match({
+        'details': {
+            'affectedVendor': 'Acme',
+            'affectedProduct': 'Widget',
+            'affectedSystem': 'Widget OS',
+        },
+    }, _filter(_row(vendor='Acme', product='Widget')))
+    qianxin = classify_vendor_product_match({
+        'details': {
+            'description': {
+                'vulnerability_information': {
+                    'vendor': 'Acme',
+                    'product': 'Widget',
+                },
+            },
+        },
+    }, _filter(_row(vendor='Acme', product='Widget')))
+
+    assert cnnvd['confidence'] == 'confirmed'
+    assert cnnvd['evidence']['source'] == 'details.affectedVendor/affectedProduct'
+    assert qianxin['confidence'] == 'confirmed'
+    assert qianxin['evidence']['source'] == (
+        'details.description.vulnerability_information.vendor/product'
+    )
+
+
+def test_github_advisory_package_entries_are_confirmed():
+    match = classify_vendor_product_match({
+        'details': {
+            'vulnerabilities': [{
+                'package': {'ecosystem': 'npm', 'name': 'lodash'},
+                'vulnerable_version_range': '< 4.17.21',
+            }],
+        },
+    }, _filter(_row(vendor='npm', product='lodash')))
+
+    assert match['confidence'] == 'confirmed'
+    assert match['evidence']['source'] == 'details.vulnerabilities[0]'
+
+
+def test_govcert_affected_systems_and_fortiguard_affected_field_are_matched():
+    govcert = classify_vendor_product_match({
+        'details': {
+            'affected_systems': ['Acme Widget appliances'],
+        },
+    }, _filter(_row(vendor='Acme', product='Widget')))
+    fortiguard = classify_vendor_product_match({
+        'details': {
+            'affected_products': [
+                {'version': '7.0', 'affected': 'FortiOS', 'solution': 'Upgrade'},
+            ],
+        },
+    }, _filter(_row(vendor='Fortinet', product='FortiOS'), include_possible=True))
+
+    assert govcert['confidence'] == 'probable'
+    assert govcert['evidence']['source'] == 'details.affected_systems'
+    assert fortiguard['confidence'] == 'possible'
+    assert fortiguard['evidence']['type'] == 'structured_product_without_vendor'

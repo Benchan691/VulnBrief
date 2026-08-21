@@ -47,22 +47,40 @@ _VENDOR_SUFFIXES = frozenset({
 _STRUCTURED_ARRAY_PATHS = (
     ('details', 'affected'),
     ('details', 'containers', 'cna', 'affected'),
+    ('details', 'affected_software'),
+    ('details', 'affected_products'),
+    ('details', 'vulnerabilities'),
     ('affected',),
     ('affected_products',),
-    ('details', 'affected_products'),
+    ('affected_software',),
     ('containers', 'cna', 'affected'),
 )
 _STRUCTURED_PAIR_PATHS = (
     (('vendor',), ('product',), 'vendor/product'),
     (('details', 'vendor'), ('details', 'product'), 'details.vendor/product'),
+    (
+        ('details', 'affectedVendor'),
+        ('details', 'affectedProduct'),
+        'details.affectedVendor/affectedProduct',
+    ),
+    (
+        ('details', 'description', 'vulnerability_information', 'vendor'),
+        ('details', 'description', 'vulnerability_information', 'product'),
+        'details.description.vulnerability_information.vendor/product',
+    ),
 )
-_STRUCTURED_VENDOR_FIELDS = ('vendor', 'vendor_name', 'manufacturer')
-_STRUCTURED_PRODUCT_FIELDS = ('product', 'product_name', 'packageName')
+_STRUCTURED_VENDOR_FIELDS = ('vendor', 'vendor_name', 'manufacturer', 'affectedVendor')
+_STRUCTURED_PRODUCT_FIELDS = (
+    'product', 'product_name', 'packageName', 'affectedProduct', 'affected',
+)
 _FALLBACK_PATHS = (
     ('affected',),
     ('affected_products',),
+    ('affected_software',),
     ('systems_affected',),
+    ('affected_systems',),
     ('products',),
+    ('product_names',),
     ('title',),
     ('description',),
     ('descriptions',),
@@ -70,6 +88,14 @@ _FALLBACK_PATHS = (
     ('impacts',),
     ('details', 'affected'),
     ('details', 'affected_products'),
+    ('details', 'affected_software'),
+    ('details', 'systems_affected'),
+    ('details', 'affected_systems'),
+    ('details', 'products'),
+    ('details', 'product_names'),
+    ('details', 'affectedProduct'),
+    ('details', 'affectedSystem'),
+    ('details', 'affectedVendor'),
     ('details', 'description'),
     ('details', 'descriptions'),
     ('details', 'summary'),
@@ -471,6 +497,14 @@ def _iter_structured_pairs(document):
                 continue
             vendor = _entry_value(entry, _STRUCTURED_VENDOR_FIELDS)
             product = _entry_value(entry, _STRUCTURED_PRODUCT_FIELDS)
+            package = entry.get('package') if isinstance(entry.get('package'), dict) else None
+            if package:
+                vendor = vendor or _entry_value(
+                    package, ('ecosystem', 'vendor', 'vendor_name', 'manufacturer'),
+                )
+                product = product or _entry_value(
+                    package, ('name', 'product', 'product_name', 'packageName'),
+                )
             if vendor or product:
                 yield f'{".".join(path)}[{index}]', vendor, product
 
@@ -703,7 +737,7 @@ def _classify_vendor_product_match(document, normalized, compiled_rows):
 
 
 def compile_vendor_product_matcher(filter_value):
-    """Validate and compile an inventory once, then classify many CVE documents."""
+    """Validate and compile an inventory once, then classify many vulnerability documents."""
     normalized = validate_vendor_product_filter(filter_value, check_query_size=False)
     compiled_rows = _compile_match_rows(normalized)
 
@@ -778,6 +812,11 @@ def _candidate_inventory_clause(rows):
         for path in _STRUCTURED_ARRAY_PATHS
         for name in _STRUCTURED_PRODUCT_FIELDS
     )
+    fields.update(
+        f'{".".join(path)}.package.{name}'
+        for path in _STRUCTURED_ARRAY_PATHS
+        for name in ('name', 'product', 'product_name', 'packageName')
+    )
     # Product evidence alone is sufficient for a lossless candidate pass.
     # Vendor/product pairing and confidence are enforced by the classifier,
     # keeping this BSON query compact for large inventories.
@@ -793,7 +832,7 @@ def _build_candidate_clause(normalized):
         return {}
     # The Mongo clause is intentionally broad: it combines inventory vendor
     # and product terms to keep the query compact, while the Python classifier
-    # below still enforces the original row pairing before accepting a CVE.
+    # below still enforces the original row pairing before accepting a match.
     return _candidate_inventory_clause(normalized['rows'])
 
 
