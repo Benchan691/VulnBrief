@@ -12,6 +12,7 @@ from subscriptions.profiles import (
     get_sub_account_collection,
     normalize_subscription,
     profile_with_window,
+    subscription_schema,
     validate_profile,
 )
 from subscriptions.query import (
@@ -84,6 +85,123 @@ def _profiles(database, data, *, allow_legacy_report_keywords=False):
         allow_legacy_report_keywords=allow_legacy_report_keywords,
     )
     return newsletter_profile, report_profile
+
+
+def _preview_public_profile(profile):
+    profile = deepcopy(profile)
+    for field in (
+        'delivery_cursor', 'cve_delivery_cutoff',
+        'statistic_next_run_at', 'statistic_last_run_at', 'statistic_last_error',
+        'next_run_at', 'last_run_at', 'last_job_id', 'last_error', 'last_match_count',
+        'legacy_keyword_filter',
+    ):
+        profile.pop(field, None)
+    return profile
+
+
+def _preview_default_paths(data, *, include_missing_profiles=True):
+    paths = []
+    for name in ('newsletter_profile', 'report_profile'):
+        if name not in data:
+            if include_missing_profiles:
+                paths.append(name)
+            continue
+        value = data.get(name)
+        if value is None:
+            paths.append(name)
+            continue
+        if not isinstance(value, dict):
+            continue
+        if 'filters' not in value:
+            paths.append(f'{name}.filters')
+        elif isinstance(value.get('filters'), dict):
+            for field in ('collections', 'search', 'code', 'title', 'impact', 'affected',
+                          'status', 'severity_threshold', 'include_unknown', 'source',
+                          'keywords', 'vendor_product_filter', 'time_window', 'start',
+                          'end', 'source_timestamp', 'report_scope'):
+                if field not in value['filters']:
+                    paths.append(f'{name}.filters.{field}')
+    return paths
+
+
+def _preview_profiles(database, data):
+    mode = data.get('mode')
+    if not isinstance(mode, str) or mode not in {'create', 'update'}:
+        raise ValueError('Preview mode must be create or update.')
+
+    warnings = []
+    applied_defaults = _preview_default_paths(data) if mode == 'create' else []
+    if mode == 'create':
+        newsletter_value = data.get('newsletter_profile')
+        if isinstance(newsletter_value, dict) and 'cve_delivery_cutoff' in newsletter_value:
+            data = {
+                **data,
+                'newsletter_profile': {
+                    key: value for key, value in newsletter_value.items()
+                    if key != 'cve_delivery_cutoff'
+                },
+            }
+        newsletter_profile, report_profile = _profiles(database, data)
+        return newsletter_profile, report_profile, warnings, applied_defaults, None
+
+    raw_email = data.get('email') or data.get('target_email') or ''
+    if not isinstance(raw_email, str):
+        raise ValueError('Email must be text when preview mode is update.')
+    email = raw_email.strip()
+    if not email:
+        raise ValueError('Email is required when preview mode is update.')
+    existing = get_collection().find_one({'email': email})
+    if existing is None:
+        raise LookupError('Subscription not found.')
+    current = normalize_subscription(database, existing)
+    proposed = dict(data)
+    proposed.setdefault('newsletter_profile', current['newsletter_profile'])
+    if 'report_profile' not in proposed and 'subscriptions' not in proposed:
+        proposed['report_profile'] = current['report_profile']
+    newsletter_value = proposed.get('newsletter_profile')
+    if isinstance(newsletter_value, dict) and 'delivery_cursor' not in newsletter_value:
+        newsletter_value = {
+            **newsletter_value,
+            'delivery_cursor': current['newsletter_profile'].get('delivery_cursor') or '',
+        }
+        proposed['newsletter_profile'] = newsletter_value
+    if isinstance(newsletter_value, dict):
+        proposed['newsletter_profile'] = {
+            **newsletter_value,
+            'cve_delivery_cutoff': current['newsletter_profile'].get('cve_delivery_cutoff') or '',
+        }
+    provided_profiles = {
+        name: data[name] for name in ('newsletter_profile', 'report_profile') if name in data
+    }
+    applied_defaults = _preview_default_paths(
+        provided_profiles, include_missing_profiles=False,
+    )
+    current_legacy_keywords = current['report_profile'].get('filters', {}).get('keywords') or []
+    newsletter_profile, report_profile = _profiles(
+        database,
+        proposed,
+        allow_legacy_report_keywords=bool(current_legacy_keywords),
+    )
+    updated_legacy_keywords = report_profile.get('filters', {}).get('keywords') or []
+    inventory_enabled = bool(
+        report_profile.get('filters', {}).get('vendor_product_filter', {}).get('enabled')
+    )
+    if (
+        current_legacy_keywords
+        and updated_legacy_keywords != current_legacy_keywords
+        and report_profile.get('enabled')
+        and not inventory_enabled
+    ):
+        raise ValueError(
+            'Legacy report keywords cannot be removed from an active profile. '
+            'Import a vendor/product CSV to replace them, or disable the report profile.'
+        )
+    if current_legacy_keywords and report_profile.get('legacy_keyword_filter'):
+        warnings.append(
+            'The existing legacy report keyword filter is being preserved. '
+            'Import a vendor/product CSV to replace it.'
+        )
+    return newsletter_profile, report_profile, warnings, applied_defaults, email
 
 
 def _with_next_run(profile):
@@ -326,6 +444,50 @@ def get_subscriptions():
         return jsonify({'data': data})
     except (PyMongoError, ValueError):
         return jsonify({'error': t('Unable to load subscriptions.')}), 503
+
+
+@subscription_blueprint.route('/api/subscriptions/schema')
+@login_required
+def get_subscription_schema():
+    try:
+        return jsonify(subscription_schema(get_vulnerabilities_database()))
+    except PyMongoError:
+        return jsonify({'error': t('Unable to load subscription configuration.')}), 503
+
+
+@subscription_blueprint.route('/api/subscriptions/preview', methods=['POST'])
+@login_required
+def preview_subscription_configuration():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Subscription preview must be an object.'}), 400
+    try:
+        database = get_vulnerabilities_database()
+        newsletter_profile, report_profile, warnings, applied_defaults, email = _preview_profiles(
+            database, data,
+        )
+        normalized_profiles = {
+            'newsletter_profile': _preview_public_profile(newsletter_profile),
+            'report_profile': _preview_public_profile(report_profile),
+        }
+        response = {
+            'valid': True,
+            'mode': data.get('mode'),
+            'normalized_profiles': normalized_profiles,
+            'newsletter_profile': normalized_profiles['newsletter_profile'],
+            'report_profile': normalized_profiles['report_profile'],
+            'applied_defaults': applied_defaults,
+            'warnings': warnings,
+        }
+        if email:
+            response['email'] = email
+        return jsonify(response)
+    except LookupError:
+        return jsonify({'error': t('Subscription not found.')}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except PyMongoError:
+        return jsonify({'error': t('Unable to preview subscription configuration.')}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions', methods=['POST'])

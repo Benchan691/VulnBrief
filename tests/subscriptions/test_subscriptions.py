@@ -86,6 +86,122 @@ def test_subscriptions_requires_authentication(client):
     assert client.post('/api/subscriptions', json={}).status_code == 401
     assert client.get('/api/subscriptions/vendor-product-template.csv').status_code == 401
     assert client.post('/api/subscriptions/vendor-product-import').status_code == 401
+    assert client.get('/api/subscriptions/schema').status_code == 401
+    assert client.post('/api/subscriptions/preview', json={}).status_code == 401
+
+
+def test_subscription_schema_describes_live_public_configuration(client, monkeypatch):
+    authenticate(client)
+    monkeypatch.setattr(
+        'subscriptions.profiles.review_views',
+        lambda database: {'cve_review': {}, 'avd_review': {}},
+    )
+
+    response = client.get('/api/subscriptions/schema')
+
+    assert response.status_code == 200
+    schema = response.get_json()
+    assert schema['schema_version'] == 1
+    assert schema['review_collections'] == ['avd_review', 'cve_review']
+    assert schema['allowed_values']['generation_mode'] == ['enriched_weekly', 'template']
+    assert schema['allowed_values']['severity'] == ['Critical', 'High', 'Low', 'Medium']
+    assert schema['vendor_product_filter']['row_fields'] == [
+        'vendor', 'product', 'vendor_aliases', 'product_aliases',
+    ]
+    assert schema['vendor_product_filter']['limits']['max_rows'] == 500
+    serialized = str(schema)
+    for internal in (
+        'delivery_cursor', 'cve_delivery_cutoff', 'next_run_at',
+        'schedule_claim_owner', 'schedule_claim_until',
+    ):
+        assert internal not in serialized
+
+
+def test_subscription_preview_normalizes_without_writing_or_sending(client, monkeypatch):
+    authenticate(client)
+    monkeypatch.setattr(
+        'subscriptions.profiles.review_views',
+        lambda database: {'cve_review': {}},
+    )
+
+    class UnexpectedMailer:
+        def __init__(self, config):
+            raise AssertionError('preview must not construct a mailer')
+
+    monkeypatch.setattr('subscriptions.routes.Mailer', UnexpectedMailer)
+    before = get_web_database()[SUB_ACCOUNT_COLLECTION].count_documents({'email': TEST_EMAIL})
+    response = client.post('/api/subscriptions/preview', json={
+        'mode': 'create',
+        'email': TEST_EMAIL,
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {'collections': ['cve_review'], 'severity_threshold': 'High'},
+        },
+        'report_profile': {
+            'generation_mode': 'template',
+            'filters': {'collections': ['cve_review']},
+        },
+    })
+
+    assert response.status_code == 200
+    preview = response.get_json()
+    assert preview['valid'] is True
+    assert preview['normalized_profiles']['newsletter_profile']['filters']['severity_threshold'] == 'High'
+    assert preview['normalized_profiles']['report_profile']['report_language'] == 'en'
+    assert preview['applied_defaults']
+    assert get_web_database()[SUB_ACCOUNT_COLLECTION].count_documents({'email': TEST_EMAIL}) == before
+
+
+def test_subscription_preview_update_preserves_existing_profiles_without_writing(client, monkeypatch):
+    authenticate(client)
+    monkeypatch.setattr(
+        'subscriptions.profiles.review_views',
+        lambda database: {'cve_review': {}},
+    )
+    created = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {'enabled': True, 'filters': {'collections': ['cve_review']}},
+        'report_profile': {'enabled': True, 'filters': {'collections': ['cve_review']}},
+    })
+    assert created.status_code == 201
+    collection = get_web_database()[SUB_ACCOUNT_COLLECTION]
+    before = collection.find_one({'email': TEST_EMAIL})
+
+    response = client.post('/api/subscriptions/preview', json={
+        'mode': 'update',
+        'email': TEST_EMAIL,
+    })
+
+    assert response.status_code == 200
+    preview = response.get_json()
+    assert preview['email'] == TEST_EMAIL
+    assert preview['normalized_profiles']['newsletter_profile']['filters']['collections'] == ['cve_review']
+    assert preview['normalized_profiles']['report_profile']['filters']['collections'] == ['cve_review']
+    after = collection.find_one({'email': TEST_EMAIL})
+    assert after == before
+
+
+@pytest.mark.parametrize('profile', [
+    {'filters': {'collections': ['not-a-live-review']}},
+    {'filters': {'severity_threshold': 'Urgent'}},
+    {'filters': {'time_window': 'custom', 'start': '2026-01-02', 'end': '2026-01-01'}},
+])
+def test_subscription_preview_returns_sanitized_validation_errors(client, monkeypatch, profile):
+    authenticate(client)
+    monkeypatch.setattr(
+        'subscriptions.profiles.review_views',
+        lambda database: {'cve_review': {}},
+    )
+
+    response = client.post('/api/subscriptions/preview', json={
+        'mode': 'create',
+        'report_profile': profile,
+    })
+
+    assert response.status_code == 400
+    assert set(response.get_json()) == {'error'}
+    assert '<html' not in response.get_json()['error'].lower()
 
 
 def test_subscriptions_crud_validates_review_views(client):

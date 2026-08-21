@@ -6,7 +6,15 @@ from zoneinfo import ZoneInfo
 from core.database import get_web_database
 from reviews.repository import MAX_EXPORT_SELECTIONS, review_views
 from subscriptions.vendor_products import (
+    CSV_COLUMNS,
     DEFAULT_VENDOR_PRODUCT_FILTER,
+    MAX_ALIASES_PER_FIELD,
+    MAX_CELL_CHARS,
+    MAX_CSV_BYTES,
+    MAX_FILTER_TEXT_CHARS,
+    MAX_ROW_NUMBER,
+    MAX_VENDOR_PRODUCT_ROWS,
+    SCHEMA_VERSION as VENDOR_PRODUCT_SCHEMA_VERSION,
     validate_vendor_product_filter,
 )
 
@@ -71,7 +79,7 @@ DEFAULT_NEWSLETTER_PROFILE = {
     'statistic_schedule_enabled': False,
 }
 DEFAULT_REPORT_PROFILE = {
-    'enabled': True,
+    'enabled': False,
     'filters': DEFAULT_FILTERS,
     'generation_mode': 'template',
     'report_language': 'en',
@@ -80,6 +88,97 @@ DEFAULT_REPORT_PROFILE = {
     'schedule_weekday': 'mon',
     'schedule_time': '09:00',
 }
+
+
+def _public_profile_defaults(profile):
+    """Return subscriber-facing defaults without scheduler state."""
+    profile = deepcopy(profile)
+    for field in (
+        'delivery_cursor', 'cve_delivery_cutoff',
+        'statistic_next_run_at', 'statistic_last_run_at', 'statistic_last_error',
+        'next_run_at', 'last_run_at', 'last_job_id', 'last_error', 'last_match_count',
+        'legacy_keyword_filter',
+    ):
+        profile.pop(field, None)
+    return profile
+
+
+def subscription_schema(database):
+    """Describe the subscriber-facing configuration accepted by the validator."""
+    return {
+        'schema_version': VENDOR_PRODUCT_SCHEMA_VERSION,
+        'profile_types': ['newsletter', 'report'],
+        'review_collections': sorted(review_views(database)),
+        'filters': {
+            'fields': [
+                {'name': 'collections', 'type': 'array', 'items': 'review_collection'},
+                *(
+                    {'name': name, 'type': 'string'}
+                    for name in FILTER_TEXT_FIELDS
+                ),
+                {'name': 'status', 'type': 'array', 'items': 'severity'},
+                {'name': 'severity_threshold', 'type': 'severity'},
+                {'name': 'include_unknown', 'type': 'boolean'},
+                {'name': 'keywords', 'type': 'array', 'items': 'string'},
+                {'name': 'vendor_product_filter', 'type': 'vendor_product_filter'},
+                {'name': 'time_window', 'type': 'time_window'},
+                {'name': 'start', 'type': 'datetime', 'timezone': 'Asia/Hong_Kong'},
+                {'name': 'end', 'type': 'datetime', 'timezone': 'Asia/Hong_Kong'},
+                {'name': 'source_timestamp', 'type': 'object'},
+                {'name': 'report_scope', 'type': 'object'},
+            ],
+            'defaults': deepcopy(DEFAULT_FILTERS),
+        },
+        'allowed_values': {
+            'severity': sorted(VALID_SEVERITIES - {''}),
+            'severity_threshold': sorted(VALID_SEVERITIES),
+            'time_window': sorted(VALID_WINDOWS),
+            'generation_mode': sorted(VALID_GENERATION_MODES),
+            'generation_mode_aliases': ['ai', 'company_ai'],
+            'report_language': sorted(VALID_LANGUAGES),
+            'schedule_weekday': sorted(VALID_WEEKDAYS),
+        },
+        'profiles': {
+            'newsletter': {
+                'defaults': _public_profile_defaults(DEFAULT_NEWSLETTER_PROFILE),
+                'fields': [
+                    {'name': 'enabled', 'type': 'boolean'},
+                    {'name': 'filters', 'type': 'filters'},
+                    {'name': 'statistic_schedule_enabled', 'type': 'boolean'},
+                ],
+            },
+            'report': {
+                'defaults': _public_profile_defaults(DEFAULT_REPORT_PROFILE),
+                'fields': [
+                    {'name': 'enabled', 'type': 'boolean'},
+                    {'name': 'filters', 'type': 'filters'},
+                    {'name': 'generation_mode', 'type': 'generation_mode'},
+                    {'name': 'report_language', 'type': 'report_language'},
+                    {'name': 'search_prompt', 'type': 'string'},
+                    {'name': 'schedule_enabled', 'type': 'boolean'},
+                    {'name': 'schedule_weekday', 'type': 'schedule_weekday'},
+                    {'name': 'schedule_time', 'type': 'time'},
+                ],
+            },
+        },
+        'vendor_product_filter': {
+            'schema_version': VENDOR_PRODUCT_SCHEMA_VERSION,
+            'fields': ['enabled', 'schema_version', 'include_possible_matches', 'rows'],
+            'row_fields': list(CSV_COLUMNS),
+            'optional_row_fields': {
+                'row_number': {'type': 'integer', 'minimum': 2, 'maximum': MAX_ROW_NUMBER},
+            },
+            'defaults': deepcopy(DEFAULT_VENDOR_PRODUCT_FILTER),
+            'limits': {
+                'max_rows': MAX_VENDOR_PRODUCT_ROWS,
+                'max_aliases_per_field': MAX_ALIASES_PER_FIELD,
+                'max_cell_chars': MAX_CELL_CHARS,
+                'max_filter_text_chars': MAX_FILTER_TEXT_CHARS,
+                'max_csv_bytes': MAX_CSV_BYTES,
+            },
+        },
+        'limits': {'report_scope_max_count': MAX_EXPORT_SELECTIONS},
+    }
 
 
 def parse_hong_kong_datetime(value):

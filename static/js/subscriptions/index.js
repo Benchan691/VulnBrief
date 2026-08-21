@@ -555,7 +555,7 @@
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
         const newsletter = subscription ? subscription.newsletter_profile : {enabled:false,filters:{}};
-        const report = subscription ? subscription.report_profile : {enabled:true,filters:{},generation_mode:'template',report_language:'en'};
+        const report = subscription ? subscription.report_profile : {enabled:false,filters:{},generation_mode:'template',report_language:'en'};
         document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters);
         document.getElementById('newsletter-statistic-schedule-enabled').checked = newsletter.statistic_schedule_enabled === true;
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
