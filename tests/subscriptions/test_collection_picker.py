@@ -11,6 +11,8 @@ def test_newsletter_collection_picker_uses_dynamic_all_mode():
     assert 'this.emptySelectionMeansAll = options.emptySelectionMeansAll === true;' in picker
     assert 'this.allMode = this.emptySelectionMeansAll && selected.length === 0;' in picker
     assert 'if (this.allMode) return [];' in picker
+    assert "action.dataset.action === 'reset'" in picker
+    assert 'input.checked = false' in picker
     assert "new CollectionPicker('newsletter', {emptySelectionMeansAll: true})" in subscriptions_ui
     assert 'data-action="reset"' in subscriptions_ui
     assert "t('Reset to all')" in subscriptions_ui

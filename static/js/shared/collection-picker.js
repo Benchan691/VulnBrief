@@ -56,7 +56,7 @@
                 input.className = 'form-check-input collection-picker-checkbox';
                 input.id = this.prefix + '-collection-' + name.replace(/[^a-zA-Z0-9_-]/g, '_');
                 input.value = name;
-                input.checked = this.allMode || selected.includes(name);
+                input.checked = !this.allMode && selected.includes(name);
                 const label = document.createElement('label');
                 label.className = 'form-check-label small';
                 label.htmlFor = input.id;
@@ -85,7 +85,7 @@
                 event.preventDefault();
                 if (this.emptySelectionMeansAll && action.dataset.action === 'reset') {
                     this.allMode = true;
-                    this.checkboxes().forEach(function (input) { input.checked = true; });
+                    this.checkboxes().forEach(function (input) { input.checked = false; });
                     this.updateLabel();
                     return;
                 }
