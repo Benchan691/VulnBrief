@@ -149,6 +149,32 @@ def test_zimbra_patch_newsletter_includes_fixes_packages_and_references():
     assert normalized['references'] == ['https://wiki.zimbra.com/wiki/Zimbra_Releases/10.1.20']
 
 
+def test_zimbra_renderer_preserves_source_sections_and_escapes_text():
+    document = {
+        'title': 'Zimbra 10.1.20 Patch Release',
+        'details': {
+            'title': 'Zimbra Daffodil (v10.1.20) Patch Release',
+            'security_fixes': ['Fixed <script>alert(1)</script>.'],
+            'fixed_issues': {'Licensing': ['Fixed license reset.']},
+            'packages': {'zimbra-patch': '10.1.20.1783418035-2'},
+            'patch_installation_url': 'https://wiki.zimbra.com/patch_installation',
+            'open_source_repo_url': 'https://github.com/Zimbra/zm-build',
+            'reference_links': ['https://wiki.zimbra.com/wiki/Zimbra_Releases/10.1.20'],
+        },
+    }
+
+    with app.app_context():
+        html, normalized = render_newsletter(document, 'zimbra')
+
+    assert normalized['title'] == 'Zimbra 10.1.20 Patch Release'
+    assert normalized['subtitle'] == 'Zimbra Daffodil (v10.1.20) Patch Release'
+    assert html.index('Zimbra 10.1.20 Patch Release') < html.index('Security Fixes')
+    assert html.index('Security Fixes') < html.index('Fixed Issues')
+    assert html.index('Fixed Issues') < html.index('Packages')
+    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in html
+    assert '<script>alert(1)</script>' not in html
+
+
 def test_hkcert_newsletter_omits_empty_table():
     document = {
         'title': 'HKCERT Advisory',

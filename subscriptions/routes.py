@@ -26,6 +26,7 @@ from subscriptions.scheduler import (
     next_weekly_run,
     render_newsletter_statistics_html,
 )
+from subscriptions.sources import subscription_review_views
 from core.i18n import t
 
 
@@ -453,6 +454,26 @@ def get_subscription_schema():
         return jsonify(subscription_schema(get_vulnerabilities_database()))
     except PyMongoError:
         return jsonify({'error': t('Unable to load subscription configuration.')}), 503
+
+
+@subscription_blueprint.route('/api/subscriptions/collections')
+@login_required
+def get_subscription_collections():
+    try:
+        database = get_vulnerabilities_database()
+        data = []
+        for name, view in sorted(subscription_review_views(database).items()):
+            source = view.get('options', {}).get('viewOn')
+            if not source:
+                continue
+            data.append({
+                'name': name,
+                'source': source,
+                'count': database[source].count_documents({}),
+            })
+        return jsonify({'data': data})
+    except PyMongoError:
+        return jsonify({'error': t('Unable to load subscription collections.')}), 503
 
 
 @subscription_blueprint.route('/api/subscriptions/preview', methods=['POST'])

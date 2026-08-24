@@ -172,6 +172,10 @@ def _links(values):
     return links
 
 
+def _https_links(values):
+    return [link for link in _links(values) if _is_https_url(link)]
+
+
 def _cve_values(values):
     cves = []
     seen = set()
@@ -571,26 +575,61 @@ def _zeroday_source_fields(fields, document, details):
 
 
 def _zimbra_source_fields(fields, document, details):
+    fields['title'] = str(
+        document.get('title') or details.get('title') or fields.get('title') or ''
+    ).strip()
+    fields['subtitle'] = str(details.get('title') or '').strip()
     security_fixes = _values(details.get('security_fixes'))
     fixed_issues = []
-    for area, issues in (details.get('fixed_issues') or {}).items():
-        fixed_issues.extend(f'{area}: {issue}' for issue in _values(issues))
+    raw_fixed_issues = details.get('fixed_issues')
+    for area, issues in (
+        raw_fixed_issues.items() if isinstance(raw_fixed_issues, dict) else ()
+    ):
+        items = _values(issues)
+        fixed_issues.append({'category': str(area), 'items': items})
 
-    if security_fixes or fixed_issues:
-        fields['overview'] = (
-            f'{len(security_fixes)} security fix(es) and '
-            f'{len(fixed_issues)} other fix(es) are included in this patch release.'
+    raw_packages = details.get('packages')
+    packages = [
+        {'name': str(package), 'version': str(version)}
+        for package, version in (
+            raw_packages.items() if isinstance(raw_packages, dict) else ()
         )
-    fields['recommendations'] = [*security_fixes, *fixed_issues]
-    fields['affected'] = [
-        f'{package}: {version}'
-        for package, version in (details.get('packages') or {}).items()
     ]
-    fields['reference_values'] = _values([
+    references = _https_links([
         details.get('reference_links'),
         details.get('patch_installation_url'),
         details.get('open_source_repo_url'),
     ])
+    patch_installation_url = _https_links(details.get('patch_installation_url'))
+    open_source_repo_url = _https_links(details.get('open_source_repo_url'))
+
+    if security_fixes or fixed_issues:
+        fields['overview'] = (
+            f'{len(security_fixes)} security fix(es) and '
+            f'{sum(len(group["items"]) for group in fixed_issues)} other fix(es) '
+            'are included in this patch release.'
+        )
+    fields['recommendations'] = [
+        *security_fixes,
+        *[
+            f'{group["category"]}: {issue}'
+            for group in fixed_issues
+            for issue in group['items']
+        ],
+    ]
+    fields['affected'] = [
+        f'{package["name"]}: {package["version"]}'
+        for package in packages
+    ]
+    fields['reference_values'] = references
+    fields['security_fixes'] = security_fixes
+    fields['fixed_issues'] = fixed_issues
+    fields['packages'] = packages
+    fields['patch_installation_url'] = patch_installation_url[0] if patch_installation_url else ''
+    fields['open_source_repo_url'] = open_source_repo_url[0] if open_source_repo_url else ''
+    fields['reference_links'] = references
+    for name in ('product_release', 'codename', 'third_party_patch_level', 'general_availability'):
+        fields[name] = str(details.get(name) or '').strip()
 
 
 SOURCE_FIELD_OVERRIDES = {
@@ -689,8 +728,9 @@ def _source_fields(document, source_collection, details):
 def normalize_newsletter(document, source_collection):
     details = _details(document, source_collection)
     fields = _source_fields(document, source_collection, details)
-    references = _links(fields['reference_values'])
-    related_links = _links(fields['related_values'])
+    link_parser = _https_links if source_collection == 'zimbra' else _links
+    references = link_parser(fields['reference_values'])
+    related_links = link_parser(fields['related_values'])
     related_links = [link for link in related_links if link not in references]
     cves = _cve_values(_all(
         details, document, 'cve', 'cve_ids', 'cveCode', 'cve_id',
@@ -733,6 +773,24 @@ def normalize_newsletter(document, source_collection):
         'show_affected': fields['show_affected'],
         'show_recommendations': fields.get('show_recommendations', True),
     }
+    if source_collection == 'zimbra':
+        excluded_links = {
+            fields.get('patch_installation_url', ''),
+            fields.get('open_source_repo_url', ''),
+        }
+        result.update({
+            'subtitle': fields.get('subtitle', ''),
+            'security_fixes': fields.get('security_fixes', []),
+            'fixed_issues': fields.get('fixed_issues', []),
+            'packages': fields.get('packages', []),
+            'patch_installation_url': fields.get('patch_installation_url', ''),
+            'open_source_repo_url': fields.get('open_source_repo_url', ''),
+            'reference_links': [link for link in references if link not in excluded_links],
+            'product_release': fields.get('product_release', ''),
+            'codename': fields.get('codename', ''),
+            'third_party_patch_level': fields.get('third_party_patch_level', ''),
+            'general_availability': fields.get('general_availability', ''),
+        })
     if template_key == 'hkcert':
         result['table'] = _hkcert_table(details)
     return result
@@ -779,4 +837,5 @@ def _apply_template_config(newsletter, source_collection, template_config):
 def render_newsletter(document, source_collection, template_config=None):
     newsletter = normalize_newsletter(document, source_collection)
     _apply_template_config(newsletter, source_collection, template_config)
-    return render_template('newsletters/generated.html', newsletter=newsletter), newsletter
+    template = 'newsletters/zimbra.html' if source_collection == 'zimbra' else 'newsletters/generated.html'
+    return render_template(template, newsletter=newsletter), newsletter

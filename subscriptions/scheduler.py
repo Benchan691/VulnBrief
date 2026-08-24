@@ -14,9 +14,14 @@ from newsletters.normalizer import render_newsletter
 from operations.templates import get_newsletter_template_config
 from reports.progress import append_job_log
 from reports.harness import _render_job_html, run_job
-from reviews.repository import resolve_vulnerability_document, review_views
+from reviews.repository import resolve_vulnerability_document
 from subscriptions.profiles import HONG_KONG, normalize_subscription
 from subscriptions.query import query_profile_matches
+from subscriptions.sources import subscription_review_views
+
+
+# Keep this module-level name for existing integrations and test seams.
+review_views = subscription_review_views
 
 
 WEEKDAYS = {'mon': 0, 'tue': 1, 'wed': 2, 'thu': 3, 'fri': 4, 'sat': 5, 'sun': 6}

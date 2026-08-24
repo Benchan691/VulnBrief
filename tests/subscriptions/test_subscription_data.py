@@ -105,6 +105,24 @@ def test_zimbra_patch_records_are_not_excluded_by_default_severity_filter():
     assert build_match_filter(filters, source_collection='avd')['severity']['$regex'].startswith('^(?:Critical')
 
 
+def test_subscription_sources_adds_virtual_zimbra_view_for_physical_collection(monkeypatch):
+    from subscriptions.sources import subscription_review_views
+
+    class Database:
+        def list_collection_names(self):
+            return ['cve', 'zimbra']
+
+    monkeypatch.setattr(
+        'subscriptions.sources.live_review_views',
+        lambda database: {'cve_review': {'options': {'viewOn': 'cve'}}},
+    )
+
+    views = subscription_review_views(Database())
+
+    assert views['zimbra_review']['options']['viewOn'] == 'zimbra'
+    assert views['zimbra_review']['options']['pipeline'][0] == {'$project': {'_id': 1}}
+
+
 def test_parse_hong_kong_datetime_accepts_z_suffix_and_naive_local_times():
     assert parse_hong_kong_datetime('2026-06-01T08:30Z').isoformat() == '2026-06-01T16:30:00+08:00'
     assert parse_hong_kong_datetime('2026-06-01T08:30').isoformat() == '2026-06-01T08:30:00+08:00'

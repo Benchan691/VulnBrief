@@ -84,7 +84,7 @@
 <script id="page-config" type="application/json">{{ {
     'subscriptionsUrl': url_for('subscription.get_subscriptions'),
     'previewUrl': url_for('subscription.preview_subscription_report'),
-    'reviewsUrl': url_for('review.get_review_collections'),
+    'reviewsUrl': url_for('subscription.get_subscription_collections'),
     'vendorProductImportUrl': url_for('subscription.import_vendor_products'),
     'vendorProductTemplateUrl': url_for('subscription.vendor_product_template'),
 }|tojson }}</script>

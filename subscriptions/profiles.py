@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from core.database import get_web_database
-from reviews.repository import MAX_EXPORT_SELECTIONS, review_views
+from reviews.repository import MAX_EXPORT_SELECTIONS
+from subscriptions.sources import subscription_review_views
 from subscriptions.vendor_products import (
     CSV_COLUMNS,
     DEFAULT_VENDOR_PRODUCT_FILTER,
@@ -17,6 +18,10 @@ from subscriptions.vendor_products import (
     SCHEMA_VERSION as VENDOR_PRODUCT_SCHEMA_VERSION,
     validate_vendor_product_filter,
 )
+
+
+# Keep this module-level name for existing integrations and test seams.
+review_views = subscription_review_views
 
 
 SUB_ACCOUNT_COLLECTION = 'sub_account'

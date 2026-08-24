@@ -87,6 +87,7 @@ def test_subscriptions_requires_authentication(client):
     assert client.get('/api/subscriptions/vendor-product-template.csv').status_code == 401
     assert client.post('/api/subscriptions/vendor-product-import').status_code == 401
     assert client.get('/api/subscriptions/schema').status_code == 401
+    assert client.get('/api/subscriptions/collections').status_code == 401
     assert client.post('/api/subscriptions/preview', json={}).status_code == 401
 
 
@@ -115,6 +116,38 @@ def test_subscription_schema_describes_live_public_configuration(client, monkeyp
         'schedule_claim_owner', 'schedule_claim_until',
     ):
         assert internal not in serialized
+
+
+def test_subscription_collections_endpoint_includes_zimbra_without_changing_operations(client, monkeypatch):
+    authenticate(client)
+
+    class Collection:
+        def count_documents(self, query):
+            return 3
+
+    class Database:
+        def __getitem__(self, name):
+            return Collection()
+
+    monkeypatch.setattr(
+        'subscriptions.routes.get_vulnerabilities_database',
+        lambda: Database(),
+    )
+    monkeypatch.setattr(
+        'subscriptions.routes.subscription_review_views',
+        lambda database: {
+            'zimbra_review': {'options': {'viewOn': 'zimbra'}},
+        },
+    )
+
+    response = client.get('/api/subscriptions/collections')
+
+    assert response.status_code == 200
+    assert response.get_json()['data'] == [{
+        'name': 'zimbra_review',
+        'source': 'zimbra',
+        'count': 3,
+    }]
 
 
 def test_subscription_preview_normalizes_without_writing_or_sending(client, monkeypatch):

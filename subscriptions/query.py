@@ -1,7 +1,7 @@
 import re
 from datetime import datetime, timedelta, timezone
 
-from reviews.repository import MAX_EXPORT_SELECTIONS, review_views
+from reviews.repository import MAX_EXPORT_SELECTIONS
 from subscriptions.profiles import (
     HONG_KONG,
     LEGACY_KEYWORD_SEARCH_FIELDS,
@@ -12,6 +12,11 @@ from subscriptions.vendor_products import (
     build_vendor_product_candidate_clause,
     compile_vendor_product_matcher,
 )
+from subscriptions.sources import subscription_review_views
+
+
+# Keep this module-level name for existing integrations and test seams.
+review_views = subscription_review_views
 
 
 def _regex(value):

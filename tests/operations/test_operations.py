@@ -91,6 +91,15 @@ def test_latest_newsletter_templates_uses_id_when_timestamps_are_missing(monkeyp
     assert latest_newsletter_templates(database)[0]['selection_id'] == 'avd-2'
 
 
+def test_operations_template_editor_excludes_zimbra(monkeypatch):
+    database = FakeDatabase({'zimbra': [{'_id': 'zimbra:10.1.20'}]})
+    monkeypatch.setattr('operations.templates.review_views', lambda database: {
+        'zimbra_review': {'options': {'viewOn': 'zimbra'}},
+    })
+
+    assert latest_newsletter_templates(database) == []
+
+
 def test_newsletter_templates_api_returns_template_rows(monkeypatch):
     client = app.test_client()
     authenticate(client)

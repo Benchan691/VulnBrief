@@ -28,6 +28,7 @@ DEFAULT_TEMPLATE_COMMON = {
     'extra': '',
     'footer': '',
 }
+OPERATIONS_EXCLUDED_SOURCES = {'zimbra'}
 
 
 def _source_timestamp(document):
@@ -73,7 +74,7 @@ def latest_newsletter_templates(database):
     sources = {}
     for review_collection, view in review_views(database).items():
         source_collection = (view.get('options') or {}).get('viewOn')
-        if source_collection:
+        if source_collection and source_collection not in OPERATIONS_EXCLUDED_SOURCES:
             sources.setdefault(source_collection, []).append(review_collection)
 
     rows = []
