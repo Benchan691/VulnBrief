@@ -129,6 +129,26 @@ def test_every_active_source_has_a_dedicated_template():
         assert template_key_for_source(source) == source
 
 
+def test_zimbra_patch_newsletter_includes_fixes_packages_and_references():
+    normalized = normalize_newsletter({
+        'title': 'Zimbra 10.1.20 Patch Release',
+        'details': {
+            'security_fixes': ['Fixed command injection.'],
+            'fixed_issues': {'Zimbra Collaboration': ['Fixed mail redirects.']},
+            'packages': {'zimbra-patch': '10.1.20.1783418035-2'},
+            'reference_links': ['https://wiki.zimbra.com/wiki/Zimbra_Releases/10.1.20'],
+        },
+    }, 'zimbra')
+
+    assert normalized['template_key'] == 'zimbra'
+    assert normalized['recommendations'] == [
+        'Fixed command injection.',
+        'Zimbra Collaboration: Fixed mail redirects.',
+    ]
+    assert normalized['affected'] == ['zimbra-patch: 10.1.20.1783418035-2']
+    assert normalized['references'] == ['https://wiki.zimbra.com/wiki/Zimbra_Releases/10.1.20']
+
+
 def test_hkcert_newsletter_omits_empty_table():
     document = {
         'title': 'HKCERT Advisory',

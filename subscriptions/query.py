@@ -130,7 +130,7 @@ def _legacy_keyword_clause(value):
     }
 
 
-def build_match_filter(filters, now=None):
+def build_match_filter(filters, now=None, source_collection=''):
     clauses = []
     mapping = {
         'search': ('code', 'cve', 'cve_ids', 'title', 'description', 'impacts', 'affected',
@@ -160,13 +160,21 @@ def build_match_filter(filters, now=None):
         clauses.append(vendor_product_clause)
     status = filters.get('status', '')
     include_unknown = filters.get('include_unknown', False)
-    severity_clause = build_severity_filter(status, include_unknown)
-    if severity_clause:
-        clauses.append(severity_clause)
     severity_threshold_clause = build_severity_threshold_filter(
         filters.get('severity_threshold', ''),
         include_unknown,
     )
+    # Zimbra publishes release patches without a severity field. A default
+    # subscription should still receive those advisories; explicit severity
+    # filters continue to behave normally.
+    if not (
+        source_collection == 'zimbra'
+        and not _normalize_status_values(status)
+        and not (filters.get('severity_threshold') or '').strip()
+    ):
+        severity_clause = build_severity_filter(status, include_unknown)
+        if severity_clause:
+            clauses.append(severity_clause)
     if severity_threshold_clause:
         clauses.append(severity_threshold_clause)
     bounds = _window_bounds(filters, now)
@@ -259,7 +267,6 @@ def _report_scope_limit(profile, filters):
 
 def count_profile_matches_by_confidence(database, profile):
     filters, views, collection_names = _profile_collection_names(database, profile)
-    mongo_filter = build_match_filter(filters)
     inventory_filter = _inventory_filter(filters)
     inventory_matcher = (
         compile_vendor_product_matcher(inventory_filter)
@@ -274,6 +281,11 @@ def count_profile_matches_by_confidence(database, profile):
     }
     for view_name in collection_names:
         view = views[view_name]
+        source_collection = view['options']['viewOn']
+        mongo_filter = build_match_filter(
+            filters,
+            source_collection=source_collection,
+        )
         pipeline = _projection_pipeline(view)
         pipeline.append({'$match': mongo_filter})
         if inventory_filter:
@@ -346,7 +358,6 @@ def preview_profile_matches(database, profile, sample_limit):
         )
 
     matcher = compile_vendor_product_matcher(inventory_filter)
-    mongo_filter = build_match_filter(filters)
     scope_limit = _report_scope_limit(profile, filters)
     counts = {
         'count': 0,
@@ -358,6 +369,10 @@ def preview_profile_matches(database, profile, sample_limit):
     for view_name in collection_names:
         view = views[view_name]
         source_collection = view['options']['viewOn']
+        mongo_filter = build_match_filter(
+            filters,
+            source_collection=source_collection,
+        )
         pipeline = _projection_pipeline(view)
         pipeline.extend([
             {'$match': mongo_filter},
@@ -405,7 +420,10 @@ def query_profile_matches(
             compile_vendor_product_matcher(inventory_filter)
             if inventory_filter else None
         )
-        mongo_filter = build_match_filter(view_filters)
+        mongo_filter = build_match_filter(
+            view_filters,
+            source_collection=view['options']['viewOn'],
+        )
         pipeline = _projection_pipeline(view)
         pipeline.extend([
             {'$match': mongo_filter},

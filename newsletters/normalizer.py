@@ -20,7 +20,7 @@ GITHUB_ADVISORY_IMAGE_ATTRIBUTES = {'src', 'alt', 'title', 'width', 'height'}
 SOURCE_TEMPLATE_KEYS = {
     'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'fortiguard', 'github_advisory', 'govcert',
     'hikvision', 'hkcert', 'huawei_sa', 'infosec', 'juniper', 'paloalto',
-    'qianxin', 'ransomwarelive', 'splunk', 'zeroday',
+    'qianxin', 'ransomwarelive', 'splunk', 'zeroday', 'zimbra',
 }
 CHINESE_TEMPLATE_KEYS = {'cnvd', 'cnnvd', 'huawei_sa', 'qianxin'}
 ENGLISH_LABELS = {
@@ -570,6 +570,29 @@ def _zeroday_source_fields(fields, document, details):
     fields['affected'] = []
 
 
+def _zimbra_source_fields(fields, document, details):
+    security_fixes = _values(details.get('security_fixes'))
+    fixed_issues = []
+    for area, issues in (details.get('fixed_issues') or {}).items():
+        fixed_issues.extend(f'{area}: {issue}' for issue in _values(issues))
+
+    if security_fixes or fixed_issues:
+        fields['overview'] = (
+            f'{len(security_fixes)} security fix(es) and '
+            f'{len(fixed_issues)} other fix(es) are included in this patch release.'
+        )
+    fields['recommendations'] = [*security_fixes, *fixed_issues]
+    fields['affected'] = [
+        f'{package}: {version}'
+        for package, version in (details.get('packages') or {}).items()
+    ]
+    fields['reference_values'] = _values([
+        details.get('reference_links'),
+        details.get('patch_installation_url'),
+        details.get('open_source_repo_url'),
+    ])
+
+
 SOURCE_FIELD_OVERRIDES = {
     'avd': _avd_source_fields,
     'cisco': _cisco_source_fields,
@@ -588,6 +611,7 @@ SOURCE_FIELD_OVERRIDES = {
     'hikvision': _hikvision_source_fields,
     'ransomwarelive': _ransomwarelive_source_fields,
     'zeroday': _zeroday_source_fields,
+    'zimbra': _zimbra_source_fields,
 }
 SEVERITY_DOCUMENT_SOURCES = {
     'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'fortiguard', 'github_advisory', 'hikvision',

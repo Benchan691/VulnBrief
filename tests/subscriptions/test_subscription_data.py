@@ -93,6 +93,18 @@ def test_severity_filter_uses_fixed_choices_and_separate_unknown_switch():
     assert known_only['severity']['$regex'].startswith('^(?:Critical')
 
 
+def test_zimbra_patch_records_are_not_excluded_by_default_severity_filter():
+    filters = {
+        'status': [],
+        'severity_threshold': '',
+        'include_unknown': False,
+        'time_window': 'all',
+    }
+
+    assert build_match_filter(filters, source_collection='zimbra') == {}
+    assert build_match_filter(filters, source_collection='avd')['severity']['$regex'].startswith('^(?:Critical')
+
+
 def test_parse_hong_kong_datetime_accepts_z_suffix_and_naive_local_times():
     assert parse_hong_kong_datetime('2026-06-01T08:30Z').isoformat() == '2026-06-01T16:30:00+08:00'
     assert parse_hong_kong_datetime('2026-06-01T08:30').isoformat() == '2026-06-01T08:30:00+08:00'
