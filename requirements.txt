@@ -1,8 +1,6 @@
 Flask>=2.3,<4
 bcrypt>=4,<6
 bleach>=6,<7
-beautifulsoup4>=4.12
-ddddocr>=1.5
 gunicorn>=21,<24
 json-repair>=0,<1
 jsonschema>=4,<5
@@ -10,8 +8,6 @@ lxml>=5
 Markdown>=3.6,<4
 pymongo>=4,<5
 python-dotenv>=1,<2
-quickjs>=1
 requests>=2.31,<3
-playwright>=1.44
 premailer>=3.10,<4
 tzdata>=2024.1
