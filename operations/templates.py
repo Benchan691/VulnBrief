@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from newsletters.normalizer import normalize_newsletter
-from reviews.repository import review_views
+from subscriptions.sources import source_collection_for_review, subscription_review_views
 
 
 TIMESTAMP_FIELDS = ('observed_at', 'published_at', 'scraped_at')
@@ -28,7 +28,11 @@ DEFAULT_TEMPLATE_COMMON = {
     'extra': '',
     'footer': '',
 }
+# Zimbra is subscription-only; HPE is available to Operations templates too.
 OPERATIONS_EXCLUDED_SOURCES = {'zimbra'}
+
+# Keep this module-level name for existing integrations and test seams.
+review_views = subscription_review_views
 
 
 def _source_timestamp(document):
@@ -73,7 +77,7 @@ def latest_newsletter_templates(database):
     """Return one newest source record for every active review source."""
     sources = {}
     for review_collection, view in review_views(database).items():
-        source_collection = (view.get('options') or {}).get('viewOn')
+        source_collection = source_collection_for_review(review_collection, view)
         if source_collection and source_collection not in OPERATIONS_EXCLUDED_SOURCES:
             sources.setdefault(source_collection, []).append(review_collection)
 

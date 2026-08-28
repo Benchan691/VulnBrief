@@ -26,7 +26,7 @@ from subscriptions.scheduler import (
     next_weekly_run,
     render_newsletter_statistics_html,
 )
-from subscriptions.sources import subscription_review_views
+from subscriptions.sources import source_collection_for_review, subscription_review_views
 from core.i18n import t
 
 
@@ -463,7 +463,7 @@ def get_subscription_collections():
         database = get_vulnerabilities_database()
         data = []
         for name, view in sorted(subscription_review_views(database).items()):
-            source = view.get('options', {}).get('viewOn')
+            source = source_collection_for_review(name, view)
             if not source:
                 continue
             data.append({

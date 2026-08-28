@@ -17,7 +17,7 @@ from reports.harness import _render_job_html, run_job
 from reviews.repository import resolve_vulnerability_document
 from subscriptions.profiles import HONG_KONG, normalize_subscription
 from subscriptions.query import query_profile_matches
-from subscriptions.sources import subscription_review_views
+from subscriptions.sources import source_collection_for_review, subscription_review_views
 
 
 # Keep this module-level name for existing integrations and test seams.
@@ -510,7 +510,12 @@ def purge_old_data(web_database, vuln_database, now=None):
     cutoff = (now or _now()) - timedelta(days=RETENTION_DAYS)
     cutoff_iso = cutoff.isoformat()
     deleted = {'vulnerabilities': 0, 'web': 0}
-    for collection_name in {view['options']['viewOn'] for view in review_views(vuln_database).values()}:
+    for collection_name in {
+        source_collection_for_review(name, view)
+        for name, view in review_views(vuln_database).items()
+    }:
+        if not collection_name:
+            continue
         deleted['vulnerabilities'] += vuln_database[collection_name].delete_many({'observed_at': {'$lt': cutoff}}).deleted_count
     old_jobs = list(web_database['report_jobs'].find({
         'status': {'$nin': ['queued', 'running']},

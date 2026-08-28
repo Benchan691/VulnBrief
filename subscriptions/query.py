@@ -12,7 +12,7 @@ from subscriptions.vendor_products import (
     build_vendor_product_candidate_clause,
     compile_vendor_product_matcher,
 )
-from subscriptions.sources import subscription_review_views
+from subscriptions.sources import source_collection_for_review, subscription_review_views
 
 
 # Keep this module-level name for existing integrations and test seams.
@@ -286,7 +286,7 @@ def count_profile_matches_by_confidence(database, profile):
     }
     for view_name in collection_names:
         view = views[view_name]
-        source_collection = view['options']['viewOn']
+        source_collection = source_collection_for_review(view_name, view)
         mongo_filter = build_match_filter(
             filters,
             source_collection=source_collection,
@@ -295,7 +295,7 @@ def count_profile_matches_by_confidence(database, profile):
         pipeline.append({'$match': mongo_filter})
         if inventory_filter:
             pipeline.append({'$sort': {'observed_at': 1, '_id': 1}})
-            for document in database[view['options']['viewOn']].aggregate(pipeline):
+            for document in database[source_collection].aggregate(pipeline):
                 match = inventory_matcher(document)
                 if not match:
                     continue
@@ -306,7 +306,7 @@ def count_profile_matches_by_confidence(database, profile):
                     return counts
             continue
         pipeline.append({'$count': 'count'})
-        for row in database[view['options']['viewOn']].aggregate(pipeline):
+        for row in database[source_collection].aggregate(pipeline):
             count = int(row.get('count') or 0)
             if scope_limit is not None:
                 count = min(count, max(scope_limit - counts['count'], 0))
@@ -373,7 +373,7 @@ def preview_profile_matches(database, profile, sample_limit):
     samples = []
     for view_name in collection_names:
         view = views[view_name]
-        source_collection = view['options']['viewOn']
+        source_collection = source_collection_for_review(view_name, view)
         mongo_filter = build_match_filter(
             filters,
             source_collection=source_collection,
@@ -425,9 +425,10 @@ def query_profile_matches(
             compile_vendor_product_matcher(inventory_filter)
             if inventory_filter else None
         )
+        source_collection = source_collection_for_review(view_name, view)
         mongo_filter = build_match_filter(
             view_filters,
-            source_collection=view['options']['viewOn'],
+            source_collection=source_collection,
         )
         pipeline = _projection_pipeline(view)
         pipeline.extend([
@@ -439,7 +440,7 @@ def query_profile_matches(
         # a valid paired match later in the result set.
         if limit is not None and not inventory_filter:
             pipeline.append({'$limit': limit + 1})
-        for document in database[view['options']['viewOn']].aggregate(pipeline):
+        for document in database[source_collection].aggregate(pipeline):
             inventory_match = (
                 inventory_matcher(document)
                 if inventory_filter else None
@@ -449,7 +450,7 @@ def query_profile_matches(
             results.append(_selection_item(
                 document,
                 view_name,
-                view['options']['viewOn'],
+                source_collection,
                 inventory_match=inventory_match,
                 include_document=include_documents,
             ))

@@ -118,7 +118,7 @@ def test_subscription_schema_describes_live_public_configuration(client, monkeyp
         assert internal not in serialized
 
 
-def test_subscription_collections_endpoint_includes_zimbra_without_changing_operations(client, monkeypatch):
+def test_subscription_collections_endpoint_includes_optional_provider_sources(client, monkeypatch):
     authenticate(client)
 
     class Collection:
@@ -136,6 +136,7 @@ def test_subscription_collections_endpoint_includes_zimbra_without_changing_oper
     monkeypatch.setattr(
         'subscriptions.routes.subscription_review_views',
         lambda database: {
+            'hpe_review': {'options': {'viewOn': 'hpe'}},
             'zimbra_review': {'options': {'viewOn': 'zimbra'}},
         },
     )
@@ -143,11 +144,10 @@ def test_subscription_collections_endpoint_includes_zimbra_without_changing_oper
     response = client.get('/api/subscriptions/collections')
 
     assert response.status_code == 200
-    assert response.get_json()['data'] == [{
-        'name': 'zimbra_review',
-        'source': 'zimbra',
-        'count': 3,
-    }]
+    assert response.get_json()['data'] == [
+        {'name': 'hpe_review', 'source': 'hpe', 'count': 3},
+        {'name': 'zimbra_review', 'source': 'zimbra', 'count': 3},
+    ]
 
 
 def test_subscription_preview_normalizes_without_writing_or_sending(client, monkeypatch):

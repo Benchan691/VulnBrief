@@ -100,6 +100,24 @@ def test_operations_template_editor_excludes_zimbra(monkeypatch):
     assert latest_newsletter_templates(database) == []
 
 
+def test_operations_template_editor_includes_hpe_source(monkeypatch):
+    class Database(FakeDatabase):
+        def list_collection_names(self):
+            return list(self.collections)
+
+    database = Database({
+        'hpe': [{'_id': 'hpe:bulletin', 'observed_at': '2026-08-25T12:00:00+00:00'}],
+    })
+    monkeypatch.setattr('subscriptions.sources.live_review_views', lambda database: {})
+
+    assert latest_newsletter_templates(database) == [{
+        'source_collection': 'hpe',
+        'review_collections': ['hpe_review'],
+        'selection_id': 'hpe:bulletin',
+        'source_timestamp': '2026-08-25T12:00:00+00:00',
+    }]
+
+
 def test_newsletter_templates_api_returns_template_rows(monkeypatch):
     client = app.test_client()
     authenticate(client)

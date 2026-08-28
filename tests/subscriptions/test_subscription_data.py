@@ -105,12 +105,12 @@ def test_zimbra_patch_records_are_not_excluded_by_default_severity_filter():
     assert build_match_filter(filters, source_collection='avd')['severity']['$regex'].startswith('^(?:Critical')
 
 
-def test_subscription_sources_adds_virtual_zimbra_view_for_physical_collection(monkeypatch):
-    from subscriptions.sources import subscription_review_views
+def test_subscription_sources_adds_virtual_provider_views_for_physical_collections(monkeypatch):
+    from subscriptions.sources import source_collection_for_review, subscription_review_views
 
     class Database:
         def list_collection_names(self):
-            return ['cve', 'zimbra']
+            return ['cve', 'hpe', 'zimbra', 'vendor_feed']
 
     monkeypatch.setattr(
         'subscriptions.sources.live_review_views',
@@ -119,8 +119,15 @@ def test_subscription_sources_adds_virtual_zimbra_view_for_physical_collection(m
 
     views = subscription_review_views(Database())
 
-    assert views['zimbra_review']['options']['viewOn'] == 'zimbra'
-    assert views['zimbra_review']['options']['pipeline'][0] == {'$project': {'_id': 1}}
+    for review_name, source in (
+        ('hpe_review', 'hpe'),
+        ('vendor_feed_review', 'vendor_feed'),
+        ('zimbra_review', 'zimbra'),
+    ):
+        assert views[review_name]['options']['viewOn'] == source
+        assert views[review_name]['options']['pipeline'][0] == {'$project': {'_id': 1}}
+
+    assert source_collection_for_review('vendor_feed_review', {}) == 'vendor_feed'
 
 
 def test_parse_hong_kong_datetime_accepts_z_suffix_and_naive_local_times():
