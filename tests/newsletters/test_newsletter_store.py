@@ -175,6 +175,81 @@ def test_zimbra_renderer_preserves_source_sections_and_escapes_text():
     assert '<script>alert(1)</script>' not in html
 
 
+def test_hpe_renderer_extracts_bulletin_fields_and_omits_raw_dump():
+    document = {
+        'title': 'HPESBNW05125 rev.1 - HPE Networking Security Bulletin',
+        'severity': 'Critical',
+        'published_at': '2026-08-24T16:00:00Z',
+        'updated_at': '2026-08-28T09:48:11Z',
+        'source': {
+            'url': 'https://support.hpe.com/security-bulletins',
+            'detail_url': 'https://support.hpe.com/document/hpesbnw05125en_us',
+        },
+        'details': {
+            'bulletin_id': 'HPESBNW05125',
+            'doc_display_url': 'https://support.hpe.com/document/hpesbnw05125en_us',
+            'document_subtype': 'Security Bulletin',
+            'document_version': '1',
+            'potential_security_impact': 'Remote: Access Restriction Bypass',
+            'source': 'Hewlett Packard Enterprise, HPE Product Security Response Team',
+            'summary': 'HPESBNW05125 rev.1 - HPE Networking Security Bulletin',
+            'references': 'References:\nPSRT112813',
+            'supported_software_versions': 'Aruba CX 9300 Switch Series N/A\nAruba Fabric Composer N/A',
+            'background': 'BACKGROUND\nInformation on CVSS is documented in HPE Customer Notice.',
+            'resolution': 'RESOLUTION\nUpgrade the affected devices.',
+            'history': 'HISTORY\nVersion:1 (rev.1) - Initial release',
+            'cvss_text': (
+                'VULNERABILITY SUMMARY\n'
+                'A <script>alert(1)</script> issue affects HPE networking products.\n'
+                'References:\nPSRT112813\n'
+                'SUPPORTED SOFTWARE VERSIONS\nAruba CX 9300 Switch Series N/A'
+            ),
+            'reference_links': [
+                'https://www.hpe.com/info/report-security-vulnerability',
+                'http://unsafe.example/reference',
+            ],
+        },
+    }
+
+    normalized = normalize_newsletter(document, 'hpe')
+
+    assert normalized['template_key'] == 'hpe'
+    assert normalized['cvss'] == ''
+    assert normalized['bulletin_id'] == 'HPESBNW05125'
+    assert normalized['vulnerability_summary'].startswith('A <script>')
+    assert normalized['supported_versions'] == [
+        'Aruba CX 9300 Switch Series N/A',
+        'Aruba Fabric Composer N/A',
+    ]
+    assert normalized['reference_ids'] == ['PSRT112813']
+    assert normalized['references'] == [
+        'https://support.hpe.com/document/hpesbnw05125en_us',
+        'https://www.hpe.com/info/report-security-vulnerability',
+    ]
+    assert normalized['related_links'] == ['https://support.hpe.com/security-bulletins']
+
+    with app.app_context():
+        html, _ = render_newsletter(document, 'hpe', {
+            'common': {'extra': 'Extra <b>notice</b>', 'footer': 'Footer'},
+        })
+
+    assert 'Security Bulletin' in html
+    assert 'Potential Security Impact' in html
+    assert 'Supported Software Versions' in html
+    assert 'Background' in html
+    assert 'Resolution' in html
+    assert 'History' in html
+    assert html.index('Bulletin Information') < html.index('Vulnerability Summary')
+    assert html.index('Vulnerability Summary') < html.index('Supported Software Versions')
+    assert html.index('Supported Software Versions') < html.index('Background')
+    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in html
+    assert '<script>alert(1)</script>' not in html
+    assert 'unsafe.example' not in html
+    assert 'cvss_text' not in html
+    assert '<b>notice</b>' in html
+    assert 'Footer' in html
+
+
 def test_hkcert_newsletter_omits_empty_table():
     document = {
         'title': 'HKCERT Advisory',

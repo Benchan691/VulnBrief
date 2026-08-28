@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import bleach
@@ -19,7 +20,7 @@ ALLOWED_ATTRIBUTES = {
 GITHUB_ADVISORY_IMAGE_ATTRIBUTES = {'src', 'alt', 'title', 'width', 'height'}
 SOURCE_TEMPLATE_KEYS = {
     'avd', 'cisco', 'cnnvd', 'cnvd', 'cve', 'fortiguard', 'github_advisory', 'govcert',
-    'hikvision', 'hkcert', 'huawei_sa', 'infosec', 'juniper', 'paloalto',
+    'hikvision', 'hkcert', 'hpe', 'huawei_sa', 'infosec', 'juniper', 'paloalto',
     'qianxin', 'ransomwarelive', 'splunk', 'zeroday', 'zimbra',
 }
 CHINESE_TEMPLATE_KEYS = {'cnvd', 'cnnvd', 'huawei_sa', 'qianxin'}
@@ -574,6 +575,89 @@ def _zeroday_source_fields(fields, document, details):
     fields['affected'] = []
 
 
+def _hpe_lines(value):
+    lines = []
+    for item in _values(value):
+        lines.extend(str(item).splitlines())
+    return list(dict.fromkeys(
+        line.strip()
+        for line in lines
+        if line.strip()
+        and not line.strip().casefold().startswith('supported software versions')
+        and not line.strip().casefold().startswith('only impacted versions')
+    ))
+
+
+def _hpe_section_text(value, heading):
+    lines = _hpe_lines(value)
+    if lines and lines[0].casefold() == heading.casefold():
+        lines = lines[1:]
+    return '\n'.join(lines).strip()
+
+
+def _hpe_vulnerability_summary(details):
+    raw_text = str(details.get('cvss_text') or '')
+    match = re.search(
+        r'(?:^|\n)VULNERABILITY SUMMARY\s*\n(.*?)(?=\n(?:References:|SUPPORTED SOFTWARE VERSIONS))',
+        raw_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return match.group(1).strip()
+    summary = str(details.get('summary') or '').strip()
+    title = str(details.get('title') or '').strip()
+    return summary if summary and summary != title else ''
+
+
+def _hpe_date(value):
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).strftime('%Y-%m-%d')
+    return str(value or '').strip().split('T', 1)[0]
+
+
+def _hpe_source_fields(fields, document, details):
+    title = str(document.get('title') or details.get('summary') or '').strip()
+    supported_versions = _hpe_lines(
+        details.get('supported_software_versions') or details.get('supported_versions')
+    )
+    reference_ids = [
+        line for line in _hpe_lines(details.get('references'))
+        if line.casefold() != 'references:'
+    ]
+    vulnerability_summary = _hpe_vulnerability_summary(details)
+    background = _hpe_section_text(details.get('background'), 'BACKGROUND')
+    resolution = _hpe_section_text(details.get('resolution'), 'RESOLUTION')
+    history = _hpe_section_text(details.get('history'), 'HISTORY')
+    reference_links = _https_links([
+        details.get('doc_display_url'),
+        details.get('reference_links'),
+    ])
+
+    fields['title'] = title or fields['title']
+    fields['overview'] = vulnerability_summary or background or fields['overview']
+    fields['affected'] = supported_versions
+    fields['recommendations'] = [resolution] if resolution else []
+    fields['reference_values'] = reference_links
+    fields['cvss'] = ''
+    fields['hpe_vulnerability_summary'] = vulnerability_summary
+    fields['hpe_bulletin_id'] = str(details.get('bulletin_id') or '').strip()
+    fields['hpe_document_subtype'] = str(details.get('document_subtype') or '').strip()
+    fields['hpe_document_version'] = str(details.get('document_version') or '').strip()
+    fields['hpe_potential_security_impact'] = str(
+        details.get('potential_security_impact') or ''
+    ).strip()
+    fields['hpe_source'] = str(details.get('source') or '').strip()
+    fields['hpe_supported_versions'] = supported_versions
+    fields['hpe_background'] = background
+    fields['hpe_resolution'] = resolution
+    fields['hpe_history'] = history
+    fields['hpe_reference_ids'] = reference_ids
+    fields['hpe_published_at'] = _hpe_date(document.get('published_at'))
+    fields['hpe_updated_at'] = _hpe_date(document.get('updated_at'))
+
+
 def _zimbra_source_fields(fields, document, details):
     fields['title'] = str(
         document.get('title') or details.get('title') or fields.get('title') or ''
@@ -641,6 +725,7 @@ SOURCE_FIELD_OVERRIDES = {
     'fortiguard': _fortiguard_source_fields,
     'github_advisory': _github_advisory_source_fields,
     'hkcert': _hkcert_source_fields,
+    'hpe': _hpe_source_fields,
     'huawei_sa': _huawei_sa_source_fields,
     'govcert': _govcert_infosec_source_fields,
     'infosec': _govcert_infosec_source_fields,
@@ -728,7 +813,7 @@ def _source_fields(document, source_collection, details):
 def normalize_newsletter(document, source_collection):
     details = _details(document, source_collection)
     fields = _source_fields(document, source_collection, details)
-    link_parser = _https_links if source_collection == 'zimbra' else _links
+    link_parser = _https_links if source_collection in {'hpe', 'zimbra'} else _links
     references = link_parser(fields['reference_values'])
     related_links = link_parser(fields['related_values'])
     related_links = [link for link in related_links if link not in references]
@@ -736,7 +821,7 @@ def normalize_newsletter(document, source_collection):
         details, document, 'cve', 'cve_ids', 'cveCode', 'cve_id',
         'vulnerability_identifiers',
     ))
-    cvss = extract_cvss_string(document, details)
+    cvss = fields.get('cvss') if source_collection == 'hpe' else extract_cvss_string(document, details)
     template_key = template_key_for_source(source_collection)
     is_chinese = template_key in CHINESE_TEMPLATE_KEYS
     severity = fields['impacts']
@@ -791,6 +876,22 @@ def normalize_newsletter(document, source_collection):
             'third_party_patch_level': fields.get('third_party_patch_level', ''),
             'general_availability': fields.get('general_availability', ''),
         })
+    if source_collection == 'hpe':
+        result.update({
+            'vulnerability_summary': fields.get('hpe_vulnerability_summary', ''),
+            'bulletin_id': fields.get('hpe_bulletin_id', ''),
+            'document_subtype': fields.get('hpe_document_subtype', ''),
+            'document_version': fields.get('hpe_document_version', ''),
+            'potential_security_impact': fields.get('hpe_potential_security_impact', ''),
+            'source_name': fields.get('hpe_source', ''),
+            'supported_versions': fields.get('hpe_supported_versions', []),
+            'background': fields.get('hpe_background', ''),
+            'resolution': fields.get('hpe_resolution', ''),
+            'history': fields.get('hpe_history', ''),
+            'reference_ids': fields.get('hpe_reference_ids', []),
+            'published_at': fields.get('hpe_published_at', ''),
+            'updated_at': fields.get('hpe_updated_at', ''),
+        })
     if template_key == 'hkcert':
         result['table'] = _hkcert_table(details)
     return result
@@ -837,5 +938,9 @@ def _apply_template_config(newsletter, source_collection, template_config):
 def render_newsletter(document, source_collection, template_config=None):
     newsletter = normalize_newsletter(document, source_collection)
     _apply_template_config(newsletter, source_collection, template_config)
-    template = 'newsletters/zimbra.html' if source_collection == 'zimbra' else 'newsletters/generated.html'
+    template = (
+        'newsletters/zimbra.html' if source_collection == 'zimbra'
+        else 'newsletters/hpe.html' if source_collection == 'hpe'
+        else 'newsletters/generated.html'
+    )
     return render_template(template, newsletter=newsletter), newsletter
