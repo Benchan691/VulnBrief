@@ -9,7 +9,8 @@
         h2 { text-align: center; font-size: 16px; font-weight: normal; }
         h3 { margin: 22px 0 8px; }
         .template-extra { margin-bottom: 16px; }
-        .source-text { white-space: pre-line; }
+        .source-text p { margin: 0 0 12px; }
+        .source-text p:last-child { margin-bottom: 0; }
         .metadata dt { font-weight: bold; float: left; clear: left; width: 190px; }
         .metadata dd { margin-left: 200px; }
     </style>
@@ -36,7 +37,9 @@
 
     {% if newsletter.vulnerability_summary %}
     <h3>Vulnerability Summary</h3>
-    <div class="source-text">{{ newsletter.vulnerability_summary }}</div>
+    <div class="source-text">
+        {% for paragraph in newsletter.vulnerability_summary_paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+    </div>
     {% endif %}
 
     {% if newsletter.supported_versions %}
@@ -46,17 +49,23 @@
 
     {% if newsletter.background %}
     <h3>Background</h3>
-    <div class="source-text">{{ newsletter.background }}</div>
+    <div class="source-text">
+        {% for paragraph in newsletter.background_paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+    </div>
     {% endif %}
 
     {% if newsletter.resolution %}
     <h3>Resolution</h3>
-    <div class="source-text">{{ newsletter.resolution }}</div>
+    <div class="source-text">
+        {% for paragraph in newsletter.resolution_paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+    </div>
     {% endif %}
 
     {% if newsletter.history %}
     <h3>History</h3>
-    <div class="source-text">{{ newsletter.history }}</div>
+    <div class="source-text">
+        {% for paragraph in newsletter.history_paragraphs %}<p>{{ paragraph }}</p>{% endfor %}
+    </div>
     {% endif %}
 
     {% if newsletter.reference_ids %}

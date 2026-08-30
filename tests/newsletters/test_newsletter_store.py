@@ -195,12 +195,23 @@ def test_hpe_renderer_extracts_bulletin_fields_and_omits_raw_dump():
             'summary': 'HPESBNW05125 rev.1 - HPE Networking Security Bulletin',
             'references': 'References:\nPSRT112813',
             'supported_software_versions': 'Aruba CX 9300 Switch Series N/A\nAruba Fabric Composer N/A',
-            'background': 'BACKGROUND\nInformation on CVSS is documented in HPE Customer Notice.',
+            'background': (
+                'BACKGROUND\n'
+                'Information on CVSS is documented in HPE\n'
+                'Customer Notice.\n\n'
+                'A second background paragraph remains separate.'
+            ),
             'resolution': 'RESOLUTION\nUpgrade the affected devices.',
             'history': 'HISTORY\nVersion:1 (rev.1) - Initial release',
             'cvss_text': (
                 'VULNERABILITY SUMMARY\n'
-                'A <script>alert(1)</script> issue affects HPE networking products.\n'
+                'A <script>alert(1)</script> issue affects HPE networking\n'
+                'products and requires an update.\n'
+                'On September 1st, 2026 (Pacific Time) HPE Networking will be\n'
+                'publishing the related advisory.\n'
+                'These advisories will be reviewed before release.\n'
+                'HPE Networking product lines have received enhanced testing for\n'
+                'security vulnerabilities.\n'
                 'References:\nPSRT112813\n'
                 'SUPPORTED SOFTWARE VERSIONS\nAruba CX 9300 Switch Series N/A'
             ),
@@ -217,6 +228,16 @@ def test_hpe_renderer_extracts_bulletin_fields_and_omits_raw_dump():
     assert normalized['cvss'] == ''
     assert normalized['bulletin_id'] == 'HPESBNW05125'
     assert normalized['vulnerability_summary'].startswith('A <script>')
+    assert normalized['vulnerability_summary_paragraphs'] == [
+        'A <script>alert(1)</script> issue affects HPE networking products and requires an update.',
+        'On September 1st, 2026 (Pacific Time) HPE Networking will be publishing the related advisory.',
+        'These advisories will be reviewed before release.',
+        'HPE Networking product lines have received enhanced testing for security vulnerabilities.',
+    ]
+    assert normalized['background_paragraphs'] == [
+        'Information on CVSS is documented in HPE Customer Notice.',
+        'A second background paragraph remains separate.',
+    ]
     assert normalized['supported_versions'] == [
         'Aruba CX 9300 Switch Series N/A',
         'Aruba Fabric Composer N/A',
@@ -242,12 +263,36 @@ def test_hpe_renderer_extracts_bulletin_fields_and_omits_raw_dump():
     assert html.index('Bulletin Information') < html.index('Vulnerability Summary')
     assert html.index('Vulnerability Summary') < html.index('Supported Software Versions')
     assert html.index('Supported Software Versions') < html.index('Background')
+    assert html.index('products and requires an update.') < html.index('On September 1st')
+    assert html.index('On September 1st') < html.index('These advisories will')
+    assert html.index('These advisories will') < html.index('HPE Networking product lines')
+    assert 'white-space: pre-line' not in html
+    assert 'max-width' not in html
     assert '&lt;script&gt;alert(1)&lt;/script&gt;' in html
     assert '<script>alert(1)</script>' not in html
     assert 'unsafe.example' not in html
     assert 'cvss_text' not in html
     assert '<b>notice</b>' in html
     assert 'Footer' in html
+
+
+def test_hpe_renderer_omits_empty_source_sections():
+    document = {
+        'title': 'HPE Advisory',
+        'details': {
+            'cvss_text': 'VULNERABILITY SUMMARY\nOnly the summary is available.',
+        },
+    }
+
+    with app.app_context():
+        html, normalized = render_newsletter(document, 'hpe')
+
+    assert normalized['vulnerability_summary_paragraphs'] == ['Only the summary is available.']
+    for section in (
+        'Supported Software Versions', 'Background', 'Resolution', 'History',
+        'References', 'Reference Links',
+    ):
+        assert section not in html
 
 
 def test_hkcert_newsletter_omits_empty_table():

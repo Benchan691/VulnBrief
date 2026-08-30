@@ -588,17 +588,56 @@ def _hpe_lines(value):
     ))
 
 
+def _hpe_text(value):
+    lines = []
+    for item in _values(value):
+        lines.extend(str(item).replace('\r\n', '\n').replace('\r', '\n').split('\n'))
+    return '\n'.join(line.strip() for line in lines).strip()
+
+
 def _hpe_section_text(value, heading):
-    lines = _hpe_lines(value)
-    if lines and lines[0].casefold() == heading.casefold():
+    lines = _hpe_text(value).splitlines()
+    if lines and lines[0].strip().casefold() == heading.casefold():
         lines = lines[1:]
     return '\n'.join(lines).strip()
+
+
+def _hpe_summary_paragraph_start(line):
+    normalized = line.casefold()
+    return (
+        (normalized.startswith('on ') and 'pacific time)' in normalized)
+        or normalized.startswith('these advisories will')
+        or normalized.startswith('hpe networking product lines')
+    )
+
+
+def _hpe_paragraphs(value, *, summary=False):
+    raw_text = _hpe_text(value)
+    if not raw_text:
+        return []
+
+    paragraphs = []
+    for block in re.split(r'\n\s*\n+', raw_text):
+        current = []
+        for line in block.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # ponytail: these fixed HPE source markers cover the current extractor format;
+            # use source paragraph metadata if HPE exposes it later.
+            if summary and current and _hpe_summary_paragraph_start(line):
+                paragraphs.append(' '.join(current))
+                current = []
+            current.append(line)
+        if current:
+            paragraphs.append(' '.join(current))
+    return paragraphs
 
 
 def _hpe_vulnerability_summary(details):
     raw_text = str(details.get('cvss_text') or '')
     match = re.search(
-        r'(?:^|\n)VULNERABILITY SUMMARY\s*\n(.*?)(?=\n(?:References:|SUPPORTED SOFTWARE VERSIONS))',
+        r'(?:^|\n)VULNERABILITY SUMMARY\s*\n(.*?)(?=\n(?:References:|SUPPORTED SOFTWARE VERSIONS)|\Z)',
         raw_text,
         re.IGNORECASE | re.DOTALL,
     )
@@ -630,6 +669,10 @@ def _hpe_source_fields(fields, document, details):
     background = _hpe_section_text(details.get('background'), 'BACKGROUND')
     resolution = _hpe_section_text(details.get('resolution'), 'RESOLUTION')
     history = _hpe_section_text(details.get('history'), 'HISTORY')
+    vulnerability_summary_paragraphs = _hpe_paragraphs(vulnerability_summary, summary=True)
+    background_paragraphs = _hpe_paragraphs(background)
+    resolution_paragraphs = _hpe_paragraphs(resolution)
+    history_paragraphs = _hpe_paragraphs(history)
     reference_links = _https_links([
         details.get('doc_display_url'),
         details.get('reference_links'),
@@ -642,6 +685,7 @@ def _hpe_source_fields(fields, document, details):
     fields['reference_values'] = reference_links
     fields['cvss'] = ''
     fields['hpe_vulnerability_summary'] = vulnerability_summary
+    fields['hpe_vulnerability_summary_paragraphs'] = vulnerability_summary_paragraphs
     fields['hpe_bulletin_id'] = str(details.get('bulletin_id') or '').strip()
     fields['hpe_document_subtype'] = str(details.get('document_subtype') or '').strip()
     fields['hpe_document_version'] = str(details.get('document_version') or '').strip()
@@ -651,8 +695,11 @@ def _hpe_source_fields(fields, document, details):
     fields['hpe_source'] = str(details.get('source') or '').strip()
     fields['hpe_supported_versions'] = supported_versions
     fields['hpe_background'] = background
+    fields['hpe_background_paragraphs'] = background_paragraphs
     fields['hpe_resolution'] = resolution
+    fields['hpe_resolution_paragraphs'] = resolution_paragraphs
     fields['hpe_history'] = history
+    fields['hpe_history_paragraphs'] = history_paragraphs
     fields['hpe_reference_ids'] = reference_ids
     fields['hpe_published_at'] = _hpe_date(document.get('published_at'))
     fields['hpe_updated_at'] = _hpe_date(document.get('updated_at'))
@@ -879,6 +926,9 @@ def normalize_newsletter(document, source_collection):
     if source_collection == 'hpe':
         result.update({
             'vulnerability_summary': fields.get('hpe_vulnerability_summary', ''),
+            'vulnerability_summary_paragraphs': fields.get(
+                'hpe_vulnerability_summary_paragraphs', []
+            ),
             'bulletin_id': fields.get('hpe_bulletin_id', ''),
             'document_subtype': fields.get('hpe_document_subtype', ''),
             'document_version': fields.get('hpe_document_version', ''),
@@ -886,8 +936,11 @@ def normalize_newsletter(document, source_collection):
             'source_name': fields.get('hpe_source', ''),
             'supported_versions': fields.get('hpe_supported_versions', []),
             'background': fields.get('hpe_background', ''),
+            'background_paragraphs': fields.get('hpe_background_paragraphs', []),
             'resolution': fields.get('hpe_resolution', ''),
+            'resolution_paragraphs': fields.get('hpe_resolution_paragraphs', []),
             'history': fields.get('hpe_history', ''),
+            'history_paragraphs': fields.get('hpe_history_paragraphs', []),
             'reference_ids': fields.get('hpe_reference_ids', []),
             'published_at': fields.get('hpe_published_at', ''),
             'updated_at': fields.get('hpe_updated_at', ''),
