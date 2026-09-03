@@ -5,6 +5,7 @@
         reviewsUrl,
         vendorProductImportUrl,
         vendorProductTemplateUrl,
+        isAdmin,
     } = JSON.parse(document.getElementById('page-config').textContent);
     const modal = new bootstrap.Modal(document.getElementById('subscription-modal'));
     const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionMeansAll: true});
@@ -555,7 +556,7 @@
         document.getElementById('modal-title').textContent = subscription ? t('Edit Subscription') : t('Add Subscription');
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
-        if (pageConfig.isAdmin) {
+        if (isAdmin) {
             document.getElementById('password').value = '';
             document.getElementById('password-help').textContent = subscription
                 ? t('Leave blank to keep the current password.')
@@ -699,8 +700,8 @@
             return;
         }
         showModalMessage('', '');
-        const password = pageConfig.isAdmin ? document.getElementById('password').value : '';
-        if (pageConfig.isAdmin && !editingEmail && !password) {
+        const password = isAdmin ? document.getElementById('password').value : '';
+        if (isAdmin && !editingEmail && !password) {
             showModalMessage(t('Password is required.'), 'danger');
             return;
         }
@@ -711,7 +712,7 @@
                 statistic_schedule_enabled:document.getElementById('newsletter-statistic-schedule-enabled').checked
             },
             report_profile: buildReportProfilePayload().report_profile };
-        if (pageConfig.isAdmin) payload.password = password;
+        if (isAdmin) payload.password = password;
         requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load();}).catch(function(e){showModalMessage(e.message,'danger');});
     };
     requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});
