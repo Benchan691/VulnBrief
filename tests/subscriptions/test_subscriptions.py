@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from app import app
 from subscriptions.profiles import SUB_ACCOUNT_COLLECTION
 from core.database import get_web_database
+from tests.auth_helpers import authenticate
 
 
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')
@@ -36,11 +37,6 @@ def client(monkeypatch):
     yield client
     with app.app_context():
         get_web_database()[SUB_ACCOUNT_COLLECTION].delete_many({'email': TEST_EMAIL})
-
-
-def authenticate(client):
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
 
 
 def _mock_run_database(monkeypatch, documents_by_source):
@@ -194,6 +190,7 @@ def test_subscription_preview_update_preserves_existing_profiles_without_writing
     created = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'newsletter_profile': {'enabled': True, 'filters': {'collections': ['cve_review']}},
         'report_profile': {'enabled': True, 'filters': {'collections': ['cve_review']}},
     })
@@ -251,6 +248,7 @@ def test_subscriptions_crud_validates_review_views(client):
     invalid = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd'],
     })
     assert invalid.status_code == 400
@@ -258,6 +256,7 @@ def test_subscriptions_crud_validates_review_views(client):
     created = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review', 'hkcert_review'],
     })
     assert created.status_code == 201
@@ -305,6 +304,7 @@ def test_new_subscription_sends_confirmation_email(client, monkeypatch):
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'newsletter_profile': {
             'enabled': True,
             'filters': {'collections': ['avd_review'], 'keywords': ['Apache']},
@@ -333,6 +333,7 @@ def test_subscription_update_sends_branded_change_notification(client, monkeypat
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review'],
     }).status_code == 201
     sent = {}
@@ -379,6 +380,7 @@ def test_subscription_edit_preserves_hidden_cve_delivery_cutoff(client):
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'newsletter_profile': {
             'enabled': True,
             'filters': {'collections': ['cve_review']},
@@ -413,6 +415,7 @@ def test_unchanged_subscription_update_does_not_send_email(client, monkeypatch):
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review'],
     }).status_code == 201
     sent = []
@@ -504,6 +507,7 @@ def test_subscription_cancellation_sends_branded_confirmation(client, monkeypatc
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review'],
     }).status_code == 201
     sent = {}
@@ -539,6 +543,7 @@ def test_update_and_cancellation_keep_changes_when_notification_email_fails(clie
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review'],
     }).status_code == 201
 
@@ -590,6 +595,7 @@ def test_new_subscription_keeps_record_when_confirmation_email_fails(client, mon
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review'],
     })
 
@@ -729,6 +735,7 @@ def test_subscriptions_run_daily_window_selects_matching_source_documents(client
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review', 'hkcert_review'],
     }).status_code == 201
 
@@ -749,6 +756,7 @@ def test_subscriptions_run_week_window(client, monkeypatch):
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review'],
     }).status_code == 201
 
@@ -763,6 +771,7 @@ def test_subscriptions_run_custom_window(client, monkeypatch):
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': ['avd_review'],
     }).status_code == 201
 
@@ -781,6 +790,7 @@ def test_subscriptions_run_rejects_invalid_window_and_handles_database_failure(c
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'subscriptions': [],
     }).status_code == 201
 
@@ -804,6 +814,7 @@ def test_disabled_report_profile_cannot_run(client):
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'report_profile': {'enabled': False, 'filters': {}},
     }).status_code == 201
 
@@ -817,6 +828,7 @@ def test_send_subscription_statistic_emails_delivery_counts(client, monkeypatch)
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'newsletter_profile': {'enabled': True, 'filters': {'collections': ['avd_review']}},
         'report_profile': {'enabled': True},
     }).status_code == 201
@@ -894,6 +906,7 @@ def test_send_subscription_statistic_requires_newsletter_enabled(client):
     assert client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'newsletter_profile': {'enabled': False},
         'report_profile': {'enabled': True},
     }).status_code == 201
@@ -908,6 +921,7 @@ def test_subscription_rejects_invalid_severity_choice(client):
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'report_profile': {
             'enabled': True,
             'filters': {'status': 'Urgent'},
@@ -963,6 +977,7 @@ def test_report_profile_accepts_schedule_and_vendor_product_inventory(client):
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'report_profile': {
             'enabled': True,
             'generation_mode': 'enriched_weekly',
@@ -997,6 +1012,7 @@ def test_newsletter_profile_accepts_monthly_statistic_schedule(client):
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'newsletter_profile': {
             'enabled': True,
             'statistic_schedule_enabled': True,
@@ -1027,6 +1043,7 @@ def test_newsletter_profile_accepts_vendor_product_inventory(client):
     response = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'newsletter_profile': {
             'enabled': True,
             'filters': {
@@ -1073,6 +1090,7 @@ def test_report_profile_rejects_invalid_schedule_and_legacy_keywords(client):
     bad_schedule = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'report_profile': {'schedule_enabled': True, 'schedule_weekday': 'funday'},
     })
     assert bad_schedule.status_code == 400
@@ -1080,6 +1098,7 @@ def test_report_profile_rejects_invalid_schedule_and_legacy_keywords(client):
     bad_keywords = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
         'team': 'Test',
+        'password': 'subscriber-password',
         'report_profile': {'filters': {'keywords': ['redhat']}},
     })
     assert bad_keywords.status_code == 400

@@ -17,9 +17,22 @@ def register_template_filters(application):
 
     @application.context_processor
     def inject_i18n():
+        from core.auth import current_user
+
         locale = get_locale()
+        try:
+            user = current_user()
+        except RuntimeError:
+            user = None
         return {
             'locale': locale,
             'html_lang': html_lang(locale),
             'i18n_catalog': catalog(locale),
+            'current_user': {
+                'username': user.get('username') or '',
+                'email': user.get('email') or '',
+                'role': user.get('role') or 'user',
+                'must_change_password': bool(user.get('must_change_password')),
+            } if user else None,
+            'is_admin': bool(user and user.get('role') == 'admin'),
         }

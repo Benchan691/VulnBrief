@@ -639,8 +639,8 @@ def test_nested_source_fields_populate_generic_newsletters():
 
 def test_generated_newsletter_preview_route_renders_latest_source(monkeypatch):
     client = app.test_client()
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
+    from tests.auth_helpers import authenticate
+    authenticate(client)
     source = {
         '_id': 'avd:live',
         'title': 'Latest source title',
@@ -658,8 +658,8 @@ def test_generated_newsletter_preview_route_renders_latest_source(monkeypatch):
 
 def test_generated_newsletter_preview_route_returns_404_when_source_missing(monkeypatch):
     client = app.test_client()
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
+    from tests.auth_helpers import authenticate
+    authenticate(client)
     monkeypatch.setattr('newsletters.routes.get_vulnerabilities_database', lambda: object())
     monkeypatch.setattr(
         'newsletters.routes.resolve_vulnerability_document',

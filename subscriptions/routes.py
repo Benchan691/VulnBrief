@@ -4,7 +4,13 @@ from datetime import datetime, timezone
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from core.auth import login_required
+from auth.store import (
+    MAX_PASSWORD_LENGTH,
+    ensure_subscription_user,
+    normalize_login,
+    validate_password,
+)
+from core.auth import admin_required, current_user, is_admin, login_required
 from core.database import get_vulnerabilities_database
 from integrations.email import Mailer
 from reviews.scoring import rank_scored_selections, score_review_document
@@ -53,6 +59,20 @@ def get_collection():
     return get_sub_account_collection()
 
 
+def _subscription_query(email=None):
+    if is_admin():
+        return {} if email is None else {'email': email}
+    user = current_user()
+    own_email = normalize_login(user.get('email')) if user else ''
+    if email is not None and normalize_login(email).casefold() != own_email.casefold():
+        return None
+    return {'email': own_email} if own_email else {'_id': None}
+
+
+def _subscription_access_denied():
+    return jsonify({'error': t('You can only manage your own subscription.')}), 403
+
+
 SCHEDULE_FIELD_UNSET = {
     'schedule_claim_owner': '',
     'schedule_claim_until': '',
@@ -65,6 +85,8 @@ TOP_LEVEL_SCHEDULE_FIELD_UNSET = {
 def _public_subscription(database, document):
     normalized = normalize_subscription(database, document)
     normalized.pop('_id', None)
+    normalized.pop('password', None)
+    normalized.pop('password_hash', None)
     normalized.pop('schedule_claim_until', None)
     normalized.pop('schedule_claim_owner', None)
     normalized.pop('statistic_schedule_claim_until', None)
@@ -441,7 +463,10 @@ def import_vendor_products():
 def get_subscriptions():
     try:
         database = get_vulnerabilities_database()
-        data = [_public_subscription(database, item) for item in get_collection().find({})]
+        data = [
+            _public_subscription(database, item)
+            for item in get_collection().find(_subscription_query())
+        ]
         return jsonify({'data': data})
     except (PyMongoError, ValueError):
         return jsonify({'error': t('Unable to load subscriptions.')}), 503
@@ -482,6 +507,12 @@ def preview_subscription_configuration():
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({'error': 'Subscription preview must be an object.'}), 400
+    if data.get('mode') == 'create' and not is_admin():
+        return _subscription_access_denied()
+    if data.get('mode') == 'update':
+        requested_email = data.get('email') or data.get('target_email') or ''
+        if _subscription_query(requested_email) is None:
+            return _subscription_access_denied()
     try:
         database = get_vulnerabilities_database()
         newsletter_profile, report_profile, warnings, applied_defaults, email = _preview_profiles(
@@ -512,13 +543,20 @@ def preview_subscription_configuration():
 
 
 @subscription_blueprint.route('/api/subscriptions', methods=['POST'])
-@login_required
+@admin_required
 def add_subscription():
     data = request.get_json(silent=True) or {}
     email = (data.get('email') or '').strip()
     team = (data.get('team') or '').strip()
     if not email or not team:
         return jsonify({'error': t('Email and team are required.')}), 400
+    password = data.get('password')
+    if not isinstance(password, str) or not password:
+        return jsonify({'error': t('Password is required.')}), 400
+    try:
+        validate_password(password)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     try:
         database = get_vulnerabilities_database()
         newsletter_value = data.get('newsletter_profile')
@@ -537,6 +575,7 @@ def add_subscription():
         report_profile = _with_next_run(report_profile)
         if get_collection().find_one({'email': email}):
             return jsonify({'error': t('A subscription already exists for this email.')}), 409
+        ensure_subscription_user(email, password)
         now = datetime.now(timezone.utc)
         get_collection().insert_one({
             'email': email,
@@ -579,9 +618,24 @@ def add_subscription():
 @login_required
 def edit_subscription(email):
     data = request.get_json(silent=True) or {}
+    query = _subscription_query(email)
+    if query is None:
+        return _subscription_access_denied()
+    password = data.get('password')
+    if password is not None and not is_admin():
+        return jsonify({'error': t('Only an administrator can reset user passwords.')}), 403
+    if password is not None and password != '' and (
+        not isinstance(password, str) or len(password) > MAX_PASSWORD_LENGTH
+    ):
+        return jsonify({'error': f'Password must be {MAX_PASSWORD_LENGTH} characters or fewer.'}), 400
+    if isinstance(password, str) and password:
+        try:
+            validate_password(password)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     try:
         database = get_vulnerabilities_database()
-        existing = get_collection().find_one({'email': email})
+        existing = get_collection().find_one(query)
         if existing is None:
             return jsonify({'error': t('Subscription not found.')}), 404
         current = normalize_subscription(database, existing)
@@ -645,9 +699,11 @@ def edit_subscription(email):
         if team != current.get('team', ''):
             update['team'] = team
         get_collection().update_one(
-            {'email': email},
+            query,
             {'$set': update, '$unset': {'subscriptions': '', **TOP_LEVEL_SCHEDULE_FIELD_UNSET}},
         )
+        if isinstance(password, str) and password:
+            ensure_subscription_user(email, password)
         if changes:
             try:
                 with Mailer(current_app.config) as mailer:
@@ -677,13 +733,16 @@ def edit_subscription(email):
 @subscription_blueprint.route('/api/subscriptions/<path:email>', methods=['DELETE'])
 @login_required
 def remove_subscription(email):
+    query = _subscription_query(email)
+    if query is None:
+        return _subscription_access_denied()
     try:
         database = get_vulnerabilities_database()
-        raw = get_collection().find_one({'email': email})
+        raw = get_collection().find_one(query)
         if raw is None:
             return jsonify({'error': t('Subscription not found.')}), 404
         subscription = normalize_subscription(database, raw)
-        result = get_collection().delete_one({'email': email})
+        result = get_collection().delete_one(query)
         if not result.deleted_count:
             return jsonify({'error': t('Subscription not found.')}), 404
         try:
@@ -708,9 +767,12 @@ def remove_subscription(email):
 @login_required
 def run_subscription(email):
     data = request.get_json(silent=True) or {}
+    query = _subscription_query(email)
+    if query is None:
+        return _subscription_access_denied()
     try:
         database = get_vulnerabilities_database()
-        raw = get_collection().find_one({'email': email})
+        raw = get_collection().find_one(query)
         if raw is None:
             return jsonify({'error': t('Subscription not found.')}), 404
         subscription = normalize_subscription(database, raw)
@@ -741,6 +803,13 @@ def run_subscription(email):
 @login_required
 def preview_subscription_report():
     data = request.get_json(silent=True) or {}
+    if not is_admin():
+        requested_email = data.get('email') if isinstance(data, dict) else ''
+        query = _subscription_query(requested_email)
+        if query is None:
+            return _subscription_access_denied()
+        if get_collection().find_one(query) is None:
+            return jsonify({'error': t('Subscription not found.')}), 404
     try:
         database = get_vulnerabilities_database()
         profile = validate_profile(database, data.get('report_profile'), 'report')
@@ -765,9 +834,12 @@ def preview_subscription_report():
 @subscription_blueprint.route('/api/subscriptions/<path:email>/send-statistic', methods=['POST'])
 @login_required
 def send_subscription_statistic(email):
+    query = _subscription_query(email)
+    if query is None:
+        return _subscription_access_denied()
     try:
         database = get_vulnerabilities_database()
-        raw = get_collection().find_one({'email': email})
+        raw = get_collection().find_one(query)
         if raw is None:
             return jsonify({'error': t('Subscription not found.')}), 404
         subscription = normalize_subscription(database, raw)

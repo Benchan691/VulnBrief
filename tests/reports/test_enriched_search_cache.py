@@ -268,8 +268,8 @@ def test_execute_pending_search_tasks_does_not_compress_tavily_page_content():
 
 
 def test_purge_search_cache_route(client, monkeypatch):
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
+    from tests.auth_helpers import authenticate
+    authenticate(client)
 
     cache = FakeSearchCacheCollection()
     database = FakeDatabase({'search_enrichment_cache': cache})

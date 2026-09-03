@@ -480,6 +480,7 @@
     }
     function buildReportProfilePayload() {
         const payload = {
+            email: editingEmail || document.getElementById('email').value,
             report_profile: {
                 enabled: document.getElementById('report-enabled').checked,
                 filters: readFilters('report'),
@@ -554,6 +555,12 @@
         document.getElementById('modal-title').textContent = subscription ? t('Edit Subscription') : t('Add Subscription');
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
+        if (pageConfig.isAdmin) {
+            document.getElementById('password').value = '';
+            document.getElementById('password-help').textContent = subscription
+                ? t('Leave blank to keep the current password.')
+                : t('Required when creating a subscription.');
+        }
         const newsletter = subscription ? subscription.newsletter_profile : {enabled:false,filters:{}};
         const report = subscription ? subscription.report_profile : {enabled:false,filters:{},generation_mode:'template',report_language:'en'};
         document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters);
@@ -664,7 +671,8 @@
         input.addEventListener('change', scheduleReportPreview);
     });
     document.getElementById('report-include-unknown').addEventListener('change', scheduleReportPreview);
-    document.getElementById('add-btn').onclick = function () { openEditor(null); };
+    const addButton = document.getElementById('add-btn');
+    if (addButton) addButton.onclick = function () { openEditor(null); };
     document.getElementById('newsletter-enabled').addEventListener('change', updateNewsletterSendStatisticVisibility);
     document.getElementById('newsletter-send-statistic').addEventListener('click', function () {
         if (!editingEmail || document.getElementById('newsletter-send-statistic').disabled) return;
@@ -691,6 +699,11 @@
             return;
         }
         showModalMessage('', '');
+        const password = pageConfig.isAdmin ? document.getElementById('password').value : '';
+        if (pageConfig.isAdmin && !editingEmail && !password) {
+            showModalMessage(t('Password is required.'), 'danger');
+            return;
+        }
         const payload = { email:document.getElementById('email').value, team:document.getElementById('team').value,
             newsletter_profile:{
                 enabled:document.getElementById('newsletter-enabled').checked,
@@ -698,6 +711,7 @@
                 statistic_schedule_enabled:document.getElementById('newsletter-statistic-schedule-enabled').checked
             },
             report_profile: buildReportProfilePayload().report_profile };
+        if (pageConfig.isAdmin) payload.password = password;
         requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load();}).catch(function(e){showModalMessage(e.message,'danger');});
     };
     requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});

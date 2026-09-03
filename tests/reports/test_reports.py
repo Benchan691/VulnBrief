@@ -25,6 +25,7 @@ from reports.harness import (
     run_template_job,
 )
 from jsonschema import validate
+from tests.auth_helpers import authenticate
 
 
 @pytest.fixture()
@@ -42,11 +43,6 @@ def client():
         get_web_database()['report_job_inputs'].delete_many({})
         get_web_database()['report_job_results'].delete_many({})
         get_web_database()['report_worker_locks'].delete_many({})
-
-
-def authenticate(client):
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
 
 
 def sample_document(index=1):

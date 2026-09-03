@@ -6,17 +6,13 @@ from bson import json_util
 from pymongo.errors import ServerSelectionTimeoutError
 
 from app import app
+from tests.auth_helpers import authenticate
 
 
 @pytest.fixture()
 def client():
     app.config.update(TESTING=True)
     return app.test_client()
-
-
-def authenticate(client):
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
 
 
 def _nested_value(document, field):

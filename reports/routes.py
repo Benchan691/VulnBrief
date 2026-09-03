@@ -3,7 +3,7 @@ from bson import ObjectId, json_util
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from core.auth import login_required
+from core.auth import admin_required
 from core.database import get_web_database
 from reports.enriched.evidence_cache import purge_evidence_cache
 from reports.enriched.search_results_cache import purge_search_cache
@@ -80,13 +80,13 @@ def _get_job(job_id):
 
 
 @report_blueprint.route('/reports')
-@login_required
+@admin_required
 def reports():
     return render_template('reports/index.html')
 
 
 @report_blueprint.route('/api/reports')
-@login_required
+@admin_required
 def get_report_jobs():
     try:
         jobs = _jobs().find({}).sort('created_at', -1).limit(100)
@@ -96,7 +96,7 @@ def get_report_jobs():
 
 
 @report_blueprint.route('/api/reports', methods=['POST'])
-@login_required
+@admin_required
 def create_report_job():
     data = request.get_json(silent=True) or {}
     if request.files.get('json_file'):
@@ -140,7 +140,7 @@ def create_report_job():
 
 
 @report_blueprint.route('/api/reports/evidence-cache/purge', methods=['POST'])
-@login_required
+@admin_required
 def purge_report_evidence_cache():
     try:
         deleted_count = purge_evidence_cache(get_web_database())
@@ -150,7 +150,7 @@ def purge_report_evidence_cache():
 
 
 @report_blueprint.route('/api/reports/search-cache/purge', methods=['POST'])
-@login_required
+@admin_required
 def purge_report_search_cache():
     try:
         deleted_count = purge_search_cache(get_web_database())
@@ -160,7 +160,7 @@ def purge_report_search_cache():
 
 
 @report_blueprint.route('/api/reports/<job_id>/cancel', methods=['POST'])
-@login_required
+@admin_required
 def cancel_report_job(job_id):
     try:
         cancel_job(job_id)
@@ -172,7 +172,7 @@ def cancel_report_job(job_id):
 
 
 @report_blueprint.route('/api/reports/<job_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def delete_report_job(job_id):
     try:
         delete_job(job_id)
@@ -185,7 +185,7 @@ def delete_report_job(job_id):
 
 
 @report_blueprint.route('/api/reports/<job_id>/logs')
-@login_required
+@admin_required
 def get_report_job_logs(job_id):
     try:
         job = _get_job(job_id)
@@ -198,7 +198,7 @@ def get_report_job_logs(job_id):
 
 
 @report_blueprint.route('/api/reports/<job_id>/translations', methods=['POST'])
-@login_required
+@admin_required
 def translate_report_job(job_id):
     data = request.get_json(silent=True) or {}
     language = data.get('language')
@@ -216,7 +216,7 @@ def translate_report_job(job_id):
 
 
 @report_blueprint.route('/api/reports/<job_id>')
-@login_required
+@admin_required
 def get_report_job(job_id):
     try:
         job = _get_job(job_id)
@@ -285,12 +285,12 @@ def _send_job_html(job_id, as_attachment):
 
 
 @report_blueprint.route('/reports/<job_id>/preview')
-@login_required
+@admin_required
 def preview_report(job_id):
     return _send_job_html(job_id, False)
 
 
 @report_blueprint.route('/reports/<job_id>/download')
-@login_required
+@admin_required
 def download_report(job_id):
     return _send_job_html(job_id, True)

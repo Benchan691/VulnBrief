@@ -22,6 +22,9 @@
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="templates-tab" data-bs-toggle="tab" data-bs-target="#templates-panel" type="button" role="tab" aria-controls="templates-panel" aria-selected="false">{{ t('Email Templates') }}</button>
         </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="source-list-tab" data-bs-toggle="tab" data-bs-target="#source-list-panel" type="button" role="tab" aria-controls="source-list-panel" aria-selected="false">{{ t('Source List') }}</button>
+        </li>
     </ul>
 
     <div class="tab-content">
@@ -85,6 +88,25 @@
             </table>
         </div>
         <div id="deliveries-empty" class="text-center text-muted py-4 d-none">{{ t('No recent newsletter deliveries.') }}</div>
+        </div>
+    </section>
+
+    <section class="tab-pane fade" id="source-list-panel" role="tabpanel" aria-labelledby="source-list-tab">
+        <div class="mb-4">
+            <h2 class="h5 mb-1">{{ t('Source URLs') }}</h2>
+            <p class="text-muted mb-0">{{ t('Distinct source links found in active vulnerability collections.') }}</p>
+        </div>
+        <div id="source-list-loading" class="text-center text-muted py-5 d-none">{{ t('Loading source URLs...') }}</div>
+        <div class="card shadow-sm border-0 overflow-hidden">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-dark">
+                        <tr><th>{{ t('Collection') }}</th><th>{{ t('Source URL') }}</th></tr>
+                    </thead>
+                    <tbody id="source-list-rows"></tbody>
+                </table>
+            </div>
+            <div id="source-list-empty" class="text-center text-muted py-5 d-none">{{ t('No source URLs found.') }}</div>
         </div>
     </section>
 
@@ -200,6 +222,7 @@
     'templatesUrl': url_for('operations.get_newsletter_templates'),
     'editorUrl': url_for('operations.get_newsletter_editor'),
     'editorPreviewUrl': url_for('operations.preview_newsletter_editor'),
+    'sourceListUrl': url_for('operations.get_source_list'),
 } | tojson }}</script>
 <script src="{{ url_for('static', filename='js/operations/index.js') }}"></script>
 {% endblock %}

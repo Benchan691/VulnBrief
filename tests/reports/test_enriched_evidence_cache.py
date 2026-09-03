@@ -606,8 +606,8 @@ def test_extract_evidence_cards_caches_complementary_partial_sources():
 
 
 def test_purge_evidence_cache_route(client, monkeypatch):
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
+    from tests.auth_helpers import authenticate
+    authenticate(client)
 
     cache = FakeCacheCollection()
     database = FakeDatabase({'source_evidence_cache': cache})

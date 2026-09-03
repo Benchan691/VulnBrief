@@ -6,7 +6,7 @@ from bson import json_util
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
 from pymongo.errors import PyMongoError
 
-from core.auth import login_required
+from core.auth import admin_required
 from core.database import get_vulnerabilities_database
 from reviews.query import (
     RELATED_CVE_LIMIT_PER_COLLECTION,
@@ -41,13 +41,13 @@ review_blueprint = Blueprint('review', __name__)
 
 
 @review_blueprint.route('/reviews')
-@login_required
+@admin_required
 def reviews():
     return render_template('reviews/index.html')
 
 
 @review_blueprint.route('/reviews/<collection_name>')
-@login_required
+@admin_required
 def review_collection(collection_name):
     try:
         if not _is_review_view(get_vulnerabilities_database(), collection_name):
@@ -71,7 +71,7 @@ def review_collection(collection_name):
 
 
 @review_blueprint.route('/api/reviews')
-@login_required
+@admin_required
 def get_review_collections():
     try:
         database = get_vulnerabilities_database()
@@ -212,7 +212,7 @@ def _filtered_cve_rows(database, views, mongo_filter, search):
 
 
 @review_blueprint.route('/api/reviews/search')
-@login_required
+@admin_required
 def search_review_documents():
     try:
         mongo_filter = _build_filter(request.args)
@@ -259,7 +259,7 @@ def search_review_documents():
 
 
 @review_blueprint.route('/api/reviews/<collection_name>')
-@login_required
+@admin_required
 def get_review_documents(collection_name):
     try:
         database = get_vulnerabilities_database()
@@ -302,7 +302,7 @@ def get_review_documents(collection_name):
 
 
 @review_blueprint.route('/api/reviews/auto-select', methods=['POST'])
-@login_required
+@admin_required
 def auto_select_review_documents():
     data = request.get_json(silent=True) or {}
     try:
@@ -371,7 +371,7 @@ def auto_select_review_documents():
 
 
 @review_blueprint.route('/api/reviews/export-json', methods=['POST'])
-@login_required
+@admin_required
 def export_review_documents():
     data = request.get_json(silent=True) or {}
     selections = data.get('selections')

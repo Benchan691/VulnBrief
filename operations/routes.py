@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from core.auth import login_required
+from core.auth import admin_required
 from core.database import get_vulnerabilities_database, get_web_database
 from operations.health import build_health_snapshot
 from newsletters.normalizer import render_newsletter
@@ -11,6 +11,7 @@ from operations.templates import (
     newsletter_editor_rows,
     normalize_template_config,
     save_newsletter_template_config,
+    source_url_rows,
 )
 from core.i18n import t
 from reviews.repository import resolve_vulnerability_document
@@ -20,13 +21,13 @@ operations_blueprint = Blueprint('operations', __name__)
 
 
 @operations_blueprint.route('/operations')
-@login_required
+@admin_required
 def operations():
     return render_template('operations/index.html')
 
 
 @operations_blueprint.route('/api/operations/health')
-@login_required
+@admin_required
 def get_operations_health():
     try:
         return jsonify(build_health_snapshot(get_web_database(), get_vulnerabilities_database()))
@@ -35,7 +36,7 @@ def get_operations_health():
 
 
 @operations_blueprint.route('/api/operations/newsletter-templates')
-@login_required
+@admin_required
 def get_newsletter_templates():
     try:
         return jsonify({'data': latest_newsletter_templates(get_vulnerabilities_database())})
@@ -43,8 +44,17 @@ def get_newsletter_templates():
         return jsonify({'error': t('Unable to load email templates.')}), 503
 
 
+@operations_blueprint.route('/api/operations/source-list')
+@admin_required
+def get_source_list():
+    try:
+        return jsonify({'data': source_url_rows(get_vulnerabilities_database())})
+    except PyMongoError:
+        return jsonify({'error': t('Unable to load source URLs.')}), 503
+
+
 @operations_blueprint.route('/api/operations/newsletter-editor')
-@login_required
+@admin_required
 def get_newsletter_editor():
     try:
         return jsonify({'data': newsletter_editor_rows(
@@ -56,7 +66,7 @@ def get_newsletter_editor():
 
 
 @operations_blueprint.route('/api/operations/newsletter-editor', methods=['PUT'])
-@login_required
+@admin_required
 def save_newsletter_editor():
     try:
         config = save_newsletter_template_config(get_web_database(), request.get_json(silent=True) or {})
@@ -68,7 +78,7 @@ def save_newsletter_editor():
 
 
 @operations_blueprint.route('/api/operations/newsletter-editor/preview', methods=['POST'])
-@login_required
+@admin_required
 def preview_newsletter_editor():
     payload = request.get_json(silent=True) or {}
     source_collection = str(payload.get('source_collection') or '').strip()

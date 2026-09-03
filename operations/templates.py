@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from newsletters.normalizer import normalize_newsletter
-from subscriptions.sources import source_collection_for_review, subscription_review_views
+from subscriptions.sources import (
+    _review_suffix,
+    source_collection_for_review,
+    subscription_review_views,
+)
 
 
 TIMESTAMP_FIELDS = ('observed_at', 'published_at', 'scraped_at')
@@ -94,6 +99,48 @@ def latest_newsletter_templates(database):
             'selection_id': str(latest['_id']) if latest is not None else '',
             'source_timestamp': _timestamp_text(timestamp),
         })
+    return rows
+
+
+def source_url_rows(database):
+    """Return safe, distinct source URLs grouped by active source collection."""
+    suffix = _review_suffix()
+    active_sources = set()
+    for review_collection, view in review_views(database).items():
+        source_collection = source_collection_for_review(review_collection, view)
+        if (
+            isinstance(source_collection, str)
+            and source_collection
+            and not source_collection.endswith(suffix)
+            and not source_collection.startswith('system.')
+            and '__backup_' not in source_collection
+        ):
+            active_sources.add(source_collection)
+
+    rows = []
+    for source_collection in sorted(active_sources):
+        collection = database[source_collection]
+        try:
+            values = collection.distinct('source.url')
+        except AttributeError:
+            values = []
+            for document in collection.find({}):
+                source = document.get('source') if isinstance(document, dict) else None
+                if isinstance(source, dict):
+                    values.append(source.get('url'))
+        urls = set()
+        for value in values or []:
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            try:
+                parsed = urlparse(value)
+            except ValueError:
+                continue
+            if parsed.scheme in {'http', 'https'} and parsed.hostname:
+                urls.add(value)
+        if urls:
+            rows.append({'collection': source_collection, 'urls': sorted(urls)})
     return rows
 
 

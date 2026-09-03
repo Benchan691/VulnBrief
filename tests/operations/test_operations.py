@@ -7,7 +7,7 @@ from bson import ObjectId
 
 from app import app
 from operations.health import build_health_snapshot
-from operations.templates import latest_newsletter_templates
+from operations.templates import latest_newsletter_templates, source_url_rows
 from subscriptions.scheduler import (
     SCHEDULER_ALIVE_SECONDS,
     SCHEDULER_HEALTH_ID,
@@ -15,11 +15,7 @@ from subscriptions.scheduler import (
     tick_email_scheduler,
     tick_retention,
 )
-
-
-def authenticate(client):
-    with client.session_transaction() as session:
-        session['username'] = 'test-user'
+from tests.auth_helpers import authenticate
 
 
 def _patch_review_views(monkeypatch):
@@ -48,7 +44,9 @@ def test_operations_page_requires_authentication():
     page_config = json.loads(match.group(1))
     assert page_config['healthUrl'] == '/api/operations/health'
     assert page_config['templatesUrl'] == '/api/operations/newsletter-templates'
+    assert page_config['sourceListUrl'] == '/api/operations/source-list'
     assert b'Email Templates' in page.data
+    assert b'Source List' in page.data
 
 
 def test_latest_newsletter_templates_uses_active_sources_and_newest_timestamp(monkeypatch):
@@ -115,6 +113,53 @@ def test_operations_template_editor_includes_hpe_source(monkeypatch):
         'review_collections': ['hpe_review'],
         'selection_id': 'hpe:bulletin',
         'source_timestamp': '2026-08-25T12:00:00+00:00',
+    }]
+
+
+def test_source_url_rows_deduplicate_safe_urls_and_exclude_non_sources(monkeypatch):
+    database = FakeDatabase({
+        'cve': [
+            {'source': {'url': 'https://cve.example/advisory'}},
+            {'source': {'url': 'https://cve.example/advisory'}},
+            {'source': {'url': 'https://cve.example/second'}},
+            {'source': {'url': 'javascript:alert(1)'}},
+            {'source': {'url': 'https://[malformed'}},
+        ],
+        'cve_review': [{'source': {'url': 'https://review.example'}}],
+        '__backup_cve': [{'source': {'url': 'https://backup.example'}}],
+        'system.profile': [{'source': {'url': 'https://system.example'}}],
+    })
+    monkeypatch.setattr('operations.templates.review_views', lambda database: {
+        'cve_review': {'options': {'viewOn': 'cve'}},
+        'secondary_review': {'options': {'viewOn': 'cve'}},
+        'backup_review': {'options': {'viewOn': '__backup_cve'}},
+        'system_review': {'options': {'viewOn': 'system.profile'}},
+        'review_view': {'options': {'viewOn': 'cve_review'}},
+    })
+
+    assert source_url_rows(database) == [{
+        'collection': 'cve',
+        'urls': ['https://cve.example/advisory', 'https://cve.example/second'],
+    }]
+
+
+def test_source_url_api_returns_grouped_rows(monkeypatch):
+    client = app.test_client()
+    authenticate(client)
+    database = FakeDatabase({
+        'cve': [{'source': {'url': 'https://cve.example/advisory'}}],
+    })
+    monkeypatch.setattr('operations.routes.get_vulnerabilities_database', lambda: database)
+    monkeypatch.setattr('operations.templates.review_views', lambda database: {
+        'cve_review': {'options': {'viewOn': 'cve'}},
+    })
+
+    response = client.get('/api/operations/source-list')
+
+    assert response.status_code == 200
+    assert response.get_json()['data'] == [{
+        'collection': 'cve',
+        'urls': ['https://cve.example/advisory'],
     }]
 
 

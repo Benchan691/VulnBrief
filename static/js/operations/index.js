@@ -2,6 +2,7 @@
     const pageConfig = JSON.parse(document.getElementById('page-config').textContent);
     const refreshMs = 20000;
     let templatesLoaded = false;
+    let sourceListLoaded = false;
     const editorState = { data: null, currentSource: '', dirty: false, previewToken: 0, commonBound: false };
 
     function showMessage(text, type) {
@@ -154,6 +155,39 @@
                 '<td>' + escapeHtml(row.title || row.selection_id || '—') + '</td>';
             body.appendChild(tr);
         });
+    }
+
+    function renderSourceUrls(rows) {
+        const body = document.getElementById('source-list-rows');
+        const empty = document.getElementById('source-list-empty');
+        body.replaceChildren();
+        let rendered = 0;
+        (rows || []).forEach(function (row) {
+            const urls = Array.isArray(row.urls) ? row.urls : [];
+            urls.forEach(function (url) {
+                let parsed;
+                try {
+                    parsed = new URL(url);
+                } catch (error) {
+                    return;
+                }
+                if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return;
+                const tr = document.createElement('tr');
+                const collection = document.createElement('td');
+                collection.textContent = row.collection || '—';
+                const linkCell = document.createElement('td');
+                const link = document.createElement('a');
+                link.href = parsed.href;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = url;
+                linkCell.appendChild(link);
+                tr.append(collection, linkCell);
+                body.appendChild(tr);
+                rendered += 1;
+            });
+        });
+        empty.classList.toggle('d-none', rendered !== 0);
     }
 
     function currentRow() {
@@ -381,15 +415,37 @@
             })
             .finally(function () {
                 loading.classList.add('d-none');
+        });
+    }
+
+    function loadSourceList() {
+        const loading = document.getElementById('source-list-loading');
+        loading.classList.remove('d-none');
+        return requestJson(pageConfig.sourceListUrl)
+            .then(function (body) {
+                clearMessage();
+                renderSourceUrls(body.data || []);
+                sourceListLoaded = true;
+            })
+            .catch(function (error) {
+                showMessage(error.message || t('Unable to load source URLs.'), 'danger');
+            })
+            .finally(function () {
+                loading.classList.add('d-none');
             });
     }
 
     document.getElementById('templates-tab').addEventListener('shown.bs.tab', function () {
         if (!templatesLoaded) loadTemplates();
     });
+    document.getElementById('source-list-tab').addEventListener('shown.bs.tab', function () {
+        if (!sourceListLoaded) loadSourceList();
+    });
     document.getElementById('refresh-btn').addEventListener('click', function () {
         if (document.getElementById('templates-tab').classList.contains('active')) {
             loadTemplates();
+        } else if (document.getElementById('source-list-tab').classList.contains('active')) {
+            loadSourceList();
         } else {
             loadHealth();
         }

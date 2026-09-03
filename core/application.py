@@ -10,7 +10,7 @@ from core.templating import register_template_filters
 
 def create_app():
     from auth.routes import auth_blueprint
-    from auth.store import ensure_bootstrap_user
+    from auth.store import ensure_bootstrap_user, ensure_legacy_subscription_users
     from newsletters.routes import newsletter_blueprint
     from operations.routes import operations_blueprint
     from reports.routes import report_blueprint
@@ -32,6 +32,7 @@ def create_app():
     register_template_filters(application)
     ensure_sub_account_collection()
     ensure_bootstrap_user(config)
+    ensure_legacy_subscription_users()
 
     @application.route('/')
     def home():
@@ -54,6 +55,12 @@ def create_app():
     @application.errorhandler(404)
     def page_not_found(error):
         return render_template('errors/404.html', image_filename='67.gif'), 404
+
+    @application.errorhandler(403)
+    def access_denied(error):
+        if request.path.startswith('/api/'):
+            return {'error': 'Access denied.'}, 403
+        return render_template('errors/403.html'), 403
 
     application.register_blueprint(newsletter_blueprint)
     application.register_blueprint(subscription_blueprint)
