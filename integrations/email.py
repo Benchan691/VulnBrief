@@ -5,6 +5,9 @@ from premailer import transform
 
 
 DEFAULT_TEXT_BODY = 'Open this email in an HTML-capable mail client.'
+DELIVERY_MODE_INDIVIDUAL = 'individual'
+DELIVERY_MODE_GROUPED = 'grouped'
+DELIVERY_MODES = {DELIVERY_MODE_INDIVIDUAL, DELIVERY_MODE_GROUPED}
 
 
 def prepare_html_for_email(html):
@@ -82,3 +85,25 @@ class Mailer:
     def __exit__(self, exc_type, exc, tb):
         self.close()
         return False
+
+
+def send_to_recipients(mailer, recipients, email, delivery_mode=DELIVERY_MODE_INDIVIDUAL):
+    recipients = list(recipients or [])
+    if not recipients:
+        return {'sent': [], 'failed': []}
+    if delivery_mode == DELIVERY_MODE_GROUPED:
+        try:
+            mailer.send_email(', '.join(recipients), email)
+        except Exception as exc:
+            return {'sent': [], 'failed': [(recipient, exc) for recipient in recipients]}
+        return {'sent': recipients, 'failed': []}
+
+    sent = []
+    failed = []
+    for recipient in recipients:
+        try:
+            mailer.send_email(recipient, email)
+            sent.append(recipient)
+        except Exception as exc:
+            failed.append((recipient, exc))
+    return {'sent': sent, 'failed': failed}

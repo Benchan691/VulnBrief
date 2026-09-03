@@ -9,7 +9,7 @@ from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
 from core.database import get_config, get_vulnerabilities_database, get_web_database
-from integrations.email import Mailer
+from integrations.email import Mailer, send_to_recipients
 from newsletters.normalizer import render_newsletter
 from operations.templates import get_newsletter_template_config
 from reports.progress import append_job_log
@@ -269,7 +269,8 @@ def _queue_subscription_job_inputs(job_id, matches, generation_mode):
 def start_subscription_report_job(subscription, profile):
     now = _now()
     job_id = get_web_database()['report_jobs'].insert_one(_placeholder_job(profile, now)).inserted_id
-    append_job_log(job_id, f'Queued subscription report email for {subscription["email"]}.')
+    recipients = subscription.get('emails') or [subscription.get('email')]
+    append_job_log(job_id, f'Queued subscription report email for {", ".join(recipients)}.')
     return {
         'job_id': str(job_id),
     }
@@ -352,21 +353,36 @@ def deliver_subscription_report_job(
         app.config,
     )
     html = _render_job_html(job, email_report, report_language=profile['report_language'])
-    append_job_log(job_id, f'Sending email to {subscription["email"]}.')
+    recipients = subscription.get('emails') or [subscription.get('email')]
+    delivery_mode = subscription.get('delivery_mode') or 'individual'
+    append_job_log(job_id, f'Sending email to {", ".join(recipients)}.')
     with Mailer(app.config) as mailer:
-        mailer.send_email(subscription['email'], {
+        delivery = send_to_recipients(mailer, recipients, {
             'subject': f"Scheduled vulnerability report: {now.astimezone(HONG_KONG):%Y-%m-%d}",
             'html': html,
-        })
+        }, delivery_mode)
+    if delivery.get('failed'):
+        failed = ', '.join(item[0] for item in delivery['failed'])
+        error = f'Email delivery failed for: {failed}.'
+        jobs.update_one(
+            {'_id': ObjectId(job_id)},
+            {'$set': {
+                'delivery_status': 'failed',
+                'delivery_error': error,
+                'status_message': error,
+            }},
+        )
+        append_job_log(job_id, error)
+        raise RuntimeError(error)
     jobs.update_one(
         {'_id': ObjectId(job_id)},
         {'$set': {
             'delivery_status': 'completed',
             'delivery_error': '',
-            'status_message': f'Email sent to {subscription["email"]}.',
+            'status_message': f'Email sent to {", ".join(recipients)}.',
         }},
     )
-    append_job_log(job_id, f'Email sent to {subscription["email"]}.')
+    append_job_log(job_id, f'Email sent to {", ".join(recipients)}.')
     return {
         'job_id': job_id,
         'job': job,
@@ -462,15 +478,18 @@ def run_monthly_statistic(app, subscription_id, now=None):
             return
         try:
             subscription = normalize_subscription(vuln_database, raw)
-            email = subscription['email']
+            recipients = subscription.get('emails') or [subscription.get('email')]
             start, end = previous_calendar_month_bounds(now)
-            stats = newsletter_delivery_statistics(email, web_database, start=start, end=end)
+            stats = newsletter_delivery_statistics(recipients, web_database, start=start, end=end)
             period = stats.get('period') or calendar_month_label(start)
             with Mailer(app.config) as mailer:
-                mailer.send_email(email, {
+                delivery = send_to_recipients(mailer, recipients, {
                     'subject': f'Newsletter delivery statistics — {period}',
                     'html': render_newsletter_statistics_html(stats),
-                })
+                }, subscription.get('delivery_mode') or 'individual')
+            if delivery.get('failed'):
+                failed = ', '.join(item[0] for item in delivery['failed'])
+                raise RuntimeError(f'Email delivery failed for: {failed}.')
             collection.update_one({'_id': raw['_id']}, {'$set': {
                 'newsletter_profile.statistic_last_run_at': now,
                 'newsletter_profile.statistic_next_run_at': next_monthly_statistic_run(now),
@@ -672,7 +691,15 @@ def _observed_at_value(document):
 def newsletter_delivery_statistics(email, web_database=None, start=None, end=None):
     ensure_newsletter_delivery_indexes(web_database)
     collection = _newsletter_deliveries(web_database)
-    match = {'email': email}
+    emails = [email] if isinstance(email, str) else list(email or [])
+    emails = [item for item in emails if isinstance(item, str) and item]
+    match = {
+        'email': {'$in': emails},
+        '$or': [
+            {'status': {'$exists': False}},
+            {'status': 'sent'},
+        ],
+    }
     if start is not None or end is not None:
         sent_at = {}
         if start is not None:
@@ -706,7 +733,7 @@ def newsletter_delivery_statistics(email, web_database=None, start=None, end=Non
             'count': count,
         })
     result = {
-        'email': email,
+        'email': email if isinstance(email, str) else ', '.join(emails),
         'databases': sorted(databases) or [_vulnerabilities_database_name()],
         'by_collection': by_collection,
         'total': total,
@@ -732,24 +759,51 @@ def render_newsletter_statistics_html(stats):
 
 
 def _already_delivered(web_database, email, source_collection, selection_id):
-    return _newsletter_deliveries(web_database).find_one({
+    delivery = _newsletter_deliveries(web_database).find_one({
         'email': email,
         'source_collection': source_collection,
         'selection_id': selection_id,
-    }) is not None
+    })
+    return delivery is not None and delivery.get('status', 'sent') == 'sent'
 
 
-def _record_newsletter_delivery(web_database, *, email, database_name, source_collection, selection_id, title, sent_at):
+def _record_newsletter_delivery(
+    web_database,
+    *,
+    email,
+    database_name,
+    source_collection,
+    selection_id,
+    title,
+    sent_at,
+    status='sent',
+    error='',
+):
+    document = {
+        'email': email,
+        'database': database_name,
+        'source_collection': source_collection,
+        'selection_id': selection_id,
+        'title': title,
+        'sent_at': sent_at,
+        'status': status,
+    }
+    if error:
+        document['error'] = error
+    update = {'$set': document}
+    if status == 'sent':
+        update['$unset'] = {'error': ''}
     try:
-        _newsletter_deliveries(web_database).insert_one({
-            'email': email,
-            'database': database_name,
-            'source_collection': source_collection,
-            'selection_id': selection_id,
-            'title': title,
-            'sent_at': sent_at,
-        })
-        return True
+        result = _newsletter_deliveries(web_database).update_one(
+            {
+                'email': email,
+                'source_collection': source_collection,
+                'selection_id': selection_id,
+            },
+            update,
+            upsert=True,
+        )
+        return bool(result.upserted_id is not None or result.modified_count)
     except DuplicateKeyError:
         return False
 
@@ -808,6 +862,9 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
         return {'sent': 0, 'cursor_initialized': True, 'delivery_cursor': cursor_value}
 
     vuln_database = get_vulnerabilities_database()
+    recipients = subscription.get('emails') or [subscription.get('email')]
+    recipients = [recipient for recipient in recipients if recipient]
+    delivery_mode = subscription.get('delivery_mode') or 'individual'
     template_config = get_newsletter_template_config(web_database)
     database_name = _vulnerabilities_database_name()
     matches = query_profile_matches(
@@ -825,18 +882,23 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
             continue
         source_collection = match['source_collection']
         selection_id = match['selection_id']
-        if _already_delivered(web_database, subscription['email'], source_collection, selection_id):
+        missing_recipients = [
+            recipient for recipient in recipients
+            if not _already_delivered(web_database, recipient, source_collection, selection_id)
+        ]
+        if observed_at <= cursor and not missing_recipients:
             continue
-        pending.append((observed_at, match, document))
+        pending.append((observed_at, match, document, missing_recipients))
     pending.sort(key=lambda item: item[0])
 
     sent = 0
     max_cursor = cursor
+    cursor_blocked = False
     if not pending:
         return {'sent': 0, 'cursor_initialized': False, 'delivery_cursor': cursor}
 
     with Mailer(app.config) as mailer:
-        for observed_at, match, document in pending:
+        for observed_at, match, document, missing_recipients in pending:
             if limit is not None and sent >= limit:
                 break
             source_collection = match['source_collection']
@@ -845,33 +907,59 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
                 vuln_database, source_collection, selection_id,
             )
             if source_document is None:
+                cursor_blocked = True
                 continue
             if _is_updated_cve(source_collection, source_document):
-                if observed_at > max_cursor:
+                if not cursor_blocked and observed_at > max_cursor:
+                    max_cursor = observed_at
+                continue
+            if not missing_recipients:
+                if not cursor_blocked and observed_at > max_cursor:
                     max_cursor = observed_at
                 continue
             html, newsletter = _render_configured_newsletter(
                 source_document, source_collection, template_config,
             )
             title = newsletter.get('title') or selection_id
-            mailer.send_email(subscription['email'], {
+            delivery = send_to_recipients(mailer, missing_recipients, {
                 'subject': newsletter.get('subject') or f'Security newsletter: {title}',
                 'html': html,
-            })
-            recorded = _record_newsletter_delivery(
-                web_database,
-                email=subscription['email'],
-                database_name=database_name,
-                source_collection=source_collection,
-                selection_id=selection_id,
-                title=title,
-                sent_at=now,
-            )
-            if not recorded:
-                continue
-            sent += 1
-            if observed_at > max_cursor:
+            }, delivery_mode)
+            for recipient in delivery.get('sent') or []:
+                recorded = _record_newsletter_delivery(
+                    web_database,
+                    email=recipient,
+                    database_name=database_name,
+                    source_collection=source_collection,
+                    selection_id=selection_id,
+                    title=title,
+                    sent_at=now,
+                )
+                if recorded:
+                    sent += 1
+            for recipient, error in delivery.get('failed') or []:
+                _record_newsletter_delivery(
+                    web_database,
+                    email=recipient,
+                    database_name=database_name,
+                    source_collection=source_collection,
+                    selection_id=selection_id,
+                    title=title,
+                    sent_at=now,
+                    status='failed',
+                    error=str(error),
+                )
+            if delivery.get('failed'):
+                cursor_blocked = True
+            elif not cursor_blocked and observed_at > max_cursor:
                 max_cursor = observed_at
+            if delivery.get('failed'):
+                failed = ', '.join(item[0] for item in delivery['failed'])
+                app.logger.error(
+                    'Newsletter delivery failed for subscription %s: %s',
+                    subscription.get('_id'),
+                    failed,
+                )
 
     if max_cursor != cursor:
         web_database['sub_account'].update_one(

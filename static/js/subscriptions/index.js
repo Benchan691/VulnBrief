@@ -11,7 +11,7 @@
     const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionMeansAll: true});
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
-    let collections = [], subscriptions = [], editingEmail = null;
+    let collections = [], subscriptions = [], editingId = null;
     let newsletterVendorProductFilter = emptyVendorProductFilter();
     let reportVendorProductFilter = emptyVendorProductFilter();
     let reportLegacyKeywords = [];
@@ -116,6 +116,50 @@
         modalMessage.textContent = text || '';
         modalMessage.className = text ? 'alert alert-' + kind : 'alert d-none';
     }
+    function renderRecipientInputs(emails) {
+        const list = document.getElementById('recipient-list');
+        list.replaceChildren();
+        const values = Array.isArray(emails) && emails.length ? emails : [''];
+        values.forEach(function (email) {
+            const row = document.createElement('div');
+            row.className = 'input-group';
+            const input = document.createElement('input');
+            input.type = 'email';
+            input.className = 'form-control recipient-input';
+            input.placeholder = t('recipient@example.com');
+            input.value = email || '';
+            input.required = true;
+            input.readOnly = !isAdmin;
+            input.setAttribute('aria-label', t('Email recipient'));
+            row.append(input);
+            if (isAdmin) {
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'btn btn-outline-danger remove-recipient';
+                remove.innerHTML = '<i class="bi bi-dash-lg" aria-hidden="true"></i><span class="visually-hidden">' + t('Remove recipient') + '</span>';
+                remove.onclick = function () {
+                    if (list.children.length > 1) {
+                        row.remove();
+                        updateRecipientRemoveButtons();
+                    }
+                };
+                row.append(remove);
+            }
+            list.append(row);
+        });
+        updateRecipientRemoveButtons();
+    }
+    function updateRecipientRemoveButtons() {
+        const list = document.getElementById('recipient-list');
+        list.querySelectorAll('.remove-recipient').forEach(function (button) {
+            button.disabled = list.children.length <= 1;
+        });
+    }
+    function recipientValues() {
+        return Array.from(document.querySelectorAll('.recipient-input')).map(function (input) {
+            return input.value.trim();
+        });
+    }
     function setSendStatisticStatus(text, kind) {
         const status = document.getElementById('newsletter-send-statistic-status');
         if (!text) {
@@ -150,7 +194,7 @@
             });
         });
     }
-    function apiUrl(email, suffix) { return subscriptionsUrl + '/' + encodeURIComponent(email) + (suffix || ''); }
+    function apiUrl(id, suffix) { return subscriptionsUrl + '/' + encodeURIComponent(id) + (suffix || ''); }
     function setReportPreview(summary, kind, examples) {
         const box = document.getElementById('report-preview');
         const target = document.getElementById('report-preview-summary');
@@ -481,7 +525,6 @@
     }
     function buildReportProfilePayload() {
         const payload = {
-            email: editingEmail || document.getElementById('email').value,
             report_profile: {
                 enabled: document.getElementById('report-enabled').checked,
                 filters: readFilters('report'),
@@ -492,6 +535,7 @@
                 schedule_time: document.getElementById('report-schedule-time').value
             }
         };
+        if (editingId) payload.subscription_id = editingId;
         if (isReportEnriched()) {
             payload.report_profile.search_prompt = (document.getElementById('report-search-prompt').value || '').trim();
         }
@@ -552,10 +596,14 @@
         vendorProductImportRequestId += 1;
         setVendorProductImportBusy(false);
         showModalMessage('', '');
-        editingEmail = subscription ? subscription.email : null;
+        editingId = subscription ? subscription.id : null;
         document.getElementById('modal-title').textContent = subscription ? t('Edit Subscription') : t('Add Subscription');
-        document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
+        const username = document.getElementById('username');
+        username.value = subscription ? (subscription.username || '') : '';
+        username.readOnly = !isAdmin;
+        renderRecipientInputs(subscription ? (subscription.emails || [subscription.email]) : ['']);
         document.getElementById('team').value = subscription ? subscription.team : '';
+        document.getElementById('delivery-mode').value = subscription ? (subscription.delivery_mode || 'individual') : 'individual';
         if (isAdmin) {
             document.getElementById('password').value = '';
             document.getElementById('password-help').textContent = subscription
@@ -583,7 +631,7 @@
     }
     function updateNewsletterSendStatisticVisibility() {
         const wrap = document.getElementById('newsletter-send-statistic-wrap');
-        const show = !!editingEmail && document.getElementById('newsletter-enabled').checked;
+        const show = !!editingId && document.getElementById('newsletter-enabled').checked;
         wrap.classList.toggle('d-none', !show);
         if (!show) {
             setSendStatisticStatus('', '');
@@ -601,8 +649,14 @@
         rows.replaceChildren(); document.getElementById('empty').classList.toggle('d-none', subscriptions.length !== 0);
         subscriptions.forEach(function (item) {
             const tr = document.createElement('tr');
-            tr.innerHTML = '<td><strong></strong><div class="text-muted small"></div></td><td></td><td></td><td></td>';
-            tr.children[0].querySelector('strong').textContent = item.email; tr.children[0].querySelector('div').textContent = item.team;
+            tr.innerHTML = '<td><strong></strong><div class="text-muted small recipients"></div><div class="text-muted small team"></div><div class="text-muted small delivery-mode"></div></td><td></td><td></td><td></td>';
+            const emails = Array.isArray(item.emails) && item.emails.length ? item.emails : [item.email];
+            tr.children[0].querySelector('strong').textContent = item.username || t('Unnamed user');
+            tr.children[0].querySelector('.recipients').textContent = emails.filter(Boolean).join(', ');
+            tr.children[0].querySelector('.team').textContent = item.team || '';
+            tr.children[0].querySelector('.delivery-mode').textContent = t('Delivery: {mode}', {
+                mode: item.delivery_mode === 'grouped' ? t('Grouped') : t('Individual'),
+            });
             if (item.newsletter_profile.enabled) {
                 const collectionCount = item.newsletter_profile.filters.collections.length;
                 const newsletterSummary = [
@@ -635,7 +689,7 @@
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
             actions.innerHTML = '<button class="btn btn-outline-primary btn-sm edit" type="button">' + t('Edit') + '</button><button class="btn btn-outline-danger btn-sm remove" type="button">' + t('Delete') + '</button>';
             actions.querySelector('.edit').onclick = function () { openEditor(item); };
-            actions.querySelector('.remove').onclick = function () { if (confirm(t('Delete subscription for {email}?', {email: item.email}))) requestJson(apiUrl(item.email), {method:'DELETE'}).then(load).catch(function(e){showMessage(e.message,'danger');}); };
+            actions.querySelector('.remove').onclick = function () { if (confirm(t('Delete subscription for {username}?', {username: item.username || item.email}))) requestJson(apiUrl(item.id), {method:'DELETE'}).then(load).catch(function(e){showMessage(e.message,'danger');}); };
             tr.children[3].append(actions); rows.append(tr);
         });
     }
@@ -675,11 +729,19 @@
     const addButton = document.getElementById('add-btn');
     if (addButton) addButton.onclick = function () { openEditor(null); };
     document.getElementById('newsletter-enabled').addEventListener('change', updateNewsletterSendStatisticVisibility);
+    const addRecipientButton = document.getElementById('add-recipient-btn');
+    if (addRecipientButton) addRecipientButton.onclick = function () {
+        const list = document.getElementById('recipient-list');
+        const values = recipientValues();
+        values.push('');
+        renderRecipientInputs(values);
+        list.lastElementChild.querySelector('input').focus();
+    };
     document.getElementById('newsletter-send-statistic').addEventListener('click', function () {
-        if (!editingEmail || document.getElementById('newsletter-send-statistic').disabled) return;
+        if (!editingId || document.getElementById('newsletter-send-statistic').disabled) return;
         setSendStatisticBusy(true);
         setSendStatisticStatus(t('Sending statistics email...'), 'info');
-        requestJson(apiUrl(editingEmail, '/send-statistic'), {method: 'POST'})
+        requestJson(apiUrl(editingId, '/send-statistic'), {method: 'POST'})
             .then(function (body) {
                 const text = body.message || t('Newsletter statistics email sent.');
                 setSendStatisticStatus(text, 'success');
@@ -701,19 +763,24 @@
         }
         showModalMessage('', '');
         const password = isAdmin ? document.getElementById('password').value : '';
-        if (isAdmin && !editingEmail && !password) {
+        if (isAdmin && !editingId && !password) {
             showModalMessage(t('Password is required.'), 'danger');
             return;
         }
-        const payload = { email:document.getElementById('email').value, team:document.getElementById('team').value,
+        const payload = { team:document.getElementById('team').value,
+            delivery_mode: document.getElementById('delivery-mode').value,
             newsletter_profile:{
                 enabled:document.getElementById('newsletter-enabled').checked,
                 filters:readFilters('newsletter'),
                 statistic_schedule_enabled:document.getElementById('newsletter-statistic-schedule-enabled').checked
             },
             report_profile: buildReportProfilePayload().report_profile };
-        if (isAdmin) payload.password = password;
-        requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load();}).catch(function(e){showModalMessage(e.message,'danger');});
+        if (isAdmin) {
+            payload.username = document.getElementById('username').value;
+            payload.emails = recipientValues();
+            payload.password = password;
+        }
+        requestJson(editingId ? apiUrl(editingId) : subscriptionsUrl, {method:editingId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load();}).catch(function(e){showModalMessage(e.message,'danger');});
     };
     requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});
 })();

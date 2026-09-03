@@ -708,3 +708,300 @@ def test_deliver_pending_newsletters_skips_updated_cves(monkeypatch):
 
         web['sub_account'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
+
+
+def test_deliver_pending_newsletters_fans_out_and_records_each_recipient(monkeypatch):
+    from subscriptions.scheduler import deliver_pending_newsletters
+
+    recipients = ['newsletter-a@example.com', 'newsletter-b@example.com']
+    subscription_id = ObjectId()
+    cursor = '2026-07-01T00:00:00+00:00'
+    document = {
+        'observed_at': datetime(2026, 7, 10, 12, tzinfo=timezone.utc),
+        'title': 'Grouped test advisory',
+    }
+    sent = []
+    with app.app_context():
+        web = get_web_database()
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': {'$in': recipients}})
+        web['sub_account'].insert_one({
+            '_id': subscription_id,
+            'emails': recipients,
+            'email': recipients[0],
+            'delivery_mode': 'individual',
+            'newsletter_profile': {
+                'enabled': True,
+                'filters': {'collections': ['avd_review']},
+                'delivery_cursor': cursor,
+            },
+        })
+
+        class FakeMailer:
+            def __init__(self, config):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def send_email(self, receiver, email):
+                sent.append((receiver, email))
+
+        monkeypatch.setattr(subscriptions.scheduler, 'Mailer', FakeMailer)
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'query_profile_matches',
+            lambda *args, **kwargs: [{
+                'source_collection': 'avd',
+                'selection_id': 'avd:grouped',
+                'document': document,
+            }],
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'resolve_vulnerability_document',
+            lambda *args: document,
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'render_newsletter',
+            lambda document, source_collection: (
+                '<p>newsletter</p>',
+                {'title': document['title']},
+            ),
+        )
+
+        result = deliver_pending_newsletters(
+            app,
+            {
+                '_id': subscription_id,
+                'emails': recipients,
+                'delivery_mode': 'individual',
+                'newsletter_profile': {
+                    'enabled': True,
+                    'filters': {'collections': ['avd_review']},
+                    'delivery_cursor': cursor,
+                },
+            },
+            now=datetime(2026, 7, 16, 4, 0, tzinfo=timezone.utc),
+        )
+
+        assert result['sent'] == 2
+        assert [receiver for receiver, _ in sent] == recipients
+        assert web['newsletter_deliveries'].count_documents({
+            'email': {'$in': recipients},
+            'selection_id': 'avd:grouped',
+        }) == 2
+        assert web['sub_account'].find_one({'_id': subscription_id})['newsletter_profile']['delivery_cursor'] == document['observed_at'].isoformat()
+
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': {'$in': recipients}})
+
+
+def test_grouped_newsletter_delivery_uses_one_to_header(monkeypatch):
+    from subscriptions.scheduler import deliver_pending_newsletters
+
+    recipients = ['newsletter-grouped-a@example.com', 'newsletter-grouped-b@example.com']
+    subscription_id = ObjectId()
+    cursor = '2026-07-01T00:00:00+00:00'
+    document = {
+        'observed_at': datetime(2026, 7, 11, 12, tzinfo=timezone.utc),
+        'title': 'Grouped delivery advisory',
+    }
+    sent = []
+    with app.app_context():
+        web = get_web_database()
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': {'$in': recipients}})
+        web['sub_account'].insert_one({
+            '_id': subscription_id,
+            'emails': recipients,
+            'email': recipients[0],
+            'delivery_mode': 'grouped',
+            'newsletter_profile': {
+                'enabled': True,
+                'filters': {'collections': ['avd_review']},
+                'delivery_cursor': cursor,
+            },
+        })
+
+        class FakeMailer:
+            def __init__(self, config):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def send_email(self, receiver, email):
+                sent.append(receiver)
+
+        monkeypatch.setattr(subscriptions.scheduler, 'Mailer', FakeMailer)
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'query_profile_matches',
+            lambda *args, **kwargs: [{
+                'source_collection': 'avd',
+                'selection_id': 'avd:retry',
+                'document': document,
+            }],
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'resolve_vulnerability_document',
+            lambda *args: document,
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'render_newsletter',
+            lambda document, source_collection: (
+                '<p>newsletter</p>',
+                {'title': document['title']},
+            ),
+        )
+
+        subscription = {
+            '_id': subscription_id,
+            'emails': recipients,
+            'delivery_mode': 'grouped',
+            'newsletter_profile': {
+                'enabled': True,
+                'filters': {'collections': ['avd_review']},
+                'delivery_cursor': cursor,
+            },
+        }
+        first = deliver_pending_newsletters(
+            app,
+            subscription,
+            now=datetime(2026, 7, 16, 4, 0, tzinfo=timezone.utc),
+        )
+        assert first['sent'] == 2
+        assert first['delivery_cursor'] == document['observed_at'].isoformat()
+        assert sent == ['newsletter-grouped-a@example.com, newsletter-grouped-b@example.com']
+        assert web['newsletter_deliveries'].count_documents({
+            'email': {'$in': recipients},
+            'selection_id': 'avd:retry',
+        }) == 2
+
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': {'$in': recipients}})
+
+
+def test_individual_newsletter_delivery_retries_only_failed_recipient(monkeypatch):
+    from subscriptions.scheduler import deliver_pending_newsletters
+
+    recipients = ['newsletter-retry-a@example.com', 'newsletter-retry-b@example.com']
+    subscription_id = ObjectId()
+    cursor = '2026-07-01T00:00:00+00:00'
+    document = {
+        'observed_at': datetime(2026, 7, 12, 12, tzinfo=timezone.utc),
+        'title': 'Retry test advisory',
+    }
+    sent = []
+    failed_once = {'value': True}
+    with app.app_context():
+        web = get_web_database()
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': {'$in': recipients}})
+        web['sub_account'].insert_one({
+            '_id': subscription_id,
+            'emails': recipients,
+            'email': recipients[0],
+            'delivery_mode': 'individual',
+            'newsletter_profile': {
+                'enabled': True,
+                'filters': {'collections': ['avd_review']},
+                'delivery_cursor': cursor,
+            },
+        })
+
+        class FakeMailer:
+            def __init__(self, config):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def send_email(self, receiver, email):
+                sent.append(receiver)
+                if receiver == recipients[1] and failed_once['value']:
+                    failed_once['value'] = False
+                    raise OSError('temporary delivery failure')
+
+        monkeypatch.setattr(subscriptions.scheduler, 'Mailer', FakeMailer)
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'query_profile_matches',
+            lambda *args, **kwargs: [{
+                'source_collection': 'avd',
+                'selection_id': 'avd:retry',
+                'document': document,
+            }],
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'resolve_vulnerability_document',
+            lambda *args: document,
+        )
+        monkeypatch.setattr(
+            subscriptions.scheduler,
+            'render_newsletter',
+            lambda document, source_collection: (
+                '<p>newsletter</p>',
+                {'title': document['title']},
+            ),
+        )
+
+        subscription = {
+            '_id': subscription_id,
+            'emails': recipients,
+            'delivery_mode': 'individual',
+            'newsletter_profile': {
+                'enabled': True,
+                'filters': {'collections': ['avd_review']},
+                'delivery_cursor': cursor,
+            },
+        }
+        first = deliver_pending_newsletters(
+            app,
+            subscription,
+            now=datetime(2026, 7, 16, 4, 0, tzinfo=timezone.utc),
+        )
+        assert first['sent'] == 1
+        assert first['delivery_cursor'] == cursor
+        assert sent == recipients
+        assert web['newsletter_deliveries'].count_documents({
+            'email': recipients[0],
+            'selection_id': 'avd:retry',
+        }) == 1
+        assert web['newsletter_deliveries'].count_documents({
+            'email': recipients[1],
+            'selection_id': 'avd:retry',
+            'status': 'failed',
+        }) == 1
+        assert newsletter_delivery_statistics(recipients, web)['total'] == 1
+
+        second = deliver_pending_newsletters(
+            app,
+            subscription,
+            now=datetime(2026, 7, 16, 4, 1, tzinfo=timezone.utc),
+        )
+        assert second['sent'] == 1
+        assert second['delivery_cursor'] == document['observed_at'].isoformat()
+        assert sent == [*recipients, recipients[1]]
+        assert web['newsletter_deliveries'].count_documents({
+            'email': {'$in': recipients},
+            'selection_id': 'avd:retry',
+        }) == 2
+        assert newsletter_delivery_statistics(recipients, web)['total'] == 2
+
+        web['sub_account'].delete_many({'_id': subscription_id})
+        web['newsletter_deliveries'].delete_many({'email': {'$in': recipients}})

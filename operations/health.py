@@ -47,6 +47,8 @@ def _job_delivery(web_database, job_id):
 
 def _report_row(document, subscription, web_database, now):
     profile = subscription.get('report_profile') or {}
+    emails = subscription.get('emails') or [subscription.get('email')]
+    emails = [email for email in emails if email]
     next_run_at = _parse_time(profile.get('next_run_at'))
     due = bool(
         profile.get('enabled')
@@ -55,7 +57,10 @@ def _report_row(document, subscription, web_database, now):
     )
     last_job_id = profile.get('last_job_id') or ''
     return {
-        'email': subscription.get('email') or '',
+        'username': subscription.get('username') or '',
+        'emails': emails,
+        'delivery_mode': subscription.get('delivery_mode') or 'individual',
+        'email': ', '.join(emails),
         'team': subscription.get('team') or '',
         'enabled': bool(profile.get('enabled')),
         'schedule_enabled': bool(profile.get('schedule_enabled')),
@@ -77,14 +82,19 @@ def _report_row(document, subscription, web_database, now):
 
 def _newsletter_row(subscription, web_database):
     profile = subscription.get('newsletter_profile') or {}
-    email = subscription.get('email') or ''
-    stats = newsletter_delivery_statistics(email, web_database) if profile.get('enabled') else {
+    emails = subscription.get('emails') or [subscription.get('email')]
+    emails = [email for email in emails if email]
+    email = ', '.join(emails)
+    stats = newsletter_delivery_statistics(emails, web_database) if profile.get('enabled') else {
         'email': email,
         'total': 0,
         'by_collection': [],
         'databases': [],
     }
     return {
+        'username': subscription.get('username') or '',
+        'emails': emails,
+        'delivery_mode': subscription.get('delivery_mode') or 'individual',
         'email': email,
         'team': subscription.get('team') or '',
         'enabled': bool(profile.get('enabled')),

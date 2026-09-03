@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from integrations.email import Mailer, prepare_html_for_email
+from integrations.email import Mailer, prepare_html_for_email, send_to_recipients
 
 
 def test_prepare_html_for_email_inlines_styles():
@@ -97,3 +97,29 @@ def test_mailer_requires_smtp_host_and_sender():
         assert False, 'expected ValueError'
     except ValueError as exc:
         assert 'SMTP_HOST' in str(exc)
+
+
+def test_send_to_recipients_supports_private_and_grouped_delivery():
+    mailer = MagicMock()
+    payload = {'subject': 'Hello', 'html': '<p>Body</p>'}
+
+    private = send_to_recipients(
+        mailer,
+        ['a@example.com', 'b@example.com'],
+        payload,
+        'individual',
+    )
+    assert private == {'sent': ['a@example.com', 'b@example.com'], 'failed': []}
+    assert [call.args[0] for call in mailer.send_email.call_args_list] == [
+        'a@example.com', 'b@example.com',
+    ]
+
+    mailer.reset_mock()
+    grouped = send_to_recipients(
+        mailer,
+        ['a@example.com', 'b@example.com'],
+        payload,
+        'grouped',
+    )
+    assert grouped == {'sent': ['a@example.com', 'b@example.com'], 'failed': []}
+    mailer.send_email.assert_called_once_with('a@example.com, b@example.com', payload)

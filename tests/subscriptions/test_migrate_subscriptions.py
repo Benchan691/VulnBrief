@@ -85,13 +85,18 @@ def test_migrate_record_builds_expected_document(indexes, monkeypatch):
     )
     by_source, by_name = indexes
     record = migrate_record(FakeDatabase(), {
-        'email': 'user@example.com',
+        'username': 'security-user',
+        'emails': ['USER@example.com', 'user@example.com', 'other@example.com'],
+        'delivery_mode': 'grouped',
         'team': 'SOC',
         'enabled': True,
         'subscriptions': ['hkcert', 'huawei', 'ransome', 'missing'],
     }, by_source, by_name, '_review')
 
+    assert record['username'] == 'security-user'
+    assert record['emails'] == ['user@example.com', 'other@example.com']
     assert record['email'] == 'user@example.com'
+    assert record['delivery_mode'] == 'grouped'
     assert record['team'] == 'SOC'
     assert record['newsletter_profile']['enabled'] is True
     assert record['newsletter_profile']['filters']['collections'] == [

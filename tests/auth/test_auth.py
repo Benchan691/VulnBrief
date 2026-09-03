@@ -34,16 +34,22 @@ def test_bootstrap_creates_default_user_when_auth_is_empty():
         assert verify_login('admin', app.config['WEB_AUTH_BOOTSTRAP_PASSWORD']) is not None
 
 
-def test_login_accepts_email_when_stored_on_user():
+def test_login_rejects_email_even_when_stored_on_user():
     with app.app_context():
         upsert_user('admin', 'secret-pass', email='ops@example.com')
 
     client = app.test_client()
-    response = client.post('/login', data={
+    rejected = client.post('/login', data={
         'username': 'ops@example.com',
         'password': 'secret-pass',
     }, follow_redirects=False)
+    assert rejected.status_code == 200
+    assert b'Invalid username or password' in rejected.data
 
+    response = client.post('/login', data={
+        'username': 'admin',
+        'password': 'secret-pass',
+    }, follow_redirects=False)
     assert response.status_code == 302
     with client.session_transaction() as session:
         assert session['username'] == 'admin'
@@ -92,7 +98,7 @@ def test_user_is_forced_to_change_password_and_can_logout():
 
     client = app.test_client()
     response = client.post('/login', data={
-        'username': 'forced@example.com',
+        'username': 'forced-user',
         'password': '1234',
     }, follow_redirects=False)
     assert response.status_code == 302
@@ -122,7 +128,33 @@ def test_user_is_forced_to_change_password_and_can_logout():
     assert logged_out.headers['Location'].endswith('/login')
     assert client.get('/settings').status_code == 302
     with app.app_context():
-        assert verify_login('forced@example.com', 'new-user-password') is not None
+        assert verify_login('forced-user', 'new-user-password') is not None
+        assert verify_login('forced@example.com', 'new-user-password') is None
+
+
+def test_subscription_user_edit_without_password_preserves_forced_change():
+    from auth.store import ensure_subscription_user, find_user_by_id
+
+    with app.app_context():
+        upsert_user(
+            'legacy-user',
+            '1234',
+            email='legacy-user@example.com',
+            role=ROLE_USER,
+            must_change_password=True,
+        )
+        user = find_user_by_id(get_web_database()['auth'].find_one({
+            'username': 'legacy-user',
+        })['_id'])
+        ensure_subscription_user(
+            'legacy-user',
+            email='legacy-user@example.com',
+            user_id=user['_id'],
+        )
+        updated = find_user_by_id(user['_id'])
+
+    assert updated['must_change_password'] is True
+    assert verify_login('legacy-user', '1234') is not None
 
 
 def test_legacy_accounts_and_subscriptions_are_migrated():

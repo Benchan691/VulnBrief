@@ -4,6 +4,10 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from core.database import get_web_database
+from integrations.email import (
+    DELIVERY_MODE_INDIVIDUAL,
+    DELIVERY_MODES,
+)
 from reviews.repository import MAX_EXPORT_SELECTIONS
 from subscriptions.sources import subscription_review_views
 from subscriptions.vendor_products import (
@@ -25,6 +29,7 @@ review_views = subscription_review_views
 
 
 SUB_ACCOUNT_COLLECTION = 'sub_account'
+DEFAULT_DELIVERY_MODE = DELIVERY_MODE_INDIVIDUAL
 
 
 def get_sub_account_collection():
@@ -112,6 +117,11 @@ def subscription_schema(database):
     """Describe the subscriber-facing configuration accepted by the validator."""
     return {
         'schema_version': VENDOR_PRODUCT_SCHEMA_VERSION,
+        'subscription': {
+            'fields': ['username', 'emails', 'team', 'delivery_mode'],
+            'delivery_modes': sorted(DELIVERY_MODES),
+            'default_delivery_mode': DEFAULT_DELIVERY_MODE,
+        },
         'profile_types': ['newsletter', 'report'],
         'review_collections': sorted(review_views(database)),
         'filters': {
@@ -394,6 +404,23 @@ def validate_profile(database, value, profile_type, *, allow_legacy_report_keywo
 
 def normalize_subscription(database, document):
     normalized = dict(document)
+    emails = document.get('emails')
+    if not isinstance(emails, list):
+        emails = [document.get('email')]
+    emails = [
+        email.strip().casefold()
+        for email in emails
+        if isinstance(email, str) and email.strip()
+    ]
+    normalized['emails'] = list(dict.fromkeys(emails))
+    if normalized['emails']:
+        normalized['email'] = normalized['emails'][0]
+    delivery_mode = document.get('delivery_mode')
+    normalized['delivery_mode'] = (
+        delivery_mode
+        if isinstance(delivery_mode, str) and delivery_mode in DELIVERY_MODES
+        else DEFAULT_DELIVERY_MODE
+    )
     legacy_collections = document.get('subscriptions', [])
     newsletter_value = document.get('newsletter_profile', {})
     report_value = document.get('report_profile')

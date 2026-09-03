@@ -97,10 +97,20 @@ def build_profiles(database, legacy_record, mapped_collections):
 
 
 def migrate_record(database, legacy_record, by_source, by_name, review_view_suffix):
-    email = (legacy_record.get('email') or '').strip()
+    raw_emails = legacy_record.get('emails')
+    if not isinstance(raw_emails, list):
+        raw_emails = [legacy_record.get('email')]
+    emails = []
+    seen_emails = set()
+    for raw_email in raw_emails:
+        email = raw_email.strip().casefold() if isinstance(raw_email, str) else ''
+        if email and email not in seen_emails:
+            emails.append(email)
+            seen_emails.add(email)
+    email = emails[0] if emails else ''
     team = (legacy_record.get('team') or '').strip()
     if not email or not team:
-        raise ValueError('Email and team are required.')
+        raise ValueError('At least one email and a team are required.')
     mapped_collections, warnings = map_legacy_collections(
         legacy_record.get('subscriptions', []),
         by_source,
@@ -110,8 +120,14 @@ def migrate_record(database, legacy_record, by_source, by_name, review_view_suff
     newsletter_profile, report_profile = build_profiles(
         database, legacy_record, mapped_collections,
     )
+    delivery_mode = legacy_record.get('delivery_mode')
+    if not isinstance(delivery_mode, str) or delivery_mode not in {'individual', 'grouped'}:
+        delivery_mode = 'individual'
     return {
+        'username': (legacy_record.get('username') or email).strip(),
+        'emails': emails,
         'email': email,
+        'delivery_mode': delivery_mode,
         'team': team,
         'newsletter_profile': newsletter_profile,
         'report_profile': report_profile,
@@ -181,20 +197,30 @@ def main():
             warning_count += 1
             print(f'WARN {email}: skipped unmappable collections: {", ".join(warnings)}')
 
-        existing = collection.find_one({'email': email})
+        existing = collection.find_one({'$or': [
+            {'email': email},
+            {'emails': email},
+        ]})
         if existing and is_already_migrated(existing) and not args.force:
             skipped += 1
             print(f'SKIP {email}: already migrated')
             continue
 
         update_fields = {
+            'username': record['username'],
+            'emails': record['emails'],
+            'email': record['email'],
+            'delivery_mode': record['delivery_mode'],
             'newsletter_profile': record['newsletter_profile'],
             'report_profile': record['report_profile'],
             'updated_at': now,
         }
         if existing is None:
             document = {
+                'username': record['username'],
+                'emails': record['emails'],
                 'email': email,
+                'delivery_mode': record['delivery_mode'],
                 'team': record['team'],
                 **update_fields,
                 'created_at': now,
@@ -214,7 +240,7 @@ def main():
             if args.dry_run:
                 updated += 1
             else:
-                collection.update_one({'email': email}, {'$set': update_fields})
+                collection.update_one({'_id': existing['_id']}, {'$set': update_fields})
                 updated += 1
 
         newsletter_enabled = record['newsletter_profile']['enabled']

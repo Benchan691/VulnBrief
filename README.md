@@ -5,7 +5,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 ## Features
 
 - **Newsletters** — browse filesystem newsletters plus source-specific newsletters rendered live from MongoDB records
-- **Subscriptions** — manage collection-based newsletter feeds with optional confidence-aware vendor/product CSV filters on both newsletter and report profiles
+- **Subscriptions** — manage username-based subscription accounts with multiple recipient emails, private or grouped delivery, and optional confidence-aware vendor/product CSV filters on both newsletter and report profiles
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
 - **Reports** — generate structured reports with **Enriched Weekly** (Tavily + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
 

@@ -176,17 +176,22 @@ Open: **http://localhost:9100**
 On first startup, the app creates a bootstrap user from `WEB_AUTH_BOOTSTRAP_USERNAME`
 and `WEB_AUTH_BOOTSTRAP_PASSWORD` in `.env` (default `admin` / `changeme`).
 This account is the only administrator. Change its password from Settings after
-first login. Administrators create user accounts from Subscription Management;
-the subscription email is also the user login, and the password entered there
-is stored as a bcrypt hash. Existing subscription accounts without a configured
-password are migrated to the temporary password `1234` and must change it after
-login. Users can manage only their own subscription.
+first login. Administrators create grouped user accounts from Subscription
+Management. Each account has one username/password and one or more recipient
+emails; the password is stored only as a bcrypt hash. Users sign in with the
+username, not an email address, and can manage only their own subscription.
+Existing subscription accounts without a configured password are migrated to
+the temporary password `1234` and must change it after login. Existing usernames
+are preserved during migration, including usernames that happen to look like
+email addresses; the email field remains delivery/contact metadata.
 
 For a separate non-admin login, use:
 
 ```sh
 .venv/bin/python scripts/create_auth_user.py myuser 'secure-password' --email you@example.com
 ```
+
+The optional email is contact metadata only; it cannot be used to sign in.
 
 ## 9. Verify the setup
 

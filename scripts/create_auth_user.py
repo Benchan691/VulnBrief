@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description='Create or reset a web login user in local MongoDB.')
     parser.add_argument('username', help='Login username')
     parser.add_argument('password', help='Login password')
-    parser.add_argument('--email', help='Optional email address that can also be used to sign in')
+    parser.add_argument('--email', help='Optional contact email address (not a login identifier)')
     args = parser.parse_args()
     configure_application(BASE_DIR)
     upsert_user(args.username, args.password, email=args.email)

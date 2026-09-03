@@ -76,6 +76,9 @@
         empty.classList.add('d-none');
         rows.forEach(function (row) {
             const delivery = row.delivery || {};
+            const recipients = Array.isArray(row.emails) && row.emails.length
+                ? row.emails.join(', ')
+                : row.email;
             const schedule = row.schedule_enabled
                 ? escapeHtml(row.schedule_weekday) + ' ' + escapeHtml(row.schedule_time) + ' ' + t('HKT')
                 : t('Off');
@@ -87,8 +90,10 @@
                 : '—';
             const tr = document.createElement('tr');
             tr.innerHTML =
-                '<td><div class="fw-semibold">' + escapeHtml(row.email) + '</div>' +
+                '<td><div class="fw-semibold">' + escapeHtml(row.username || row.email) + '</div>' +
+                '<div class="small text-muted">' + escapeHtml(recipients || '') + '</div>' +
                 '<div class="small text-muted">' + escapeHtml(row.team || '') + '</div>' +
+                '<div class="small">' + escapeHtml(row.delivery_mode || 'individual') + '</div>' +
                 '<div class="small">' + (row.enabled ? t('Enabled') : t('Disabled')) +
                 ' · ' + escapeHtml(row.generation_mode || '') + '</div></td>' +
                 '<td>' + schedule + '</td>' +
@@ -126,9 +131,14 @@
         empty.classList.add('d-none');
         rows.forEach(function (row) {
             const tr = document.createElement('tr');
+            const recipients = Array.isArray(row.emails) && row.emails.length
+                ? row.emails.join(', ')
+                : row.email;
             tr.innerHTML =
-                '<td><div class="fw-semibold">' + escapeHtml(row.email) + '</div>' +
-                '<div class="small text-muted">' + escapeHtml(row.team || '') + '</div></td>' +
+                '<td><div class="fw-semibold">' + escapeHtml(row.username || row.email) + '</div>' +
+                '<div class="small text-muted">' + escapeHtml(recipients || '') + '</div>' +
+                '<div class="small text-muted">' + escapeHtml(row.team || '') + '</div>' +
+                '<div class="small">' + escapeHtml(row.delivery_mode || 'individual') + '</div></td>' +
                 '<td>' + (row.enabled ? t('Yes') : t('No')) + '</td>' +
                 '<td class="small">' + escapeHtml(row.delivery_cursor || '—') + '</td>' +
                 '<td class="small">' + escapeHtml(row.cve_delivery_cutoff || '—') + '</td>' +

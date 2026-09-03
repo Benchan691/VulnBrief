@@ -1,20 +1,31 @@
 from copy import deepcopy
 from datetime import datetime, timezone
+import re
 
+from bson import ObjectId
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
 from auth.store import (
     MAX_PASSWORD_LENGTH,
     ensure_subscription_user,
+    find_user,
+    find_user_by_email,
+    find_user_by_id,
     normalize_login,
+    normalize_username,
     validate_password,
 )
 from core.auth import admin_required, current_user, is_admin, login_required
 from core.database import get_vulnerabilities_database
-from integrations.email import Mailer
+from integrations.email import (
+    DELIVERY_MODES,
+    Mailer,
+    send_to_recipients,
+)
 from reviews.scoring import rank_scored_selections, score_review_document
 from subscriptions.profiles import (
+    DEFAULT_DELIVERY_MODE,
     get_sub_account_collection,
     normalize_subscription,
     profile_with_window,
@@ -39,6 +50,8 @@ from core.i18n import t
 subscription_blueprint = Blueprint('subscription', __name__)
 
 REPORT_PREVIEW_SAMPLE_LIMIT = 25
+MAX_RECIPIENTS = 50
+EMAIL_PATTERN = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 VENDOR_PRODUCT_CSV_TEMPLATE = """vendor,product,vendor_aliases,product_aliases
 Red Hat,Enterprise Linux,"Red Hat, Inc.|RedHat",RHEL|Red Hat Enterprise Linux
 Microsoft,Windows Server,Microsoft Corporation,Windows Server 2019|Windows Server 2022
@@ -59,14 +72,181 @@ def get_collection():
     return get_sub_account_collection()
 
 
-def _subscription_query(email=None):
-    if is_admin():
-        return {} if email is None else {'email': email}
-    user = current_user()
-    own_email = normalize_login(user.get('email')) if user else ''
-    if email is not None and normalize_login(email).casefold() != own_email.casefold():
+def _normalize_recipients(value):
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError('Email recipients must be an array.')
+    if not value:
+        raise ValueError('At least one email recipient is required.')
+    if len(value) > MAX_RECIPIENTS:
+        raise ValueError(f'No more than {MAX_RECIPIENTS} email recipients are allowed.')
+    recipients = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError('Email recipients must be non-empty text values.')
+        email = item.strip().casefold()
+        if not EMAIL_PATTERN.fullmatch(email):
+            raise ValueError(f'Invalid email address: {item.strip()}')
+        if email not in seen:
+            recipients.append(email)
+            seen.add(email)
+    if not recipients:
+        raise ValueError('At least one email recipient is required.')
+    return recipients
+
+
+def _recipients_from_data(data, *, required=True):
+    if 'emails' in data:
+        return _normalize_recipients(data.get('emails'))
+    if 'email' in data:
+        return _normalize_recipients([data.get('email')])
+    if required:
+        raise ValueError('At least one email recipient is required.')
+    return []
+
+
+def _normalize_delivery_mode(value):
+    value = value or DEFAULT_DELIVERY_MODE
+    if not isinstance(value, str) or value not in DELIVERY_MODES:
+        raise ValueError('Invalid email delivery mode.')
+    return value
+
+
+def _username_conflict(username, *, exclude_id=None):
+    query = {
+        'username': {
+            '$regex': f'^{re.escape(username)}$',
+            '$options': 'i',
+        },
+    }
+    if exclude_id is not None:
+        query = {'$and': [query, {'_id': {'$ne': exclude_id}}]}
+    return get_collection().find_one(query)
+
+
+def _identifier_query(identifier):
+    identifier = normalize_login(identifier)
+    if not identifier:
         return None
-    return {'email': own_email} if own_email else {'_id': None}
+    if ObjectId.is_valid(identifier):
+        return {'_id': ObjectId(identifier)}
+    email = identifier.casefold()
+    return {'$or': [{'email': email}, {'emails': email}]}
+
+
+def _owner_conditions(user):
+    if not user:
+        return []
+    legacy_conditions = []
+    username = normalize_username(user.get('username')) if user else ''
+    if username:
+        legacy_conditions.append({'username': username})
+    # Legacy compatibility only. Email is never used by authentication.
+    email = normalize_login(user.get('email')) if user else ''
+    if email:
+        legacy_conditions.extend([
+            {'email': email.casefold()},
+            {'emails': email.casefold()},
+        ])
+    if user.get('_id') is None:
+        return legacy_conditions
+    conditions = [{'owner_user_id': user['_id']}]
+    if legacy_conditions:
+        conditions.append({
+            '$and': [
+                {'$or': [
+                    {'owner_user_id': {'$exists': False}},
+                    {'owner_user_id': None},
+                ]},
+                {'$or': legacy_conditions},
+            ],
+        })
+    return conditions
+
+
+def _belongs_to_user(document, user):
+    if not user:
+        return False
+    owner_id = document.get('owner_user_id')
+    if owner_id is not None and user.get('_id') is not None:
+        return str(owner_id) == str(user['_id'])
+    username = normalize_username(document.get('username'))
+    if username and username.casefold() == normalize_username(user.get('username')).casefold():
+        return True
+    email = normalize_login(user.get('email')).casefold()
+    recipients = document.get('emails')
+    if not isinstance(recipients, list):
+        recipients = [document.get('email')]
+    return bool(email and email in {
+        normalize_login(item).casefold()
+        for item in recipients
+        if isinstance(item, str) and item.strip()
+    })
+
+
+def _subscription_query(identifier=None):
+    if is_admin():
+        return {} if identifier is None else _identifier_query(identifier)
+    user = current_user()
+    conditions = _owner_conditions(user)
+    if identifier is None:
+        return {'$or': conditions} if conditions else {'_id': None}
+    identifier_query = _identifier_query(identifier)
+    if identifier_query is None:
+        return None
+    existing = get_collection().find_one(identifier_query)
+    if existing is not None and not _belongs_to_user(existing, user):
+        return None
+    if not conditions:
+        return {'_id': None}
+    return identifier_query if existing is not None else {
+        '$and': [identifier_query, {'$or': conditions}],
+    }
+
+
+def _recipient_conflict(recipients, *, exclude_id=None):
+    query = {'$or': [
+        {
+            'emails': {
+                '$regex': f'^{re.escape(recipient)}$',
+                '$options': 'i',
+            },
+        }
+        for recipient in recipients
+    ] + [
+        {
+            'email': {
+                '$regex': f'^{re.escape(recipient)}$',
+                '$options': 'i',
+            },
+        }
+        for recipient in recipients
+    ]}
+    if exclude_id is not None:
+        query = {'$and': [query, {'_id': {'$ne': exclude_id}}]}
+    return get_collection().find_one(query)
+
+
+def _delivery_error(result):
+    failed = result.get('failed') or []
+    if not failed:
+        return ''
+    return 'Email delivery failed for one or more recipients.'
+
+
+def _send_subscription_email(subscription, payload):
+    with Mailer(current_app.config) as mailer:
+        result = send_to_recipients(
+            mailer,
+            subscription.get('emails') or [subscription.get('email')],
+            payload,
+            subscription.get('delivery_mode') or DEFAULT_DELIVERY_MODE,
+        )
+    if result.get('failed'):
+        raise RuntimeError(_delivery_error(result))
+    return result
 
 
 def _subscription_access_denied():
@@ -84,7 +264,10 @@ TOP_LEVEL_SCHEDULE_FIELD_UNSET = {
 
 def _public_subscription(database, document):
     normalized = normalize_subscription(database, document)
+    if document.get('_id') is not None:
+        normalized['id'] = str(document['_id'])
     normalized.pop('_id', None)
+    normalized.pop('owner_user_id', None)
     normalized.pop('password', None)
     normalized.pop('password_hash', None)
     normalized.pop('schedule_claim_until', None)
@@ -167,13 +350,15 @@ def _preview_profiles(database, data):
         newsletter_profile, report_profile = _profiles(database, data)
         return newsletter_profile, report_profile, warnings, applied_defaults, None
 
-    raw_email = data.get('email') or data.get('target_email') or ''
-    if not isinstance(raw_email, str):
-        raise ValueError('Email must be text when preview mode is update.')
-    email = raw_email.strip()
-    if not email:
-        raise ValueError('Email is required when preview mode is update.')
-    existing = get_collection().find_one({'email': email})
+    identifier = data.get('subscription_id') or data.get('id')
+    if identifier is None:
+        identifier = data.get('email') or data.get('target_email') or ''
+    if not isinstance(identifier, str):
+        raise ValueError('Subscription ID must be text when preview mode is update.')
+    identifier = identifier.strip()
+    if not identifier:
+        raise ValueError('Subscription ID is required when preview mode is update.')
+    existing = get_collection().find_one(_identifier_query(identifier))
     if existing is None:
         raise LookupError('Subscription not found.')
     current = normalize_subscription(database, existing)
@@ -224,7 +409,7 @@ def _preview_profiles(database, data):
             'The existing legacy report keyword filter is being preserved. '
             'Import a vendor/product CSV to replace it.'
         )
-    return newsletter_profile, report_profile, warnings, applied_defaults, email
+    return newsletter_profile, report_profile, warnings, applied_defaults, identifier
 
 
 def _with_next_run(profile):
@@ -367,8 +552,14 @@ def _admin_profile_settings(profile, profile_type):
 
 def _subscription_setting_changes(current, updated):
     changes = []
+    if current.get('username') != updated.get('username'):
+        changes.append('Username')
+    if current.get('emails') != updated.get('emails'):
+        changes.append('Email recipients')
     if current.get('team') != updated.get('team'):
         changes.append('Team')
+    if current.get('delivery_mode') != updated.get('delivery_mode'):
+        changes.append('Email delivery mode')
     current_newsletter = _admin_profile_settings(current['newsletter_profile'], 'newsletter')
     updated_newsletter = _admin_profile_settings(updated['newsletter_profile'], 'newsletter')
     if current_newsletter['enabled'] != updated_newsletter['enabled']:
@@ -510,12 +701,14 @@ def preview_subscription_configuration():
     if data.get('mode') == 'create' and not is_admin():
         return _subscription_access_denied()
     if data.get('mode') == 'update':
-        requested_email = data.get('email') or data.get('target_email') or ''
-        if _subscription_query(requested_email) is None:
+        requested_id = data.get('subscription_id') or data.get('id')
+        if requested_id is None:
+            requested_id = data.get('email') or data.get('target_email') or ''
+        if _subscription_query(requested_id) is None:
             return _subscription_access_denied()
     try:
         database = get_vulnerabilities_database()
-        newsletter_profile, report_profile, warnings, applied_defaults, email = _preview_profiles(
+        newsletter_profile, report_profile, warnings, applied_defaults, identifier = _preview_profiles(
             database, data,
         )
         normalized_profiles = {
@@ -531,8 +724,10 @@ def preview_subscription_configuration():
             'applied_defaults': applied_defaults,
             'warnings': warnings,
         }
-        if email:
-            response['email'] = email
+        if identifier:
+            response['subscription_id'] = identifier
+            if not ObjectId.is_valid(identifier):
+                response['email'] = identifier
         return jsonify(response)
     except LookupError:
         return jsonify({'error': t('Subscription not found.')}), 404
@@ -546,10 +741,16 @@ def preview_subscription_configuration():
 @admin_required
 def add_subscription():
     data = request.get_json(silent=True) or {}
-    email = (data.get('email') or '').strip()
-    team = (data.get('team') or '').strip()
-    if not email or not team:
-        return jsonify({'error': t('Email and team are required.')}), 400
+    legacy_email = normalize_login(data.get('email'))
+    username = normalize_username(data.get('username')) or legacy_email
+    team = normalize_login(data.get('team'))
+    try:
+        emails = _recipients_from_data(data)
+        delivery_mode = _normalize_delivery_mode(data.get('delivery_mode'))
+    except ValueError as exc:
+        return jsonify({'error': t(str(exc))}), 400
+    if not username or not team:
+        return jsonify({'error': t('Username, email, and team are required.')}), 400
     password = data.get('password')
     if not isinstance(password, str) or not password:
         return jsonify({'error': t('Password is required.')}), 400
@@ -573,52 +774,64 @@ def add_subscription():
         newsletter_profile, report_profile = _profiles(database, data)
         newsletter_profile = _with_statistic_next_run(newsletter_profile)
         report_profile = _with_next_run(report_profile)
-        if get_collection().find_one({'email': email}):
-            return jsonify({'error': t('A subscription already exists for this email.')}), 409
-        ensure_subscription_user(email, password)
+        if _username_conflict(username):
+            return jsonify({'error': t('A subscription already exists for this username.')}), 409
+        if _recipient_conflict(emails):
+            return jsonify({'error': t('One or more email recipients already belong to another subscription.')}), 409
+        existing_user = find_user(username)
+        if existing_user is not None:
+            active_subscription = get_collection().find_one({
+                '$or': [
+                    {'owner_user_id': existing_user['_id']},
+                    {'username': existing_user.get('username')},
+                ],
+            })
+            if active_subscription is not None:
+                return jsonify({'error': t('A subscription already exists for this username.')}), 409
+        user = ensure_subscription_user(username, password, email=emails[0])
         now = datetime.now(timezone.utc)
-        get_collection().insert_one({
-            'email': email,
+        subscription_document = {
+            'owner_user_id': user['_id'],
+            'username': username,
+            'emails': emails,
+            # Keep the first recipient as a compatibility alias for old tools.
+            'email': emails[0],
             'team': team,
+            'delivery_mode': delivery_mode,
             'newsletter_profile': newsletter_profile,
             'report_profile': report_profile,
             'created_at': now,
             'updated_at': now,
-        })
-        get_collection().update_one({'email': email}, {'$unset': SCHEDULE_FIELD_UNSET})
-        subscription = {
-            'email': email,
-            'newsletter_profile': newsletter_profile,
-            'report_profile': report_profile,
         }
+        result = get_collection().insert_one(subscription_document)
+        get_collection().update_one({'_id': result.inserted_id}, {'$unset': SCHEDULE_FIELD_UNSET})
         try:
-            with Mailer(current_app.config) as mailer:
-                mailer.send_email(
-                    email,
-                    subscription_confirmation_email(
-                        subscription,
-                        current_app.config.get('SUBSCRIPTION_CONFIRMATION_CANCEL_URL', ''),
-                    ),
-                )
+            _send_subscription_email(
+                subscription_document,
+                subscription_confirmation_email(
+                    subscription_document,
+                    current_app.config.get('SUBSCRIPTION_CONFIRMATION_CANCEL_URL', ''),
+                ),
+            )
         except Exception:
             current_app.logger.exception(
-                'Subscription confirmation email could not be sent to %s.', email,
+                'Subscription confirmation email could not be sent to %s.', emails,
             )
             return jsonify({
                 'error': t('Subscription was saved, but the confirmation email could not be sent.'),
             }), 503
-        return jsonify({'success': True}), 201
+        return jsonify({'success': True, 'id': str(result.inserted_id)}), 201
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except PyMongoError:
         return jsonify({'error': t('Unable to add subscription.')}), 503
 
 
-@subscription_blueprint.route('/api/subscriptions/<path:email>', methods=['PUT'])
+@subscription_blueprint.route('/api/subscriptions/<path:subscription_id>', methods=['PUT'])
 @login_required
-def edit_subscription(email):
+def edit_subscription(subscription_id):
     data = request.get_json(silent=True) or {}
-    query = _subscription_query(email)
+    query = _subscription_query(subscription_id)
     if query is None:
         return _subscription_access_denied()
     password = data.get('password')
@@ -639,6 +852,34 @@ def edit_subscription(email):
         if existing is None:
             return jsonify({'error': t('Subscription not found.')}), 404
         current = normalize_subscription(database, existing)
+        if not is_admin() and any(field in data for field in ('username', 'emails', 'email', 'password')):
+            return jsonify({'error': t('Only an administrator can edit subscription identity fields.')}), 403
+        current_user_record = current_user()
+        owner_id = current.get('owner_user_id') or (
+            current_user_record.get('_id') if current_user_record and not is_admin() else None
+        )
+        owner = find_user_by_id(owner_id) if owner_id else None
+        if owner is None:
+            owner = find_user(current.get('username')) if current.get('username') else None
+        if owner is None and current.get('email'):
+            owner = find_user_by_email(current.get('email'))
+        if owner is None and not is_admin():
+            owner = current_user_record
+
+        username = normalize_username(data.get('username')) if 'username' in data else (
+            current.get('username') or (owner.get('username') if owner else '')
+        )
+        if not username:
+            raise ValueError('Username is required.')
+        emails = _recipients_from_data(data) if is_admin() and ('emails' in data or 'email' in data) else current.get('emails')
+        emails = _normalize_recipients(emails)
+        delivery_mode = _normalize_delivery_mode(
+            data['delivery_mode'] if 'delivery_mode' in data else current.get('delivery_mode')
+        )
+        if is_admin() and _username_conflict(username, exclude_id=existing.get('_id')):
+            return jsonify({'error': t('A subscription already exists for this username.')}), 409
+        if is_admin() and _recipient_conflict(emails, exclude_id=existing.get('_id')):
+            return jsonify({'error': t('One or more email recipients already belong to another subscription.')}), 409
         data.setdefault('newsletter_profile', current['newsletter_profile'])
         if 'report_profile' not in data and 'subscriptions' not in data:
             data['report_profile'] = current['report_profile']
@@ -680,45 +921,62 @@ def edit_subscription(email):
             raise ValueError(
                 'Legacy report keywords cannot be removed from an active profile. '
                 'Import a vendor/product CSV to replace them, or disable the report profile.'
-            )
+        )
         newsletter_profile = _with_statistic_next_run(newsletter_profile)
         report_profile = _with_next_run(report_profile)
-        team = (data.get('team') or '').strip() or current.get('team', '')
+        team_value = data.get('team')
+        if team_value is not None and not isinstance(team_value, str):
+            raise ValueError('Team must be text.')
+        team = (team_value or '').strip() or current.get('team', '')
+        if not team:
+            raise ValueError('Team is required.')
         updated_subscription = {
-            'email': email,
+            'owner_user_id': owner.get('_id') if owner else owner_id,
+            'username': username,
+            'emails': emails,
+            'email': emails[0],
             'team': team,
+            'delivery_mode': delivery_mode,
             'newsletter_profile': newsletter_profile,
             'report_profile': report_profile,
         }
         changes = _subscription_setting_changes(current, updated_subscription)
         update = {
+            'owner_user_id': updated_subscription['owner_user_id'],
+            'username': username,
+            'emails': emails,
+            'email': emails[0],
+            'delivery_mode': delivery_mode,
             'newsletter_profile': newsletter_profile,
             'report_profile': report_profile,
             'updated_at': datetime.now(timezone.utc),
         }
-        if team != current.get('team', ''):
-            update['team'] = team
+        update['team'] = team
+        if is_admin():
+            ensure_subscription_user(
+                username,
+                password if isinstance(password, str) and password else None,
+                email=emails[0],
+                user_id=owner.get('_id') if owner else owner_id,
+            )
         get_collection().update_one(
             query,
             {'$set': update, '$unset': {'subscriptions': '', **TOP_LEVEL_SCHEDULE_FIELD_UNSET}},
         )
-        if isinstance(password, str) and password:
-            ensure_subscription_user(email, password)
         if changes:
             try:
-                with Mailer(current_app.config) as mailer:
-                    mailer.send_email(
-                        email,
-                        _subscription_notification_email(
-                            'updated',
-                            updated_subscription,
-                            current_app.config.get('SUBSCRIPTION_CONFIRMATION_CANCEL_URL', ''),
-                            changes,
-                        ),
-                    )
+                _send_subscription_email(
+                    updated_subscription,
+                    _subscription_notification_email(
+                        'updated',
+                        updated_subscription,
+                        current_app.config.get('SUBSCRIPTION_CONFIRMATION_CANCEL_URL', ''),
+                        changes,
+                    ),
+                )
             except Exception:
                 current_app.logger.exception(
-                    'Subscription update email could not be sent to %s.', email,
+                    'Subscription update email could not be sent to %s.', emails,
                 )
                 return jsonify({
                     'error': t('Subscription was updated, but the notification email could not be sent.'),
@@ -730,10 +988,10 @@ def edit_subscription(email):
         return jsonify({'error': t('Unable to update subscription.')}), 503
 
 
-@subscription_blueprint.route('/api/subscriptions/<path:email>', methods=['DELETE'])
+@subscription_blueprint.route('/api/subscriptions/<path:subscription_id>', methods=['DELETE'])
 @login_required
-def remove_subscription(email):
-    query = _subscription_query(email)
+def remove_subscription(subscription_id):
+    query = _subscription_query(subscription_id)
     if query is None:
         return _subscription_access_denied()
     try:
@@ -746,14 +1004,13 @@ def remove_subscription(email):
         if not result.deleted_count:
             return jsonify({'error': t('Subscription not found.')}), 404
         try:
-            with Mailer(current_app.config) as mailer:
-                mailer.send_email(
-                    email,
-                    _subscription_notification_email('cancelled', subscription),
-                )
+            _send_subscription_email(
+                subscription,
+                _subscription_notification_email('cancelled', subscription),
+            )
         except Exception:
             current_app.logger.exception(
-                'Subscription cancellation email could not be sent to %s.', email,
+                'Subscription cancellation email could not be sent to %s.', subscription.get('emails'),
             )
             return jsonify({
                 'error': t('Subscription was cancelled, but the notification email could not be sent.'),
@@ -763,11 +1020,11 @@ def remove_subscription(email):
         return jsonify({'error': t('Unable to remove subscription.')}), 503
 
 
-@subscription_blueprint.route('/api/subscriptions/<path:email>/run', methods=['POST'])
+@subscription_blueprint.route('/api/subscriptions/<path:subscription_id>/run', methods=['POST'])
 @login_required
-def run_subscription(email):
+def run_subscription(subscription_id):
     data = request.get_json(silent=True) or {}
-    query = _subscription_query(email)
+    query = _subscription_query(subscription_id)
     if query is None:
         return _subscription_access_denied()
     try:
@@ -804,8 +1061,13 @@ def run_subscription(email):
 def preview_subscription_report():
     data = request.get_json(silent=True) or {}
     if not is_admin():
-        requested_email = data.get('email') if isinstance(data, dict) else ''
-        query = _subscription_query(requested_email)
+        requested_id = (
+            (data.get('subscription_id') or data.get('id'))
+            if isinstance(data, dict) else ''
+        )
+        if not requested_id and isinstance(data, dict):
+            requested_id = data.get('email') or ''
+        query = _subscription_query(requested_id)
         if query is None:
             return _subscription_access_denied()
         if get_collection().find_one(query) is None:
@@ -831,10 +1093,10 @@ def preview_subscription_report():
         return jsonify({'error': str(exc) or t('Unable to preview report profile.')}), 500
 
 
-@subscription_blueprint.route('/api/subscriptions/<path:email>/send-statistic', methods=['POST'])
+@subscription_blueprint.route('/api/subscriptions/<path:subscription_id>/send-statistic', methods=['POST'])
 @login_required
-def send_subscription_statistic(email):
-    query = _subscription_query(email)
+def send_subscription_statistic(subscription_id):
+    query = _subscription_query(subscription_id)
     if query is None:
         return _subscription_access_denied()
     try:
@@ -845,12 +1107,11 @@ def send_subscription_statistic(email):
         subscription = normalize_subscription(database, raw)
         if not subscription['newsletter_profile']['enabled']:
             return jsonify({'error': t('Newsletter feed is disabled for this subscription.')}), 400
-        stats = newsletter_delivery_statistics(email)
-        with Mailer(current_app.config) as mailer:
-            mailer.send_email(email, {
+        stats = newsletter_delivery_statistics(subscription.get('emails') or [subscription.get('email')])
+        _send_subscription_email(subscription, {
                 'subject': 'Newsletter delivery statistics',
                 'html': render_newsletter_statistics_html(stats),
-            })
+        })
         return jsonify({
             'success': True,
             'message': t('Newsletter statistics email sent.'),
