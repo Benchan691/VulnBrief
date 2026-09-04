@@ -260,6 +260,28 @@ def ensure_subscription_user(username, password=None, email=None, *, user_id=Non
     return collection.find_one({'_id': user['_id']})
 
 
+def _user_has_subscription(user):
+    conditions = [{'owner_user_id': user['_id']}]
+    for field in ('username', 'email'):
+        value = normalize_login(user.get(field))
+        if value:
+            conditions.append({
+                field: {
+                    '$regex': f'^{re.escape(value)}$',
+                    '$options': 'i',
+                },
+            })
+    email = normalize_login(user.get('email'))
+    if email:
+        conditions.append({
+            'emails': {
+                '$regex': f'^{re.escape(email)}$',
+                '$options': 'i',
+            },
+        })
+    return get_web_database()['sub_account'].find_one({'$or': conditions}) is not None
+
+
 def create_sub_admin(
     username,
     password,
@@ -275,10 +297,23 @@ def create_sub_admin(
     password = _validate_password(password)
     email = validate_email(email)
     collection = get_web_database()[AUTH_COLLECTION]
-    if _find_user_by_username(username) is not None:
+    existing_username = _find_user_by_username(username)
+    existing_email = find_user_by_email(email) if email else None
+    if existing_username is not None and existing_username.get('role') != ROLE_USER:
         raise ValueError('Username is already in use.')
-    if email and find_user_by_email(email) is not None:
+    if existing_username is not None and _user_has_subscription(existing_username):
+        raise ValueError('Username is already in use.')
+    if existing_email is not None and existing_email.get('role') != ROLE_USER:
         raise ValueError('Email is already in use.')
+    if existing_email is not None and _user_has_subscription(existing_email):
+        raise ValueError('Email is already in use.')
+    if (
+        existing_username is not None
+        and existing_email is not None
+        and existing_username['_id'] != existing_email['_id']
+    ):
+        raise ValueError('Email is already in use.')
+    existing = existing_username or existing_email
     now = datetime.now(timezone.utc)
     document = {
         'username': username,
@@ -297,6 +332,9 @@ def create_sub_admin(
         document['email'] = email
     if parent_admin_id is not None:
         document['parent_admin_id'] = parent_admin_id
+    if existing is not None:
+        collection.update_one({'_id': existing['_id']}, {'$set': document})
+        return collection.find_one({'_id': existing['_id']})
     result = collection.insert_one(document)
     return collection.find_one({'_id': result.inserted_id})
 

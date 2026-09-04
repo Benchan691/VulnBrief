@@ -41,6 +41,10 @@ def create_app():
 
     @application.route('/')
     def home():
+        from core.auth import is_top_admin
+
+        if is_top_admin():
+            return redirect(url_for('auth.sub_admins'))
         return redirect(url_for('subscription.subscriptions'))
 
     @application.route('/locale/<code>')

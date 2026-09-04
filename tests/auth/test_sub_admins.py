@@ -78,6 +78,12 @@ def _subscription(document_id, manager_id, username, email, *, newsletter=True):
 def test_top_admin_can_manage_sub_admin_lifecycle_and_disabled_sessions():
     client = app.test_client()
     root = _session_user(client, f'{PREFIX}root')
+    dashboard = client.get('/')
+    assert dashboard.status_code == 302
+    assert dashboard.headers['Location'].endswith('/admin/sub-admins')
+    assert b'Sub-admin Management' in client.get('/admin/sub-admins').data
+    assert b'href="/subscriptions"' not in client.get('/admin/sub-admins').data
+    assert b'href="/reviews"' not in client.get('/admin/sub-admins').data
     assert client.get('/admin/sub-admins').status_code == 200
 
     created = client.post('/api/admin/sub-admins', json={
@@ -113,6 +119,9 @@ def test_top_admin_can_manage_sub_admin_lifecycle_and_disabled_sessions():
     child_client = app.test_client()
     with child_client.session_transaction() as session:
         session['username'] = f'{PREFIX}child'
+    child_dashboard = child_client.get('/subscriptions')
+    assert child_dashboard.status_code == 200
+    assert b'href="/operations"' not in child_dashboard.data
     assert child_client.get('/admin/sub-admins').status_code == 403
     assert child_client.get('/api/admin/sub-admins').status_code == 403
 
@@ -144,6 +153,33 @@ def test_top_admin_can_manage_sub_admin_lifecycle_and_disabled_sessions():
     assert removed.status_code == 200
     with app.app_context():
         assert find_user_by_id(child['id']) is None
+
+
+def test_orphaned_subscriber_login_can_be_reclaimed_as_sub_admin():
+    client = app.test_client()
+    _session_user(client, f'{PREFIX}root')
+    with app.app_context():
+        orphan = upsert_user(
+            f'{PREFIX}orphan',
+            'orphan-password',
+            email=f'{PREFIX}orphan@example.com',
+        )
+        orphan = find_user(f'{PREFIX}orphan')
+        assert get_web_database()['sub_account'].count_documents({
+            'owner_user_id': orphan['_id'],
+        }) == 0
+
+    created = client.post('/api/admin/sub-admins', json={
+        'username': f'{PREFIX}orphan',
+        'password': 'new-orphan-password',
+        'email': f'{PREFIX}orphan@example.com',
+    })
+    assert created.status_code == 201
+    assert created.get_json()['data']['role'] == 'sub_admin'
+    with app.app_context():
+        reclaimed = find_user(f'{PREFIX}orphan')
+        assert reclaimed['_id'] == orphan['_id']
+        assert verify_login(f'{PREFIX}orphan', 'new-orphan-password') is not None
 
 
 def test_sub_admin_records_are_isolated_and_removal_reassigns_history():

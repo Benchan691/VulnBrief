@@ -12,23 +12,29 @@
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm">
         <div class="container">
-            <a class="navbar-brand" href="{{ url_for('subscription.subscriptions') }}"><i class="bi bi-shield-check me-2"></i>{{ t('Security Portal') }}</a>
+            <a class="navbar-brand" href="{{ url_for('auth.sub_admins') if is_top_admin else url_for('subscription.subscriptions') }}"><i class="bi bi-shield-check me-2"></i>{{ t('Security Portal') }}</a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
                     aria-controls="navbarNav" aria-expanded="false" aria-label="{{ t('Toggle navigation') }}">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto align-items-lg-center">
+                    {% if not is_top_admin %}
                     <li class="nav-item">
                         <a class="nav-link {{ 'active' if request.blueprint == 'subscription' else '' }}" href="{{ url_for('subscription.subscriptions') }}"><i class="bi bi-people me-1"></i>{{ t('Subscriptions') }}</a>
                     </li>
+                    {% endif %}
                     {% if is_admin %}
+                    {% if not is_top_admin %}
                     <li class="nav-item">
                         <a class="nav-link {{ 'active' if request.blueprint == 'review' else '' }}" href="{{ url_for('review.reviews') }}"><i class="bi bi-shield-check me-1"></i>{{ t('Vulnerability Reviews') }}</a>
                     </li>
+                    {% endif %}
+                    {% if is_top_admin %}
                     <li class="nav-item">
                         <a class="nav-link {{ 'active' if request.blueprint == 'operations' else '' }}" href="{{ url_for('operations.operations') }}"><i class="bi bi-terminal me-1"></i>{{ t('Operations') }}</a>
                     </li>
+                    {% endif %}
                     {% endif %}
                     <li class="nav-item">
                         <a class="nav-link {{ 'active' if request.endpoint == 'auth.settings' else '' }}" href="{{ url_for('auth.settings') }}"><i class="bi bi-gear me-1"></i>{{ t('Settings') }}</a>
