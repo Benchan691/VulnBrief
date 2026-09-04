@@ -3,7 +3,7 @@ from bson import ObjectId, json_util
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from core.auth import admin_required
+from core.auth import admin_required, current_user, scoped_admin_query
 from core.database import get_web_database
 from reports.enriched.evidence_cache import purge_evidence_cache
 from reports.enriched.search_results_cache import purge_search_cache
@@ -51,6 +51,7 @@ def _serialize_job(job):
     if job.get('translated_from_job_id') is not None:
         job['translated_from_job_id'] = str(job['translated_from_job_id'])
     job.pop('records', None)
+    job.pop('managed_by_user_id', None)
     job.pop('company_ai_conversation_id', None)
     job.pop('html', None)
     job.pop('html_updated_at', None)
@@ -74,7 +75,7 @@ def _serialize_job(job):
 
 def _get_job(job_id):
     try:
-        return _jobs().find_one({'_id': ObjectId(job_id)})
+        return _jobs().find_one(scoped_admin_query({'_id': ObjectId(job_id)}))
     except Exception:
         return None
 
@@ -89,7 +90,7 @@ def reports():
 @admin_required
 def get_report_jobs():
     try:
-        jobs = _jobs().find({}).sort('created_at', -1).limit(100)
+        jobs = _jobs().find(scoped_admin_query()).sort('created_at', -1).limit(100)
         return jsonify({'data': [_serialize_job(job) for job in jobs]})
     except PyMongoError:
         return jsonify({'error': t('Unable to load report history.')}), 503
@@ -129,6 +130,7 @@ def create_report_job():
             generation_mode,
             report_language,
             search_prompt=search_prompt,
+            managed_by_user_id=current_user()['_id'],
         )
         start_job(current_app._get_current_object(), job_id)
         status = 'running' if generation_mode == 'template' else 'queued'
@@ -163,6 +165,13 @@ def purge_report_search_cache():
 @admin_required
 def cancel_report_job(job_id):
     try:
+        if _get_job(job_id) is None:
+            try:
+                object_id = ObjectId(job_id)
+            except Exception:
+                object_id = None
+            if object_id is not None and _jobs().find_one({'_id': object_id}) is not None:
+                return jsonify({'error': t('Report job not found.')}), 404
         cancel_job(job_id)
         return jsonify({'id': job_id, 'status': 'cancelled'})
     except ValueError as exc:
@@ -175,6 +184,8 @@ def cancel_report_job(job_id):
 @admin_required
 def delete_report_job(job_id):
     try:
+        if _get_job(job_id) is None:
+            return jsonify({'error': t('Report job not found.')}), 404
         delete_job(job_id)
         return jsonify({'id': job_id, 'deleted': True})
     except ValueError as exc:
@@ -203,6 +214,8 @@ def translate_report_job(job_id):
     data = request.get_json(silent=True) or {}
     language = data.get('language')
     try:
+        if _get_job(job_id) is None:
+            return jsonify({'error': t('Report job not found.')}), 404
         result = request_report_translation(current_app._get_current_object(), job_id, language)
         status = 202 if result.get('status') in ('queued', 'running') else 200
         return jsonify(result), status
@@ -235,7 +248,11 @@ def _send_job_html(job_id, as_attachment):
     if language not in ('en', 'zh', 'ch'):
         return jsonify({'error': t('Invalid report language.')}), 400
 
-    stored_html = _translation_html_for_job(job, language)
+    stored_html = _translation_html_for_job(
+        job,
+        language,
+        managed_by_user_id=job.get('managed_by_user_id'),
+    )
     if stored_html is not None:
         headers = {}
         if as_attachment:

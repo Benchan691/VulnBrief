@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from core.auth import admin_required
+from core.auth import admin_required, current_user, is_top_admin
 from core.database import get_vulnerabilities_database, get_web_database
 from operations.health import build_health_snapshot
 from newsletters.normalizer import render_newsletter
@@ -30,7 +30,13 @@ def operations():
 @admin_required
 def get_operations_health():
     try:
-        return jsonify(build_health_snapshot(get_web_database(), get_vulnerabilities_database()))
+        user = current_user()
+        manager_user_id = None if is_top_admin(user) else user.get('_id')
+        return jsonify(build_health_snapshot(
+            get_web_database(),
+            get_vulnerabilities_database(),
+            manager_user_id=manager_user_id,
+        ))
     except PyMongoError:
         return jsonify({'error': t('Unable to load scheduler health.')}), 503
 

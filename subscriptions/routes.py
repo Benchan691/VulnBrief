@@ -16,7 +16,7 @@ from auth.store import (
     normalize_username,
     validate_password,
 )
-from core.auth import admin_required, current_user, is_admin, login_required
+from core.auth import admin_required, current_user, is_admin, is_top_admin, login_required
 from core.database import get_vulnerabilities_database
 from integrations.email import (
     DELIVERY_MODES,
@@ -187,9 +187,19 @@ def _belongs_to_user(document, user):
 
 
 def _subscription_query(identifier=None):
-    if is_admin():
-        return {} if identifier is None else _identifier_query(identifier)
     user = current_user()
+    if is_admin(user):
+        scope = {} if is_top_admin(user) else {'managed_by_user_id': user['_id']}
+        if identifier is None:
+            return scope
+        identifier_query = _identifier_query(identifier)
+        if identifier_query is None:
+            return None
+        if scope:
+            existing = get_collection().find_one(identifier_query)
+            if existing is not None and existing.get('managed_by_user_id') != user['_id']:
+                return None
+        return identifier_query if not scope else {'$and': [identifier_query, scope]}
     conditions = _owner_conditions(user)
     if identifier is None:
         return {'$or': conditions} if conditions else {'_id': None}
@@ -250,7 +260,7 @@ def _send_subscription_email(subscription, payload):
 
 
 def _subscription_access_denied():
-    return jsonify({'error': t('You can only manage your own subscription.')}), 403
+    return jsonify({'error': t('You do not have permission to manage this subscription.')}), 403
 
 
 SCHEDULE_FIELD_UNSET = {
@@ -268,6 +278,7 @@ def _public_subscription(database, document):
         normalized['id'] = str(document['_id'])
     normalized.pop('_id', None)
     normalized.pop('owner_user_id', None)
+    normalized.pop('managed_by_user_id', None)
     normalized.pop('password', None)
     normalized.pop('password_hash', None)
     normalized.pop('schedule_claim_until', None)
@@ -358,7 +369,7 @@ def _preview_profiles(database, data):
     identifier = identifier.strip()
     if not identifier:
         raise ValueError('Subscription ID is required when preview mode is update.')
-    existing = get_collection().find_one(_identifier_query(identifier))
+    existing = get_collection().find_one(_subscription_query(identifier))
     if existing is None:
         raise LookupError('Subscription not found.')
     current = normalize_subscription(database, existing)
@@ -792,6 +803,7 @@ def add_subscription():
         now = datetime.now(timezone.utc)
         subscription_document = {
             'owner_user_id': user['_id'],
+            'managed_by_user_id': current_user()['_id'],
             'username': username,
             'emails': emails,
             # Keep the first recipient as a compatibility alias for old tools.
@@ -932,6 +944,11 @@ def edit_subscription(subscription_id):
             raise ValueError('Team is required.')
         updated_subscription = {
             'owner_user_id': owner.get('_id') if owner else owner_id,
+            'managed_by_user_id': current.get('managed_by_user_id') or (
+                current_user_record.get('_id')
+                if current_user_record and is_top_admin(current_user_record)
+                else None
+            ),
             'username': username,
             'emails': emails,
             'email': emails[0],
@@ -943,6 +960,7 @@ def edit_subscription(subscription_id):
         changes = _subscription_setting_changes(current, updated_subscription)
         update = {
             'owner_user_id': updated_subscription['owner_user_id'],
+            'managed_by_user_id': updated_subscription['managed_by_user_id'],
             'username': username,
             'emails': emails,
             'email': emails[0],
@@ -1060,17 +1078,17 @@ def run_subscription(subscription_id):
 @login_required
 def preview_subscription_report():
     data = request.get_json(silent=True) or {}
-    if not is_admin():
-        requested_id = (
-            (data.get('subscription_id') or data.get('id'))
-            if isinstance(data, dict) else ''
-        )
-        if not requested_id and isinstance(data, dict):
-            requested_id = data.get('email') or ''
+    requested_id = (
+        (data.get('subscription_id') or data.get('id'))
+        if isinstance(data, dict) else ''
+    )
+    if not requested_id and isinstance(data, dict):
+        requested_id = data.get('email') or ''
+    if not is_admin() or requested_id:
         query = _subscription_query(requested_id)
         if query is None:
             return _subscription_access_denied()
-        if get_collection().find_one(query) is None:
+        if requested_id and get_collection().find_one(query) is None:
             return jsonify({'error': t('Subscription not found.')}), 404
     try:
         database = get_vulnerabilities_database()
@@ -1107,7 +1125,11 @@ def send_subscription_statistic(subscription_id):
         subscription = normalize_subscription(database, raw)
         if not subscription['newsletter_profile']['enabled']:
             return jsonify({'error': t('Newsletter feed is disabled for this subscription.')}), 400
-        stats = newsletter_delivery_statistics(subscription.get('emails') or [subscription.get('email')])
+        manager_user_id = None if is_top_admin(current_user()) else subscription.get('managed_by_user_id')
+        stats = newsletter_delivery_statistics(
+            subscription.get('emails') or [subscription.get('email')],
+            manager_user_id=manager_user_id,
+        )
         _send_subscription_email(subscription, {
                 'subject': 'Newsletter delivery statistics',
                 'html': render_newsletter_statistics_html(stats),

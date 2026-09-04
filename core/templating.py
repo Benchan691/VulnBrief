@@ -33,6 +33,8 @@ def register_template_filters(application):
                 'email': user.get('email') or '',
                 'role': user.get('role') or 'user',
                 'must_change_password': bool(user.get('must_change_password')),
+                'disabled': bool(user.get('disabled')),
             } if user else None,
-            'is_admin': bool(user and user.get('role') == 'admin'),
+            'is_admin': bool(user and user.get('role') in {'admin', 'sub_admin'}),
+            'is_top_admin': bool(user and user.get('role') == 'admin'),
         }

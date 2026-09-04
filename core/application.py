@@ -10,7 +10,11 @@ from core.templating import register_template_filters
 
 def create_app():
     from auth.routes import auth_blueprint
-    from auth.store import ensure_bootstrap_user, ensure_legacy_subscription_users
+    from auth.store import (
+        ensure_admin_data_ownership,
+        ensure_bootstrap_user,
+        ensure_legacy_subscription_users,
+    )
     from newsletters.routes import newsletter_blueprint
     from operations.routes import operations_blueprint
     from reports.routes import report_blueprint
@@ -33,6 +37,7 @@ def create_app():
     ensure_sub_account_collection()
     ensure_bootstrap_user(config)
     ensure_legacy_subscription_users()
+    ensure_admin_data_ownership()
 
     @application.route('/')
     def home():

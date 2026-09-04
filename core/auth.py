@@ -3,7 +3,12 @@ from functools import wraps
 from flask import g, jsonify, redirect, render_template, request, session, url_for
 from pymongo.errors import PyMongoError
 
-from auth.store import find_user, find_user_by_id, ROLE_ADMIN
+from auth.store import (
+    ADMIN_ROLES,
+    ROLE_ADMIN,
+    find_user,
+    find_user_by_id,
+)
 
 
 def current_user():
@@ -27,6 +32,10 @@ def current_user():
             session['user_id'] = str(user['_id'])
 
     if user is None:
+        session.pop('user_id', None)
+        session.pop('username', None)
+        return None
+    if user.get('disabled'):
         session.pop('user_id', None)
         session.pop('username', None)
         return None
@@ -89,7 +98,7 @@ def admin_required(function):
         user, response = _guarded_user()
         if response is not None:
             return response
-        if user.get('role') != ROLE_ADMIN:
+        if user.get('role') not in ADMIN_ROLES:
             return _forbidden()
         return function(*args, **kwargs)
 
@@ -98,4 +107,42 @@ def admin_required(function):
 
 def is_admin(user=None):
     user = user if user is not None else current_user()
+    return bool(user and user.get('role') in ADMIN_ROLES)
+
+
+def is_top_admin(user=None):
+    user = user if user is not None else current_user()
     return bool(user and user.get('role') == ROLE_ADMIN)
+
+
+def top_admin_required(function):
+    @wraps(function)
+    def decorated_function(*args, **kwargs):
+        user, response = _guarded_user()
+        if response is not None:
+            return response
+        if user.get('role') != ROLE_ADMIN:
+            return _forbidden('Top-level administrator access required.')
+        return function(*args, **kwargs)
+
+    return decorated_function
+
+
+def admin_data_scope(user=None):
+    """Return the server-side ownership filter for admin-managed records."""
+    user = user if user is not None else current_user()
+    if user and user.get('role') == ROLE_ADMIN:
+        return {}
+    if user and user.get('role') in ADMIN_ROLES and user.get('_id') is not None:
+        return {'managed_by_user_id': user['_id']}
+    return {'_id': None}
+
+
+def scoped_admin_query(query=None, user=None):
+    query = dict(query or {})
+    scope = admin_data_scope(user)
+    if not scope:
+        return query
+    if not query:
+        return scope
+    return {'$and': [query, scope]}

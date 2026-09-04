@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
+from auth.store import managed_deliveries_paused
 from core.database import get_config, get_vulnerabilities_database, get_web_database
 from integrations.email import Mailer, send_to_recipients
 from newsletters.normalizer import render_newsletter
@@ -118,6 +119,8 @@ def due_scheduled_subscriptions(web_database, vuln_database, now=None):
     }
     due = []
     for document in web_database['sub_account'].find(query):
+        if managed_deliveries_paused(document.get('managed_by_user_id')):
+            continue
         try:
             due.append(normalize_subscription(vuln_database, document))
         except ValueError:
@@ -145,6 +148,8 @@ def due_monthly_statistic_subscriptions(web_database, vuln_database, now=None):
     }
     due = []
     for document in web_database['sub_account'].find(query):
+        if managed_deliveries_paused(document.get('managed_by_user_id')):
+            continue
         try:
             due.append(normalize_subscription(vuln_database, document))
         except ValueError:
@@ -197,7 +202,7 @@ def _translate_if_needed(report, generation_mode, language, config):
     return translate_report(report, generation_mode, language, config)
 
 
-def _placeholder_job(profile, now):
+def _placeholder_job(profile, now, managed_by_user_id=None):
     generation_mode = profile['generation_mode']
     if generation_mode == 'enriched_weekly':
         provider = 'Search API + llama-server'
@@ -205,7 +210,7 @@ def _placeholder_job(profile, now):
     else:
         provider = None
         model = 'Fixed Template'
-    return {
+    job = {
         'generation_mode': generation_mode,
         'effective_generation_mode': generation_mode,
         'report_language': 'en',
@@ -232,6 +237,9 @@ def _placeholder_job(profile, now):
         'delivery_status': 'queued',
         'delivery_error': '',
     }
+    if managed_by_user_id is not None:
+        job['managed_by_user_id'] = managed_by_user_id
+    return job
 
 
 def _queue_subscription_job_inputs(job_id, matches, generation_mode):
@@ -268,7 +276,9 @@ def _queue_subscription_job_inputs(job_id, matches, generation_mode):
 
 def start_subscription_report_job(subscription, profile):
     now = _now()
-    job_id = get_web_database()['report_jobs'].insert_one(_placeholder_job(profile, now)).inserted_id
+    job_id = get_web_database()['report_jobs'].insert_one(
+        _placeholder_job(profile, now, subscription.get('managed_by_user_id'))
+    ).inserted_id
     recipients = subscription.get('emails') or [subscription.get('email')]
     append_job_log(job_id, f'Queued subscription report email for {", ".join(recipients)}.')
     return {
@@ -418,6 +428,13 @@ def run_scheduled_report(app, subscription_id):
             return
         try:
             subscription = normalize_subscription(vuln_database, raw)
+            if managed_deliveries_paused(subscription.get('managed_by_user_id')):
+                collection.update_one({'_id': raw['_id']}, {'$set': {
+                    'schedule_claim_until': None,
+                    'schedule_claim_owner': '',
+                    'updated_at': now,
+                }})
+                return
             profile = subscription['report_profile']
             update = {
                 'report_profile.last_run_at': now,
@@ -478,9 +495,22 @@ def run_monthly_statistic(app, subscription_id, now=None):
             return
         try:
             subscription = normalize_subscription(vuln_database, raw)
+            if managed_deliveries_paused(subscription.get('managed_by_user_id')):
+                collection.update_one({'_id': raw['_id']}, {'$set': {
+                    'statistic_schedule_claim_until': None,
+                    'statistic_schedule_claim_owner': '',
+                    'updated_at': now,
+                }})
+                return
             recipients = subscription.get('emails') or [subscription.get('email')]
             start, end = previous_calendar_month_bounds(now)
-            stats = newsletter_delivery_statistics(recipients, web_database, start=start, end=end)
+            stats = newsletter_delivery_statistics(
+                recipients,
+                web_database,
+                start=start,
+                end=end,
+                manager_user_id=subscription.get('managed_by_user_id'),
+            )
             period = stats.get('period') or calendar_month_label(start)
             with Mailer(app.config) as mailer:
                 delivery = send_to_recipients(mailer, recipients, {
@@ -688,7 +718,14 @@ def _observed_at_value(document):
     return str(value or '')
 
 
-def newsletter_delivery_statistics(email, web_database=None, start=None, end=None):
+def newsletter_delivery_statistics(
+    email,
+    web_database=None,
+    start=None,
+    end=None,
+    *,
+    manager_user_id=None,
+):
     ensure_newsletter_delivery_indexes(web_database)
     collection = _newsletter_deliveries(web_database)
     emails = [email] if isinstance(email, str) else list(email or [])
@@ -707,6 +744,8 @@ def newsletter_delivery_statistics(email, web_database=None, start=None, end=Non
         if end is not None:
             sent_at['$lt'] = end
         match['sent_at'] = sent_at
+    if manager_user_id is not None:
+        match['managed_by_user_id'] = manager_user_id
     pipeline = [
         {'$match': match},
         {'$group': {
@@ -776,6 +815,7 @@ def _record_newsletter_delivery(
     selection_id,
     title,
     sent_at,
+    managed_by_user_id=None,
     status='sent',
     error='',
 ):
@@ -788,6 +828,8 @@ def _record_newsletter_delivery(
         'sent_at': sent_at,
         'status': status,
     }
+    if managed_by_user_id is not None:
+        document['managed_by_user_id'] = managed_by_user_id
     if error:
         document['error'] = error
     update = {'$set': document}
@@ -848,6 +890,8 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
     profile = subscription.get('newsletter_profile') or {}
     if not profile.get('enabled'):
         return {'sent': 0, 'cursor_initialized': False}
+    if managed_deliveries_paused(subscription.get('managed_by_user_id')):
+        return {'sent': 0, 'cursor_initialized': False, 'paused': True}
 
     cursor = str(profile.get('delivery_cursor') or '').strip()
     if not cursor:
@@ -934,6 +978,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
                     selection_id=selection_id,
                     title=title,
                     sent_at=now,
+                    managed_by_user_id=subscription.get('managed_by_user_id'),
                 )
                 if recorded:
                     sent += 1
@@ -946,6 +991,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
                     selection_id=selection_id,
                     title=title,
                     sent_at=now,
+                    managed_by_user_id=subscription.get('managed_by_user_id'),
                     status='failed',
                     error=str(error),
                 )
@@ -983,6 +1029,8 @@ def tick_newsletter_deliveries(app, web_database, now=None):
         except ValueError:
             continue
         subscription['_id'] = document['_id']
+        if managed_deliveries_paused(subscription.get('managed_by_user_id')):
+            continue
         try:
             result = deliver_pending_newsletters(app, subscription, now=now)
             sent_total += int(result.get('sent') or 0)

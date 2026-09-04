@@ -46,6 +46,8 @@ def _create_translation_job(source_job, language):
         'started_at': None,
         'pipeline_logs': [],
     }
+    if source_job.get('managed_by_user_id') is not None:
+        translation_job['managed_by_user_id'] = source_job['managed_by_user_id']
     return _job_collection().insert_one(translation_job).inserted_id
 
 
@@ -61,13 +63,16 @@ def _translation_report_for_job(job, language):
     return None
 
 
-def _find_active_translation_job(source_job_id, language):
-    return _job_collection().find_one({
+def _find_active_translation_job(source_job_id, language, managed_by_user_id=None):
+    query = {
         'input_source': 'translation',
         'translated_from_job_id': source_job_id,
         'report_language': language,
         'status': {'$in': ['queued', 'running']},
-    })
+    }
+    if managed_by_user_id is not None:
+        query['managed_by_user_id'] = managed_by_user_id
+    return _job_collection().find_one(query)
 
 
 def request_report_translation(app, source_job_id, language):
@@ -85,7 +90,11 @@ def request_report_translation(app, source_job_id, language):
     if source_job.get('status') != 'completed' or not source_job.get('report'):
         raise ValueError('Only completed reports can be translated.')
 
-    existing = _find_active_translation_job(source_job_object_id, language)
+    existing = _find_active_translation_job(
+        source_job_object_id,
+        language,
+        source_job.get('managed_by_user_id'),
+    )
     if existing is not None:
         return {
             'id': str(existing['_id']),
@@ -125,7 +134,10 @@ def run_report_translation(app, translation_job_id, client=None):
             if language not in TRANSLATION_LANGUAGES:
                 raise ValueError('Translation language must be "zh" or "ch".')
 
-            source_job = collection.find_one({'_id': translation_job['translated_from_job_id']})
+            source_query = {'_id': translation_job['translated_from_job_id']}
+            if translation_job.get('managed_by_user_id') is not None:
+                source_query['managed_by_user_id'] = translation_job['managed_by_user_id']
+            source_job = collection.find_one(source_query)
             if source_job is None or source_job.get('status') != 'completed' or not source_job.get('report'):
                 raise ValueError('Source report is no longer available for translation.')
 

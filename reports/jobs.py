@@ -69,7 +69,15 @@ def _result_collection():
     return get_web_database()['report_job_results']
 
 
-def create_job(inputs, input_source, generation_mode='enriched_weekly', report_language='en', search_prompt=''):
+def create_job(
+    inputs,
+    input_source,
+    generation_mode='enriched_weekly',
+    report_language='en',
+    search_prompt='',
+    *,
+    managed_by_user_id=None,
+):
     if not inputs:
         raise ValueError('At least one vulnerability record is required.')
     generation_mode = LEGACY_GENERATION_MODES.get(generation_mode, generation_mode)
@@ -143,6 +151,8 @@ def create_job(inputs, input_source, generation_mode='enriched_weekly', report_l
         'started_at': now if generation_mode == 'template' else None,
         'pipeline_logs': [],
     }
+    if managed_by_user_id is not None:
+        job['managed_by_user_id'] = managed_by_user_id
     job_id = _job_collection().insert_one(job).inserted_id
     _input_collection().insert_many([
         {'job_id': job_id, **item}
@@ -239,23 +249,30 @@ def _render_job_html(job, report, relative_path=None, report_language=None):
     )
 
 
-def _find_completed_translation_job(source_job_id, language):
-    return _job_collection().find_one({
+def _find_completed_translation_job(source_job_id, language, managed_by_user_id=None):
+    query = {
         'input_source': 'translation',
         'translated_from_job_id': source_job_id,
         'report_language': language,
         'status': 'completed',
-    })
+    }
+    if managed_by_user_id is not None:
+        query['managed_by_user_id'] = managed_by_user_id
+    return _job_collection().find_one(query)
 
 
-def _translation_html_for_job(job, language):
+def _translation_html_for_job(job, language, managed_by_user_id=None):
     if language not in TRANSLATION_LANGUAGES:
         return None
     if job.get('input_source') == 'translation' and job.get('report_language') == language:
         if job.get('status') == 'completed' and job.get('html'):
             return job['html']
         return None
-    translation_job = _find_completed_translation_job(job['_id'], language)
+    if managed_by_user_id is None:
+        managed_by_user_id = job.get('managed_by_user_id')
+    translation_job = _find_completed_translation_job(
+        job['_id'], language, managed_by_user_id,
+    )
     if translation_job and translation_job.get('html'):
         return translation_job['html']
     return None

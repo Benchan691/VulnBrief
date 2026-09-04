@@ -23,11 +23,14 @@ def _iso(value):
     return str(value)
 
 
-def _job_delivery(web_database, job_id):
+def _job_delivery(web_database, job_id, manager_user_id=None):
     if not job_id:
         return None
     try:
-        job = web_database['report_jobs'].find_one({'_id': ObjectId(str(job_id))})
+        query = {'_id': ObjectId(str(job_id))}
+        if manager_user_id is not None:
+            query['managed_by_user_id'] = manager_user_id
+        job = web_database['report_jobs'].find_one(query)
     except Exception:
         job = None
     if job is None:
@@ -45,7 +48,7 @@ def _job_delivery(web_database, job_id):
     }
 
 
-def _report_row(document, subscription, web_database, now):
+def _report_row(document, subscription, web_database, now, manager_user_id=None):
     profile = subscription.get('report_profile') or {}
     emails = subscription.get('emails') or [subscription.get('email')]
     emails = [email for email in emails if email]
@@ -76,21 +79,31 @@ def _report_row(document, subscription, web_database, now):
         'last_match_count': profile.get('last_match_count'),
         'schedule_claim_owner': document.get('schedule_claim_owner') or '',
         'schedule_claim_until': _iso(document.get('schedule_claim_until')),
-        'delivery': _job_delivery(web_database, last_job_id),
+        'delivery': _job_delivery(web_database, last_job_id, manager_user_id),
     }
 
 
-def _newsletter_row(subscription, web_database):
+def _newsletter_row(subscription, web_database, manager_user_id=None):
     profile = subscription.get('newsletter_profile') or {}
     emails = subscription.get('emails') or [subscription.get('email')]
     emails = [email for email in emails if email]
     email = ', '.join(emails)
-    stats = newsletter_delivery_statistics(emails, web_database) if profile.get('enabled') else {
-        'email': email,
-        'total': 0,
-        'by_collection': [],
-        'databases': [],
-    }
+    if profile.get('enabled'):
+        if manager_user_id is None:
+            stats = newsletter_delivery_statistics(emails, web_database)
+        else:
+            stats = newsletter_delivery_statistics(
+                emails,
+                web_database,
+                manager_user_id=manager_user_id,
+            )
+    else:
+        stats = {
+            'email': email,
+            'total': 0,
+            'by_collection': [],
+            'databases': [],
+        }
     return {
         'username': subscription.get('username') or '',
         'emails': emails,
@@ -105,8 +118,9 @@ def _newsletter_row(subscription, web_database):
     }
 
 
-def _recent_newsletter_deliveries(web_database):
-    cursor = web_database[NEWSLETTER_DELIVERIES].find({}).sort('sent_at', -1).limit(RECENT_NEWSLETTER_LIMIT)
+def _recent_newsletter_deliveries(web_database, manager_user_id=None):
+    query = {} if manager_user_id is None else {'managed_by_user_id': manager_user_id}
+    cursor = web_database[NEWSLETTER_DELIVERIES].find(query).sort('sent_at', -1).limit(RECENT_NEWSLETTER_LIMIT)
     rows = []
     for item in cursor:
         rows.append({
@@ -120,18 +134,19 @@ def _recent_newsletter_deliveries(web_database):
     return rows
 
 
-def build_health_snapshot(web_database, vuln_database, now=None):
+def build_health_snapshot(web_database, vuln_database, now=None, manager_user_id=None):
     now = now or datetime.now(timezone.utc)
     scheduler = read_scheduler_health(web_database, now=now)
     reports = []
     newsletters = []
-    for document in web_database['sub_account'].find({}):
+    query = {} if manager_user_id is None else {'managed_by_user_id': manager_user_id}
+    for document in web_database['sub_account'].find(query):
         try:
             subscription = normalize_subscription(vuln_database, document)
         except ValueError:
             continue
-        reports.append(_report_row(document, subscription, web_database, now))
-        newsletters.append(_newsletter_row(subscription, web_database))
+        reports.append(_report_row(document, subscription, web_database, now, manager_user_id))
+        newsletters.append(_newsletter_row(subscription, web_database, manager_user_id))
     reports.sort(key=lambda row: (not row['due'], row['email']))
     newsletters.sort(key=lambda row: row['email'])
     return {
@@ -139,5 +154,7 @@ def build_health_snapshot(web_database, vuln_database, now=None):
         'scheduler': scheduler,
         'reports': reports,
         'newsletters': newsletters,
-        'recent_newsletter_deliveries': _recent_newsletter_deliveries(web_database),
+        'recent_newsletter_deliveries': _recent_newsletter_deliveries(
+            web_database, manager_user_id,
+        ),
     }

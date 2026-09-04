@@ -9,12 +9,16 @@ from core.database import get_web_database
 
 AUTH_COLLECTION = 'auth'
 ROLE_ADMIN = 'admin'
+ROLE_SUB_ADMIN = 'sub_admin'
 ROLE_USER = 'user'
-VALID_ROLES = {ROLE_ADMIN, ROLE_USER}
+ADMIN_ROLES = {ROLE_ADMIN, ROLE_SUB_ADMIN}
+VALID_ROLES = ADMIN_ROLES | {ROLE_USER}
 LEGACY_DEFAULT_PASSWORD = '1234'
 MAX_PASSWORD_LENGTH = 256
 MAX_PASSWORD_BYTES = 72
 BCRYPT_HASH_PATTERN = re.compile(r'^\$2[aby]\$(0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}$')
+EMAIL_PATTERN = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+_UNSET = object()
 
 
 def normalize_login(value):
@@ -23,6 +27,19 @@ def normalize_login(value):
 
 def normalize_username(value):
     return normalize_login(value)
+
+
+def normalize_email(value):
+    return normalize_login(value).casefold()
+
+
+def validate_email(value):
+    if value is not None and not isinstance(value, str):
+        raise ValueError('Invalid email address.')
+    email = normalize_email(value)
+    if email and not EMAIL_PATTERN.fullmatch(email):
+        raise ValueError('Invalid email address.')
+    return email
 
 
 def username_key(value):
@@ -77,7 +94,18 @@ def find_user(login):
 
 
 def _find_user_by_username(username):
-    return find_user(username)
+    username = normalize_username(username)
+    user = find_user(username)
+    if user is not None:
+        return user
+    if not username:
+        return None
+    return get_web_database()[AUTH_COLLECTION].find_one({
+        'username': {
+            '$regex': f'^{re.escape(username)}$',
+            '$options': 'i',
+        },
+    })
 
 
 def find_user_by_email(email):
@@ -100,7 +128,7 @@ def find_user_by_id(user_id):
 
 def verify_login(login, password):
     user = find_user(login)
-    if user is None or not verify_password(user, password):
+    if user is None or user.get('disabled') or not verify_password(user, password):
         return None
     return user
 
@@ -114,7 +142,16 @@ def public_user(user):
         'email': user.get('email') or '',
         'role': user.get('role') or ROLE_USER,
         'must_change_password': bool(user.get('must_change_password')),
+        'disabled': bool(user.get('disabled')),
+        'pause_managed_subscriptions_when_disabled': bool(
+            user.get('pause_managed_subscriptions_when_disabled')
+        ),
     }
+
+
+def is_admin_role(role_or_user):
+    role = role_or_user.get('role') if isinstance(role_or_user, dict) else role_or_user
+    return role in ADMIN_ROLES
 
 
 def upsert_user(
@@ -139,12 +176,17 @@ def upsert_user(
         'must_change_password': bool(must_change_password),
         'updated_at': now,
     }
-    email = normalize_login(email)
+    email = validate_email(email)
     if email:
         document['email'] = email.casefold()
+    if role == ROLE_SUB_ADMIN:
+        document.update({
+            'disabled': False,
+            'pause_managed_subscriptions_when_disabled': False,
+        })
     collection = get_web_database()[AUTH_COLLECTION]
     existing = _find_user_by_username(username)
-    if existing is not None and existing.get('role') == ROLE_ADMIN and role != ROLE_ADMIN:
+    if existing is not None and is_admin_role(existing) and existing.get('role') != role:
         raise ValueError('Username is already used by the administrator.')
     query = {'_id': existing['_id']} if existing is not None else {'username_key': username_key(username)}
     collection.update_one(
@@ -180,7 +222,7 @@ def ensure_subscription_user(username, password=None, email=None, *, user_id=Non
         user = matching
         if user_id and str(user['_id']) != str(user_id):
             raise ValueError('Username is already in use.')
-    if user is not None and user.get('role') == ROLE_ADMIN:
+    if user is not None and is_admin_role(user):
         raise ValueError('Username is already used by the administrator.')
     if user_id and user is None:
         raise ValueError('User not found.')
@@ -202,7 +244,7 @@ def ensure_subscription_user(username, password=None, email=None, *, user_id=Non
         ),
         'updated_at': now,
     }
-    email = normalize_login(email)
+    email = normalize_email(email)
     if email:
         updates['email'] = email.casefold()
     if password_configured:
@@ -216,6 +258,116 @@ def ensure_subscription_user(username, password=None, email=None, *, user_id=Non
 
     collection.update_one({'_id': user['_id']}, {'$set': updates})
     return collection.find_one({'_id': user['_id']})
+
+
+def create_sub_admin(
+    username,
+    password,
+    email=None,
+    *,
+    disabled=False,
+    pause_managed_subscriptions_when_disabled=False,
+    parent_admin_id=None,
+):
+    username = normalize_username(username)
+    if not username:
+        raise ValueError('Username is required.')
+    password = _validate_password(password)
+    email = validate_email(email)
+    collection = get_web_database()[AUTH_COLLECTION]
+    if _find_user_by_username(username) is not None:
+        raise ValueError('Username is already in use.')
+    if email and find_user_by_email(email) is not None:
+        raise ValueError('Email is already in use.')
+    now = datetime.now(timezone.utc)
+    document = {
+        'username': username,
+        'username_key': username_key(username),
+        'password': hash_password(password),
+        'role': ROLE_SUB_ADMIN,
+        'must_change_password': False,
+        'disabled': bool(disabled),
+        'pause_managed_subscriptions_when_disabled': bool(
+            pause_managed_subscriptions_when_disabled
+        ),
+        'created_at': now,
+        'updated_at': now,
+    }
+    if email:
+        document['email'] = email
+    if parent_admin_id is not None:
+        document['parent_admin_id'] = parent_admin_id
+    result = collection.insert_one(document)
+    return collection.find_one({'_id': result.inserted_id})
+
+
+def list_sub_admins():
+    return list(get_web_database()[AUTH_COLLECTION].find(
+        {'role': ROLE_SUB_ADMIN},
+    ).sort('username_key', 1))
+
+
+def update_sub_admin(
+    user_id,
+    *,
+    email=_UNSET,
+    password=_UNSET,
+    disabled=_UNSET,
+    pause_managed_subscriptions_when_disabled=_UNSET,
+):
+    user = find_user_by_id(user_id)
+    if user is None or user.get('role') != ROLE_SUB_ADMIN:
+        raise LookupError('Sub-admin not found.')
+    updates = {'updated_at': datetime.now(timezone.utc)}
+    if email is not _UNSET:
+        email = validate_email(email)
+        if email:
+            existing = find_user_by_email(email)
+            if existing is not None and existing['_id'] != user['_id']:
+                raise ValueError('Email is already in use.')
+            updates['email'] = email
+        else:
+            updates['email'] = None
+    if password is not _UNSET and password not in (None, ''):
+        updates['password'] = hash_password(_validate_password(password))
+        updates['must_change_password'] = False
+    if disabled is not _UNSET:
+        updates['disabled'] = bool(disabled)
+    if pause_managed_subscriptions_when_disabled is not _UNSET:
+        updates['pause_managed_subscriptions_when_disabled'] = bool(
+            pause_managed_subscriptions_when_disabled
+        )
+    get_web_database()[AUTH_COLLECTION].update_one(
+        {'_id': user['_id']}, {'$set': updates},
+    )
+    return find_user_by_id(user['_id'])
+
+
+def remove_sub_admin(user_id, top_admin_id):
+    user = find_user_by_id(user_id)
+    if user is None or user.get('role') != ROLE_SUB_ADMIN:
+        raise LookupError('Sub-admin not found.')
+    if top_admin_id is None:
+        raise ValueError('Top-level administrator not found.')
+    database = get_web_database()
+    for collection_name in ('sub_account', 'report_jobs', 'newsletter_deliveries'):
+        database[collection_name].update_many(
+            {'managed_by_user_id': user['_id']},
+            {'$set': {'managed_by_user_id': top_admin_id}},
+        )
+    database[AUTH_COLLECTION].delete_one({'_id': user['_id']})
+
+
+def managed_deliveries_paused(user_id):
+    if user_id is None:
+        return False
+    user = find_user_by_id(user_id)
+    return bool(
+        user
+        and user.get('role') == ROLE_SUB_ADMIN
+        and user.get('disabled')
+        and user.get('pause_managed_subscriptions_when_disabled')
+    )
 
 
 def ensure_bootstrap_user(config):
@@ -232,6 +384,7 @@ def ensure_bootstrap_user(config):
             collection.update_one({'_id': admin['_id']}, {'$set': {
                 'role': ROLE_ADMIN,
                 'must_change_password': False,
+                'disabled': False,
                 'updated_at': now,
             }})
         elif username and password:
@@ -249,6 +402,7 @@ def ensure_bootstrap_user(config):
                 collection.update_one({'_id': admin['_id']}, {'$set': {
                     'role': ROLE_ADMIN,
                     'must_change_password': False,
+                    'disabled': False,
                     'updated_at': now,
                 }})
             else:
@@ -274,6 +428,22 @@ def ensure_bootstrap_user(config):
             if user.get('role') != ROLE_ADMIN:
                 updates['role'] = ROLE_ADMIN
             if 'must_change_password' not in user:
+                updates['must_change_password'] = False
+            if user.get('disabled'):
+                updates['disabled'] = False
+        elif user.get('role') == ROLE_SUB_ADMIN:
+            if str(user.get('parent_admin_id')) != str(admin_id):
+                updates['parent_admin_id'] = admin_id
+            if 'disabled' not in user:
+                updates['disabled'] = False
+            if 'pause_managed_subscriptions_when_disabled' not in user:
+                updates['pause_managed_subscriptions_when_disabled'] = False
+            if not is_password_hash(user.get('password')):
+                updates.update({
+                    'password': hash_password(LEGACY_DEFAULT_PASSWORD),
+                    'must_change_password': True,
+                })
+            elif 'must_change_password' not in user:
                 updates['must_change_password'] = False
         else:
             if user.get('role') != ROLE_USER:
@@ -331,7 +501,7 @@ def ensure_legacy_subscription_users():
                 'updated_at': now,
             })
             user = auth_collection.find_one({'_id': result.inserted_id})
-        if user.get('role') == ROLE_ADMIN:
+        if is_admin_role(user):
             continue
         updates = {}
         if not user.get('username'):
@@ -368,3 +538,22 @@ def ensure_legacy_subscription_users():
                 'updated_at': subscription.get('updated_at') or now,
             }},
         )
+
+
+def ensure_admin_data_ownership():
+    """Backfill manager ownership for records created before sub-admins existed."""
+    database = get_web_database()
+    admin = database[AUTH_COLLECTION].find_one({'role': ROLE_ADMIN}, {'_id': 1})
+    if admin is None:
+        return False
+    manager_id = admin['_id']
+    for collection_name in ('sub_account', 'report_jobs', 'newsletter_deliveries'):
+        database[collection_name].update_many(
+            {'$or': [
+                {'managed_by_user_id': {'$exists': False}},
+                {'managed_by_user_id': None},
+                {'managed_by_user_id': ''},
+            ]},
+            {'$set': {'managed_by_user_id': manager_id}},
+        )
+    return True
