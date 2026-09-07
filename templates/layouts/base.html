@@ -19,11 +19,9 @@
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto align-items-lg-center">
-                    {% if not is_top_admin %}
                     <li class="nav-item">
                         <a class="nav-link {{ 'active' if request.blueprint == 'subscription' else '' }}" href="{{ url_for('subscription.subscriptions') }}"><i class="bi bi-people me-1"></i>{{ t('Subscriptions') }}</a>
                     </li>
-                    {% endif %}
                     {% if is_admin %}
                     {% if not is_top_admin %}
                     <li class="nav-item">

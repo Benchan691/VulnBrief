@@ -82,7 +82,7 @@ def test_top_admin_can_manage_sub_admin_lifecycle_and_disabled_sessions():
     assert dashboard.status_code == 302
     assert dashboard.headers['Location'].endswith('/admin/sub-admins')
     assert b'Sub-admin Management' in client.get('/admin/sub-admins').data
-    assert b'href="/subscriptions"' not in client.get('/admin/sub-admins').data
+    assert b'href="/subscriptions"' in client.get('/admin/sub-admins').data
     assert b'href="/reviews"' not in client.get('/admin/sub-admins').data
     assert client.get('/admin/sub-admins').status_code == 200
 
