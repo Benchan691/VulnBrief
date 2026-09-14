@@ -234,14 +234,34 @@ def test_candidate_clause_is_disabled_when_filter_is_disabled():
 
 def test_candidate_clause_uses_escaped_bounded_product_patterns():
     clause = build_vendor_product_candidate_clause(_filter(
-        _row(vendor='Acme (Global)', product='Widget+Pro'),
+        _row(vendor='Acme (Global)', product='Widget+Pro', product_aliases=['Widget Pro']),
     ))
 
     row_clauses = clause['$or']
     affected = next(item for item in row_clauses if 'details.affected.product' in item)
     product_pattern = affected['details.affected.product']
     assert product_pattern['$options'] == 'i'
+    # '+' is a significant identity symbol (C++, Widget+Pro) and is escaped
+    # literally; a spaced alias still produces the token-boundary pattern.
+    assert r'widget\+pro' in product_pattern['$regex']
     assert r'widget[\W_]+pro' in product_pattern['$regex']
+
+
+def test_candidate_clause_skips_degenerate_single_character_products():
+    clause = build_vendor_product_candidate_clause(_filter(
+        _row(vendor='Acme', product='C'),
+    ))
+
+    # A single-letter product cannot match safely; the clause stays empty
+    # instead of matching every advisory containing a standalone letter.
+    assert clause == {}
+
+
+def test_candidate_clause_covers_cpe_identity_fields():
+    clause_text = str(build_vendor_product_candidate_clause(_filter(_row())))
+
+    assert 'details.configurations.nodes.cpeMatch.criteria' in clause_text
+    assert 'details.affected.cpes' in clause_text
 
 
 def test_candidate_clause_covers_alternate_structured_keys_and_nested_description_values():
@@ -253,8 +273,11 @@ def test_candidate_clause_covers_alternate_structured_keys_and_nested_descriptio
     assert 'details.affected_software.product' in clause_text
     assert 'details.systems_affected' in clause_text
     assert 'details.product_names' in clause_text
+    assert 'details.product_statuses.product_names' in clause_text
+    assert 'details.notes.value' in clause_text
     assert 'details.vulnerabilities.package.name' in clause_text
     assert 'details.affectedVendor' in clause_text
+    assert 'details.productName' in clause_text
     assert 'details.description.vulnerability_information.product' in clause_text
 
 
@@ -599,3 +622,234 @@ def test_govcert_affected_systems_and_fortiguard_affected_field_are_matched():
     assert govcert['evidence']['source'] == 'details.affected_systems'
     assert fortiguard['confidence'] == 'possible'
     assert fortiguard['evidence']['type'] == 'structured_product_without_vendor'
+
+
+def test_cpe_criteria_strings_are_confirmed_structured_evidence():
+    match = classify_vendor_product_match({
+        'title': 'novel-plus Missing Authorization Vulnerability',
+        'details': {
+            'configurations': [{'nodes': [{'cpeMatch': [{
+                'criteria': 'cpe:2.3:a:xxyopen:novel-plus:*:*:*:*:*:*:*:*',
+            }]}]}],
+        },
+    }, _filter(_row(vendor='XXYOPEN', product='novel-plus')))
+
+    assert match['confidence'] == 'confirmed'
+    assert match['evidence']['type'] == 'structured_pair'
+    assert match['evidence']['source'] == 'cpe'
+
+
+def test_cpe_legacy_format_and_hardware_parts_are_confirmed():
+    legacy = classify_vendor_product_match({
+        'details': {'affected': [{'cpes': ['cpe:/a:apache:http_server:2.4.49']}]},
+    }, _filter(_row(vendor='Apache', product='HTTP Server')))
+
+    hardware = classify_vendor_product_match({
+        'details': {'affected': [{'cpes': ['cpe:2.3:h:fortinet:fortigate:-']}]},
+    }, _filter(_row(vendor='Fortinet', product='FortiGate')))
+
+    assert legacy['confidence'] == 'confirmed'
+    assert hardware['confidence'] == 'confirmed'
+
+
+def test_cpe_wildcard_or_na_components_never_match():
+    wildcard_vendor = classify_vendor_product_match({
+        'details': {'affected': [{'cpes': ['cpe:2.3:a:*:novel-plus:*:*:*:*:*:*:*:*']}]},
+    }, _filter(_row(vendor='XXYOPEN', product='novel-plus')))
+    na_product = classify_vendor_product_match({
+        'details': {'affected': [{'cpes': ['cpe:2.3:a:xxyopen:-:*:*:*:*:*:*:*:*']}]},
+    }, _filter(_row(vendor='XXYOPEN', product='novel-plus')))
+
+    assert wildcard_vendor is None
+    assert na_product is None
+
+
+def test_structured_pairs_match_through_phrase_containment():
+    family_row = _filter(_row(vendor='Linux', product='Linux kernel'))
+    specific_doc = classify_vendor_product_match({
+        'details': {'affected': [{'vendor': 'Linux', 'product': 'Linux'}]},
+    }, family_row)
+    aliased_vendor = classify_vendor_product_match({
+        'details': {'affected': [{
+            'vendor': 'Apache Software Foundation',
+            'product': 'Apache HTTP Server',
+        }]},
+    }, _filter(_row(vendor='Apache', product='HTTP Server', vendor_aliases=['Apache Software Foundation'])))
+
+    assert specific_doc['confidence'] == 'confirmed'
+    assert aliased_vendor['confidence'] == 'confirmed'
+
+
+def test_plus_and_hash_symbols_survive_identity_normalization():
+    cpp = classify_vendor_product_match({
+        'title': 'Buffer overflow in Acme C++ library',
+        'details': {'description': 'The C++ parser in Acme C++ crashes.'},
+    }, _filter(_row(vendor='Acme', product='C++')))
+    csharp = classify_vendor_product_match({
+        'title': 'Acme C# compiler rejects valid programs',
+    }, _filter(_row(vendor='Acme', product='C#')))
+
+    assert cpp['confidence'] == 'probable'
+    assert csharp['confidence'] == 'probable'
+
+
+def test_single_letter_product_never_matches_unrelated_text():
+    match = classify_vendor_product_match({
+        'title': 'Acme toolkit buffer overflow',
+        'details': {
+            'description': 'The CVSS vector is AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H.',
+            'affected': [{'programFiles': ['bin/foo.c']}],
+        },
+    }, _filter(_row(vendor='Acme', product='C')))
+
+    assert match is None
+
+
+def test_cnnvd_vendor_and_product_names_are_confirmed():
+    match = classify_vendor_product_match({
+        'title': 'Linux kernel 安全漏洞',
+        'details': {
+            'vendorName': 'Linux',
+            'productName': 'Linux kernel',
+            'productSummary': 'Linux kernel是美国Linux基金会开源的一个操作系统内核。',
+            'vulDesc': 'Linux kernel 存在安全漏洞。',
+        },
+    }, _filter(_row(vendor='Linux', product='Linux kernel')))
+
+    assert match['confidence'] == 'confirmed'
+    assert match['evidence']['source'] == 'details.vendorName/productName'
+
+
+def test_msrc_product_names_are_probable_evidence():
+    match = classify_vendor_product_match({
+        'title': 'Chromium: CVE-2026-3063 Inappropriate implementation in DevTools',
+        'details': {
+            'product_statuses': [{'product_names': ['Microsoft Edge (Chromium-based)']}],
+            'threats': [{'product_names': ['Microsoft Edge (Chromium-based)']}],
+            'notes': [{'title': 'Chrome', 'value': 'Insufficient policy enforcement.'}],
+        },
+    }, _filter(_row(vendor='Microsoft', product='Edge')))
+
+    assert match['confidence'] == 'probable'
+    assert match['evidence']['source'] == 'details.product_statuses.product_names'
+
+
+def test_probable_gating_survives_containment_for_unrelated_structured_identity():
+    # Real-world shape (GitHub .NET advisory): the description boilerplate
+    # mentions Microsoft, but the structured identity is an unrelated nuget
+    # package. Text-only evidence for a different product must stay rejected.
+    match = classify_vendor_product_match({
+        'title': 'Microsoft Security Advisory CVE-2026-62900 – .NET Information Disclosure Vulnerability',
+        'details': {
+            'vulnerabilities': [{
+                'package': {'ecosystem': 'nuget', 'name': 'Microsoft.Build.Tasks.Git'},
+            }],
+            'description': (
+                'Microsoft is releasing this security advisory to provide information '
+                'about a vulnerability in Microsoft.Build.Tasks.Git. This guidance also '
+                'covers supported versions of Microsoft Windows.'
+            ),
+        },
+    }, _filter(_row(vendor='Microsoft', product='Windows')))
+
+    assert match is None
+
+
+def test_structured_vendor_with_text_product_upgrades_to_probable():
+    # Real-world shape (Qianxin Windows advisory): the structured product is a
+    # Chinese category string, but the structured vendor matches the row and
+    # the title names the product. The unrelated-identity gate must not bury it.
+    match = classify_vendor_product_match({
+        'title': 'Windows HTTP.sys 整数溢出漏洞(CVE-2026-62735)安全风险通告',
+        'details': {
+            'description': {
+                'vulnerability_information': {
+                    'vendor': 'Microsoft',
+                    'product': '桌面操作系统，服务器操作系统',
+                },
+                'recommendations': 'Windows 系统默认启用 Microsoft Update。',
+            },
+        },
+    }, _filter(_row(vendor='Microsoft', product='Windows')))
+
+    assert match['confidence'] == 'probable'
+    assert match['evidence']['type'] == 'structured_vendor_with_text_product'
+
+
+def test_unrelated_structured_vendor_never_upgrades_text_product():
+    # GitHub .NET advisory: structured vendor is nuget, not Microsoft, so the
+    # description boilerplate mentioning Windows must stay unmatched.
+    match = classify_vendor_product_match({
+        'title': 'Microsoft Security Advisory CVE-2026-62900 – .NET Information Disclosure Vulnerability',
+        'details': {
+            'vulnerabilities': [{
+                'package': {'ecosystem': 'nuget', 'name': 'Microsoft.Build.Tasks.Git'},
+            }],
+            'description': (
+                'Microsoft is releasing this security advisory. This guidance also '
+                'covers supported versions of Microsoft Windows.'
+            ),
+        },
+    }, _filter(_row(vendor='Microsoft', product='Windows')))
+
+    assert match is None
+
+
+def test_msrc_remediation_descriptions_are_probable_evidence():
+    match = classify_vendor_product_match({
+        'title': 'Host Process for Windows Tasks Elevation of Privilege Vulnerability',
+        'details': {
+            'remediations': [{
+                'description': '<p>Microsoft strongly recommends that you install the '
+                               'updates. Customers running Windows should apply them.</p>',
+            }],
+        },
+    }, _filter(_row(vendor='Microsoft', product='Windows')))
+
+    assert match['confidence'] == 'probable'
+    assert match['evidence']['source'] == 'details.remediations.description'
+
+
+def test_solution_fields_are_probable_evidence():
+    both = classify_vendor_product_match({
+        'details': {
+            'solution': 'CodeAstro has released a fix; upgrade Patient Record '
+                        'Management System to the latest version.',
+        },
+    }, _filter(_row(vendor='CodeAstro', product='Patient Record Management System')))
+    product_only = classify_vendor_product_match({
+        'details': {
+            'solution': 'Upgrade Patient Record Management System to the latest version.',
+        },
+    }, _filter(_row(vendor='CodeAstro', product='Patient Record Management System')))
+
+    assert both['confidence'] == 'probable'
+    assert both['evidence']['source'] == 'details.solution'
+    # Product-only text without the vendor stays unmatched at probable tier.
+    assert product_only is None
+
+
+def test_cnnvd_product_alias_text_is_probable_evidence():
+    match = classify_vendor_product_match({
+        'title': 'Linux kernel 安全漏洞',
+        'details': {
+            'vendorName': 'Linux',
+            'productName': 'Linux kernel',
+            'vulAlias': 'linux kernel 安全漏洞',
+        },
+    }, _filter(_row(vendor='Linux', product='Linux kernel')))
+
+    assert match['confidence'] == 'confirmed'
+
+
+def test_cjk_latin_junctions_are_word_boundaries():
+    # Source text glues CJK and Latin together ("...System是CodeAstro公司的...");
+    # Mongo's ASCII \w sees boundaries there, so Python must too.
+    match = classify_vendor_product_match({
+        'details': {
+            'description': 'Patient Record Management System是CodeAstro公司的一个病历管理系统。',
+            'affected_products': ['Patient Record Management System v1.0'],
+        },
+    }, _filter(_row(vendor='CodeAstro', product='Patient Record Management System')))
+
+    assert match['confidence'] == 'probable'

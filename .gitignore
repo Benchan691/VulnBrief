@@ -10,3 +10,6 @@ cert.pem
 key.pem
 
 .codex/
+
+# Local evaluation harness (never committed)
+/eval/

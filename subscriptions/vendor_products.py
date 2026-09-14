@@ -64,6 +64,11 @@ _STRUCTURED_PAIR_PATHS = (
         'details.affectedVendor/affectedProduct',
     ),
     (
+        ('details', 'vendorName'),
+        ('details', 'productName'),
+        'details.vendorName/productName',
+    ),
+    (
         ('details', 'description', 'vulnerability_information', 'vendor'),
         ('details', 'description', 'vulnerability_information', 'product'),
         'details.description.vulnerability_information.vendor/product',
@@ -113,6 +118,106 @@ _FALLBACK_TEXT_PATHS = tuple(dict.fromkeys((
     ),
 )))
 
+# Additional free-text evidence paths observed in live source data (MSRC
+# product tables, CNNVD narrative fields, Qianxin advisory sections, GovCert
+# recommendations, HPE bulletins, CVE affected-entry file lists).
+_FALLBACK_TEXT_PATHS = tuple(dict.fromkeys((
+    *_FALLBACK_TEXT_PATHS,
+    ('details', 'notes', 'value'),
+    ('details', 'notes', 'raw_value'),
+    ('details', 'product_statuses', 'product_names'),
+    ('details', 'threats', 'product_names'),
+    ('details', 'cvss', 'product_names'),
+    ('details', 'remediations', 'product_names'),
+    ('details', 'remediations', 'description'),
+    ('details', 'vulDesc'),
+    ('details', 'vulDetail'),
+    ('details', 'vulAlias'),
+    ('details', 'productSummary'),
+    ('details', 'recommendation'),
+    ('details', 'solution'),
+    ('details', 'impact'),
+    ('details', 'background'),
+    ('details', 'cvss_text'),
+    ('details', 'digest'),
+    ('recommendation',),
+    ('solution',),
+    ('impact',),
+    ('details', 'affected', 'platforms'),
+    ('details', 'affected', 'programFiles'),
+    ('details', 'affected', 'modules'),
+    ('details', 'description', 'affected_assets'),
+    ('details', 'description', 'recommendations'),
+    ('details', 'description', 'security_advisory'),
+    ('details', 'description', 'vulnerability_information', 'summary'),
+    ('details', 'description', 'vulnerability_information', 'vulnerability_description'),
+    ('details', 'description', 'vulnerability_information', 'vulnerability_name'),
+    ('details', 'description', 'vulnerability_information', 'affected_versions'),
+    ('details', 'description', 'vulnerability_information', 'reproduction'),
+)))
+
+# Fields that carry CPE identity strings. The classifier parses CPEs from any
+# string it sees; the candidate pass needs explicit field coverage.
+_CPE_TEXT_PATHS = (
+    ('details', 'configurations', 'nodes', 'cpeMatch', 'criteria'),
+    ('details', 'affected', 'cpes'),
+    ('details', 'csaf', 'vulnerabilities', 'product_status', 'known_affected'),
+    ('details', 'csaf', 'vulnerabilities', 'product_status', 'known_not_affected'),
+    ('details', 'csaf', 'vulnerabilities', 'product_status', 'recommended'),
+    ('details', 'csaf', 'product_tree', 'branches', 'product', 'product_id'),
+    ('details', 'csaf', 'product_tree', 'branches', 'branches', 'product', 'product_id'),
+    ('details', 'csaf', 'product_tree', 'branches', 'branches', 'branches', 'product', 'product_id'),
+)
+
+_CPE_PREFIX_PATTERN = re.compile(r'^cpe:(?:2\.3:[aho]|/[aho]):', re.IGNORECASE)
+_CPE_SKIP_COMPONENTS = frozenset({'*', '-', ''})
+
+
+def _cpe_component(part):
+    return re.sub(r'\\(.)', r'\1', part.replace('_', ' ')).strip()
+
+
+def parse_cpe_identity(value):
+    """Return (vendor, product) from a CPE 2.3 or legacy CPE 2.2 string."""
+    text = str(value or '').strip()
+    if not _CPE_PREFIX_PATTERN.match(text):
+        return None, None
+    parts = text.split(':')
+    if len(parts) > 1 and parts[1].lower() == '2.3':
+        vendor_index = 3
+    else:
+        vendor_index = 2
+    part_letter = (parts[vendor_index - 1] if len(parts) > vendor_index else '').lstrip('/').lower()
+    if part_letter not in {'a', 'o', 'h'} or len(parts) < vendor_index + 2:
+        return None, None
+    vendor = _cpe_component(parts[vendor_index])
+    product = _cpe_component(parts[vendor_index + 1])
+    if vendor in _CPE_SKIP_COMPONENTS or product in _CPE_SKIP_COMPONENTS:
+        return None, None
+    return vendor, product
+
+
+def _iter_cpe_pairs(document):
+    seen = set()
+
+    def _walk(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                yield from _walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from _walk(item)
+        elif isinstance(value, str):
+            yield value
+
+    for text in _walk(document):
+        vendor, product = parse_cpe_identity(text)
+        if vendor and product:
+            pair = (vendor, product)
+            if pair not in seen:
+                seen.add(pair)
+                yield 'cpe', vendor, product
+
 
 def _default_filter():
     return deepcopy(DEFAULT_VENDOR_PRODUCT_FILTER)
@@ -130,13 +235,30 @@ def _display_text(value):
     return text
 
 
+# Compatibility-width and CJK ranges, shared by key normalization and the
+# script-aware distinctiveness threshold.
+_CJK_CLASS = (
+    '\u3040-\u30ff\u31f0-\u31ff\u3400-\u9fff\uac00-\ud7af'
+    '\U00020000-\U0002fa1f'
+)
+
+
 def _match_key(value):
     # Keep compatibility-width and multi-character case variants distinct so
     # Python acceptance mirrors MongoDB's regex prefilter. Administrators can
-    # list such source variants explicitly in the alias columns.
+    # list such source variants explicitly in the alias columns. '+' and '#'
+    # are significant product identity symbols (C++, C#) and must survive
+    # tokenization so they cannot degenerate into single-letter keys. CJK and
+    # Latin characters are split into separate tokens: Mongo's ASCII \w treats
+    # CJK as boundaries, and source text routinely glues them together
+    # ("System是CodeAstro公司").
     text = unicodedata.normalize('NFC', str(value or '')).lower()
     text = text.replace('&', ' ')
-    text = re.sub(r'[^\w]+', ' ', text, flags=re.UNICODE)
+    text = re.sub(r'[^\w+#]+', ' ', text, flags=re.UNICODE)
+    # Separate CJK runs from their neighbours: Mongo's ASCII \w treats CJK as
+    # word boundaries, and source text routinely glues them together
+    # ("System是CodeAstro公司"), so Python acceptance must see the same edges.
+    text = re.sub(rf'([{_CJK_CLASS}]+)', r' \1 ', text)
     return ' '.join(text.split())
 
 
@@ -170,7 +292,7 @@ def _clean_aliases(value, *, canonical, field):
         if not alias:
             continue
         key = key_function(alias)
-        if not key:
+        if not key or not _identity_has_word_character(key):
             raise ValueError(f'{field} contains an alias with no usable identity text')
         if key in unknown_keys:
             raise ValueError(f'{field} must not contain placeholder values such as Unknown or N/A')
@@ -207,9 +329,15 @@ def _normalize_row(value, default_row_number):
         raise ValueError('product is required')
     vendor_key = _vendor_key(vendor)
     product_key = _match_key(product)
-    if not vendor_key or vendor_key in _UNKNOWN_VENDOR_KEYS:
+    if (
+        not vendor_key or vendor_key in _UNKNOWN_VENDOR_KEYS
+        or not _identity_has_word_character(vendor_key)
+    ):
         raise ValueError('vendor must contain a usable, non-placeholder identity')
-    if not product_key or product_key in _UNKNOWN_PRODUCT_KEYS:
+    if (
+        not product_key or product_key in _UNKNOWN_PRODUCT_KEYS
+        or not _identity_has_word_character(product_key)
+    ):
         raise ValueError('product must contain a usable, non-placeholder identity')
 
     vendor_aliases = _clean_aliases(
@@ -432,10 +560,22 @@ def parse_vendor_product_csv(payload):
     ]
     for row in rows:
         product_keys = _row_product_keys(row)
+        if not product_keys:
+            warnings.append(
+                f'Row {row["row_number"]}: product identity is too short or generic '
+                'to ever match an advisory; add a more specific name or alias.',
+            )
+            continue
         if not any(_is_distinctive_product(key) for key in product_keys):
             warnings.append(
                 f'Row {row["row_number"]}: product and all product aliases are too '
                 'generic for product-only possible matching.',
+            )
+    for row in rows:
+        if not _row_vendor_keys(row):
+            warnings.append(
+                f'Row {row["row_number"]}: vendor identity is too short or generic '
+                'to ever match an advisory; add a more specific name or alias.',
             )
     product_owners = {}
     for row in rows:
@@ -488,6 +628,8 @@ def _iter_structured_pairs(document):
         product = _scalar_text(_path_value(document, product_path))
         if vendor or product:
             yield source, vendor, product
+
+    yield from _iter_cpe_pairs(document)
 
     for path in _STRUCTURED_ARRAY_PATHS:
         value = _path_value(document, path)
@@ -550,25 +692,55 @@ def _iter_fallback_segments(document):
 def _row_vendor_keys(row):
     return tuple(dict.fromkeys(
         key for key in (_vendor_key(value) for value in [row['vendor'], *row['vendor_aliases']])
-        if key
+        if key and _usable_identity_key(key)
     ))
 
 
 def _row_product_keys(row):
     return tuple(dict.fromkeys(
         key for key in (_match_key(value) for value in [row['product'], *row['product_aliases']])
-        if key
+        if key and _usable_identity_key(key)
     ))
 
 
+def _phrase_equivalent(left, right):
+    """Structured identities match when equal or phrase-contained either way.
+
+    Inventories often carry family-level names ("Windows", "HTTP Server")
+    while advisories carry specific ones ("Windows Server 2019", "Apache
+    HTTP Server"). Word-boundary containment keeps this precise; the
+    degenerate-key guard above keeps single letters out of the comparison.
+    """
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return _segment_contains(left, right) or _segment_contains(right, left)
+
+
 def _is_cjk_character(char):
-    return (
-        '\u3040' <= char <= '\u30ff'
-        or '\u31f0' <= char <= '\u31ff'
-        or '\u3400' <= char <= '\u9fff'
-        or '\uac00' <= char <= '\ud7af'
-        or '\U00020000' <= char <= '\U0002fa1f'
-    )
+    return bool(re.match(f'[{_CJK_CLASS}]', char))
+
+
+def _usable_identity_key(key):
+    """True when a normalized identity key is specific enough to match.
+
+    One-character keys (product "C", vendor "K") match unrelated words in
+    advisories, and single CJK characters match inside almost any longer
+    phrase; such rows are kept but never accepted as evidence.
+    """
+    compact = ''.join(key.split())
+    if not compact:
+        return False
+    cjk_count = sum(1 for char in compact if _is_cjk_character(char))
+    if cjk_count:
+        return cjk_count >= 2 or (len(compact) - cjk_count) >= 2
+    return len(compact) >= 2
+
+
+def _identity_has_word_character(key):
+    """Symbol-only identities such as '+++' carry no matchable identity."""
+    return re.search(r'\w', key or '') is not None
 
 
 def _segment_contains(segment_key, phrase_key):
@@ -673,8 +845,10 @@ def _classify_vendor_product_match(document, normalized, compiled_rows):
             if (
                 vendor_key not in _UNKNOWN_VENDOR_KEYS
                 and product_key not in _UNKNOWN_PRODUCT_KEYS
-                and vendor_key in vendor_keys
-                and product_key in product_keys
+                and vendor_key
+                and product_key
+                and any(_phrase_equivalent(vendor_key, key) for key in vendor_keys)
+                and any(_phrase_equivalent(product_key, key) for key in product_keys)
             ):
                 return _match_metadata('confirmed', row, {
                     'type': 'structured_pair',
@@ -698,6 +872,32 @@ def _classify_vendor_product_match(document, normalized, compiled_rows):
                         'source': source,
                         'text': _evidence_text(segment),
                     })
+
+    # Vendor-consistent product-only evidence: when the document's structured
+    # data names the row's vendor, a product phrase in fallback text upgrades
+    # to probable even though unrelated complete identities exist elsewhere in
+    # the document (multi-product advisories commonly trigger the generic
+    # structured-identity gate while still being genuinely about the row).
+    for compiled in compiled_rows:
+        row = compiled['row']
+        structured_vendor_matches = any(
+            _vendor_key(vendor)
+            and _vendor_key(vendor) not in _UNKNOWN_VENDOR_KEYS
+            and any(
+                _phrase_equivalent(_vendor_key(vendor), key)
+                for key in compiled['vendor_key_set']
+            )
+            for _, vendor, _ in structured_pairs
+        )
+        if not structured_vendor_matches:
+            continue
+        for source, segment, segment_key in fallback_segments:
+            if _first_contained(segment_key, compiled['product_keys']):
+                return _match_metadata('probable', row, {
+                    'type': 'structured_vendor_with_text_product',
+                    'source': source,
+                    'text': _evidence_text(segment),
+                })
 
     if not normalized['include_possible_matches']:
         return None
@@ -756,6 +956,8 @@ def _mongo_phrase_patterns(values, key_function):
     seen = set()
     for value in values:
         normalized_key = key_function(value)
+        if not _usable_identity_key(normalized_key):
+            continue
         normalized_tokens = tuple(normalized_key.split())
         token_variants = [normalized_tokens]
         raw_text = unicodedata.normalize('NFC', str(value or '')).replace('&', ' ')
@@ -767,7 +969,7 @@ def _mongo_phrase_patterns(values, key_function):
         for raw_form in raw_forms:
             raw_tokens = tuple(
                 token
-                for token in re.split(r'[\W_]+', raw_form, flags=re.UNICODE)
+                for token in re.split(r'[^\w+#]+', raw_form, flags=re.UNICODE)
                 if token
             )
             raw_lower_tokens = tuple(token.lower() for token in raw_tokens)
@@ -802,6 +1004,10 @@ def _candidate_inventory_clause(rows):
         ],
         _match_key,
     )
+    if not product_patterns:
+        # Every row was degenerate (e.g. single-letter products); matching
+        # nothing is safer than emitting an invalid empty $or.
+        return {}
     fields = {'.'.join(path) for path in _FALLBACK_TEXT_PATHS}
     fields.update(
         '.'.join(product_path)
@@ -813,9 +1019,18 @@ def _candidate_inventory_clause(rows):
         for name in _STRUCTURED_PRODUCT_FIELDS
     )
     fields.update(
+        f'{".".join(path)}.{name}'
+        for path in _STRUCTURED_ARRAY_PATHS
+        for name in ('package.name', 'package.productName')
+    )
+    fields.update(
         f'{".".join(path)}.package.{name}'
         for path in _STRUCTURED_ARRAY_PATHS
         for name in ('name', 'product', 'product_name', 'packageName')
+    )
+    fields.update(
+        '.'.join(path)
+        for path in _CPE_TEXT_PATHS
     )
     # Product evidence alone is sufficient for a lossless candidate pass.
     # Vendor/product pairing and confidence are enforced by the classifier,
