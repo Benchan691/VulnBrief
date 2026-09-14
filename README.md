@@ -73,6 +73,23 @@ TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them lo
 
 ## Quick start (Docker)
 
+Interactive setup (recommended) — walks through `.env` configuration
+(port, MongoDB, secret key, optional Tavily/SMTP), checks or starts
+MongoDB, then builds and starts the app:
+
+```sh
+./setup.sh
+```
+
+Later updates (git pull, rebuild, restart — data in MongoDB, `./newsletters`
+and `.env` is kept):
+
+```sh
+./update.sh
+```
+
+Manual steps:
+
 ```sh
 # 1. Create .env (see Configuration above)
 cp .env.example .env
@@ -83,7 +100,7 @@ mongosh "mongodb://localhost:27017/" --eval 'db.runCommand({ ping: 1 })'
 docker compose up -d --build
 ```
 
-- Web UI: http://localhost:9100
+- Web UI: http://localhost:9100 (change the host port with `WEB_PORT` in `.env`)
 - Local MongoDB on the host (port 27017) hosts both `web` and `vulnerabilities` databases; Docker `web` connects via `host.docker.internal`.
 - Service: `webserver-web`
 

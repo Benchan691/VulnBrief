@@ -4,11 +4,14 @@ services:
     container_name: webserver-web
     restart: unless-stopped
     ports:
-      - "9100:9100"
+      # Host port can be overridden with WEB_PORT in .env.
+      - "${WEB_PORT:-9100}:9100"
     env_file:
       - .env
     environment:
-      LOCAL_MONGO_URI: mongodb://host.docker.internal:27017/
+      # Overrides LOCAL_MONGO_URI from .env with the URI as seen from inside the
+      # container. Set LOCAL_MONGO_URI_DOCKER in .env to point somewhere else.
+      LOCAL_MONGO_URI: ${LOCAL_MONGO_URI_DOCKER:-mongodb://host.docker.internal:27017/}
     extra_hosts:
       # Adjust host gateway IP for your Docker host if needed.
       - "host.docker.internal:host-gateway"

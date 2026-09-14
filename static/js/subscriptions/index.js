@@ -75,6 +75,12 @@
         '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">' + t('Select all') + '</button>' +
         '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="reset">' + t('Reset to all') + '</button>' +
         '</div></div></div></div>' +
+        '<div class="col-12"><label class="form-label small">' + t('Severity / status') + '</label><div class="d-flex flex-wrap gap-3">' +
+        severityLevels.map(function (level) {
+            return '<div class="form-check"><input id="newsletter-status-' + level + '" class="form-check-input newsletter-status-checkbox" type="checkbox" value="' + level + '"><label class="form-check-label small" for="newsletter-status-' + level + '">' + t(level) + '</label></div>';
+        }).join('') +
+        '</div><div class="form-text">' + t('Leave all unchecked to receive every new CVE, including ones without a severity yet.') + '</div></div>' +
+        '<div class="col-md-6 d-flex align-items-end"><div class="form-check mb-2"><input id="newsletter-include-unknown" class="form-check-input" type="checkbox"><label class="form-check-label small" for="newsletter-include-unknown">' + t('Include unknown severity') + '</label></div></div>' +
         vendorProductImportMarkup('newsletter', {
             matchWarning: t('CVE vendor and product data may be incomplete. Matching can produce false positives or false negatives; only inventory-matched advisories are emailed when an inventory is saved.')
         }) +
@@ -409,21 +415,14 @@
     }
     function setStatusFilters(prefix, status) {
         const selected = Array.isArray(status) ? status : (status ? [status] : []);
-        if (prefix === 'report') {
-            document.querySelectorAll('#report-fields .report-status-checkbox').forEach(function (input) {
-                input.checked = selected.includes(input.value);
-            });
-            return;
-        }
-        document.getElementById(prefix + '-status').value = selected[0] || '';
+        document.querySelectorAll('#' + prefix + '-fields .' + prefix + '-status-checkbox').forEach(function (input) {
+            input.checked = selected.includes(input.value);
+        });
     }
     function readStatusFilters(prefix) {
-        if (prefix === 'report') {
-            return Array.from(document.querySelectorAll('#report-fields .report-status-checkbox'))
-                .filter(function (input) { return input.checked; })
-                .map(function (input) { return input.value; });
-        }
-        return document.getElementById(prefix + '-status').value;
+        return Array.from(document.querySelectorAll('#' + prefix + '-fields .' + prefix + '-status-checkbox'))
+            .filter(function (input) { return input.checked; })
+            .map(function (input) { return input.value; });
     }
     function setFilters(prefix, filters) {
         filters = filters || {};
@@ -434,6 +433,8 @@
             document.getElementById(prefix + '-vendor-product-file').value = '';
             setVendorProductImportStatus(prefix, '', '');
             renderVendorProductInventory(prefix);
+            setStatusFilters(prefix, filters.status || []);
+            document.getElementById(prefix + '-include-unknown').checked = filters.include_unknown === true;
             return;
         }
         if (prefix === 'report') {
@@ -459,6 +460,8 @@
         if (prefix === 'newsletter') {
             return {
                 collections: newsletterCollections.selectedValues(),
+                status: readStatusFilters(prefix),
+                include_unknown: document.getElementById(prefix + '-include-unknown').checked,
                 vendor_product_filter: vendorProductFilterPayload(prefix)
             };
         } else if (isReportEnriched()) {

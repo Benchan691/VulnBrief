@@ -109,6 +109,7 @@ TRANSLATIONS = {
         'Search collections...': '搜索集合…',
         'Severity / status': '严重程度 / 状态',
         'Leave all unchecked to match all known severities.': '全部不勾选则匹配所有已知严重程度。',
+        'Leave all unchecked to receive every new CVE, including ones without a severity yet.': '全部不勾选则接收所有新 CVE，包括尚未标注严重程度的 CVE。',
 
         # Subscriptions
         'Subscription Management': '订阅管理',
