@@ -17,8 +17,8 @@
     "max_concurrent_requests": 4
   },
   "enriched": {
-    "llm_base_url": "http://172.18.0.1:18080/v1",
-    "llm_model": "/models/Qwen3.8-27B-IQ4_XS.gguf",
+    "llm_base_url": "http://host.docker.internal:9000/v1",
+    "llm_model": "Qwen3.8-27B",
     "llm_timeout_seconds": 300,
     "llm_connect_timeout_seconds": 300,
     "llm_max_output_tokens": 32768,
