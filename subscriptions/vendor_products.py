@@ -172,6 +172,54 @@ _CPE_TEXT_PATHS = (
 _CPE_PREFIX_PATTERN = re.compile(r'^cpe:(?:2\.3:[aho]|/[aho]):', re.IGNORECASE)
 _CPE_SKIP_COMPONENTS = frozenset({'*', '-', ''})
 
+# Evidence fields whose text names affected products. The vendor-consistent
+# probable upgrade only trusts these; narrative fields (descriptions, summaries
+# of a different product, patch guidance) describe context and would turn
+# platform mentions into false matches.
+_VENDOR_CONFIRMED_PRODUCT_SOURCES = frozenset({
+    'title',
+    'summary',
+    'details.summary',
+    'details.affected_products',
+    'details.affected.platforms',
+    'details.product_statuses.product_names',
+    'details.threats.product_names',
+    'details.cvss.product_names',
+    'details.remediations.product_names',
+    'details.systems_affected',
+    'details.affected_systems',
+    'details.affected_software',
+    'details.products',
+    'details.product_names',
+})
+
+_PLATFORM_QUALIFIER_CACHE = {}
+
+# Well-known platform names: when one of these is the sole product evidence
+# and directly follows 'for' ("Zoom Rooms for Windows"), it qualifies the
+# real product instead of being the affected product.
+_PLATFORM_TOKENS = frozenset({
+    'windows', 'linux', 'macos', 'mac', 'osx', 'ios', 'ipados', 'android',
+    'unix', 'windows11', 'windows10',
+})
+
+
+def _is_platform_qualifier_hit(segment, phrase_key):
+    """True when a single OS-name token is a platform qualifier such as
+    'Zoom Rooms for Windows'; generic phrases ('update for Widget') and
+    multi-token products ('Windows 11 Version 24H2') are never suppressed."""
+    tokens = tuple(phrase_key.split())
+    if len(tokens) != 1 or tokens[0] not in _PLATFORM_TOKENS:
+        return False
+    token = tokens[0]
+    pattern = _PLATFORM_QUALIFIER_CACHE.get(token)
+    if pattern is None:
+        # ASCII-only lookahead: source text glues CJK onto the token
+        # ("Windows权限"), and Unicode \b would not see that edge.
+        pattern = re.compile(rf'\bfor\s+{re.escape(token)}(?![0-9A-Za-z])', re.IGNORECASE)
+        _PLATFORM_QUALIFIER_CACHE[token] = pattern
+    return bool(pattern.search(str(segment or '')))
+
 
 def _cpe_component(part):
     return re.sub(r'\\(.)', r'\1', part.replace('_', ' ')).strip()
@@ -873,11 +921,13 @@ def _classify_vendor_product_match(document, normalized, compiled_rows):
                         'text': _evidence_text(segment),
                     })
 
-    # Vendor-consistent product-only evidence: when the document's structured
-    # data names the row's vendor, a product phrase in fallback text upgrades
-    # to probable even though unrelated complete identities exist elsewhere in
-    # the document (multi-product advisories commonly trigger the generic
+    # Vendor-consistent product-name evidence: when the document's structured
+    # data names the row's vendor, a product phrase in a product-name-bearing
+    # field upgrades to probable even though unrelated complete identities
+    # exist elsewhere (multi-product advisories commonly trigger the generic
     # structured-identity gate while still being genuinely about the row).
+    # Narrative fields are excluded: boilerplate like "...runs on Microsoft
+    # Windows..." describes the platform, not the affected product.
     for compiled in compiled_rows:
         row = compiled['row']
         structured_vendor_matches = any(
@@ -892,6 +942,8 @@ def _classify_vendor_product_match(document, normalized, compiled_rows):
         if not structured_vendor_matches:
             continue
         for source, segment, segment_key in fallback_segments:
+            if source not in _VENDOR_CONFIRMED_PRODUCT_SOURCES:
+                continue
             if _first_contained(segment_key, compiled['product_keys']):
                 return _match_metadata('probable', row, {
                     'type': 'structured_vendor_with_text_product',
@@ -924,6 +976,7 @@ def _classify_vendor_product_match(document, normalized, compiled_rows):
             product_key = _first_contained(segment_key, product_keys)
             if (
                 product_key
+                and not _is_platform_qualifier_hit(segment, product_key)
                 and not _first_contained(
                     segment_key, compiled['conflicting_vendor_keys'],
                 )

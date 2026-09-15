@@ -853,3 +853,55 @@ def test_cjk_latin_junctions_are_word_boundaries():
     }, _filter(_row(vendor='CodeAstro', product='Patient Record Management System')))
 
     assert match['confidence'] == 'probable'
+
+
+def test_platform_qualifier_for_product_is_not_possible_evidence():
+    # Real-world shape (CNVD): "Zoom Rooms for Windows" is a Zoom advisory;
+    # the OS name after 'for' is a platform qualifier, not the affected product.
+    match = classify_vendor_product_match({
+        'title': 'Zoom Rooms for Windows权限管理不当漏洞',
+    }, _filter(_row(vendor='Microsoft', product='Windows'), include_possible=True))
+
+    assert match is None
+
+
+def test_platform_qualifier_does_not_suppress_specific_products():
+    # Multi-token products ("Windows 11 Version 24H2") and non-qualifier
+    # mentions keep their possible-tier evidence.
+    match = classify_vendor_product_match({
+        'details': {'product_statuses': [{'product_names': [
+            'Windows 11 Version 24H2 for ARM64-based Systems',
+        ]}]},
+    }, _filter(_row(vendor='Microsoft', product='Windows 11 Version 24H2'), include_possible=True))
+
+    assert match['confidence'] == 'possible'
+
+
+def test_vendor_consistent_upgrade_ignores_narrative_fields():
+    # Real-world shape (CNNVD SQL Server): productSummary boilerplate mentions
+    # Microsoft Windows as the platform; that must not match a Windows row.
+    match = classify_vendor_product_match({
+        'title': 'Microsoft SQL Server 缓冲区错误漏洞',
+        'details': {
+            'vendorName': 'Microsoft',
+            'productName': 'SQL Server',
+            'productSummary': 'Microsoft SQL Server是美国Microsoft公司的一套应用在Microsoft Windows系统下的大型商业数据库系统。',
+        },
+    }, _filter(_row(vendor='Microsoft', product='Windows')))
+
+    assert match is None
+
+
+def test_vendor_consistent_upgrade_still_trusts_product_name_fields():
+    # The structured product is unrelated (Visual Studio), so only the title's
+    # product-name evidence can upgrade this Microsoft-vendor document.
+    match = classify_vendor_product_match({
+        'title': 'Windows OLE DB Information Disclosure Vulnerability',
+        'details': {
+            'vendorName': 'Microsoft',
+            'productName': 'Visual Studio',
+        },
+    }, _filter(_row(vendor='Microsoft', product='Windows')))
+
+    assert match['confidence'] == 'probable'
+    assert match['evidence']['type'] == 'structured_vendor_with_text_product'
