@@ -122,39 +122,9 @@ if [[ -n "$DIRTY" ]]; then
   confirm "Continue?" "n" || die "Aborted."
 fi
 
-# Figure out where to pull from.
-UPSTREAM="$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null || true)"
-if [[ -n "$UPSTREAM" ]]; then
-  REMOTE="${UPSTREAM%%/*}"
-  BRANCH="${UPSTREAM#*/}"
-else
-  REMOTE="origin"
-  BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo main)"
-fi
-
-info "Fetching latest changes from $REMOTE..."
-SKIP_PULL=0
-if ! git fetch "$REMOTE" --quiet; then
-  warn "Could not reach $REMOTE (offline?)."
-  confirm "Continue without pulling updates (just rebuild/restart)?" "n" || die "Aborted."
-  SKIP_PULL=1
-fi
-
-BEHIND=0
-if (( ! SKIP_PULL )); then
-  BEHIND="$(git rev-list --count "HEAD..$REMOTE/$BRANCH" 2>/dev/null || echo 0)"
-  if (( BEHIND > 0 )); then
-    info "$BEHIND new commit(s) available:"
-    git log --oneline --no-decorate "HEAD..$REMOTE/$BRANCH"
-    confirm "Apply the update?" "y" || die "Aborted."
-    info "Pulling updates..."
-    git pull --ff-only "$REMOTE" "$BRANCH" || die "git pull failed. Resolve local changes manually (e.g. git stash) and re-run ./update.sh."
-    ok "Updated to $(git rev-parse --short HEAD)."
-  else
-    info "Already up to date with $REMOTE/$BRANCH."
-    confirm "Rebuild and restart anyway?" "n" || exit 0
-  fi
-fi
+info "Pulling latest changes..."
+git pull || die "git pull failed. Resolve the Git issue and re-run ./update.sh."
+ok "Code updated to $(git rev-parse --short HEAD)."
 
 info "Rebuilding and restarting VulnBrief..."
 "${COMPOSE[@]}" up -d --build || die "docker compose up failed."
