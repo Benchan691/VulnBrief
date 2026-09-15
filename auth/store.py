@@ -3,11 +3,14 @@ from datetime import datetime, timezone
 
 import bcrypt
 from bson import ObjectId
+from flask import current_app
 
-from core.database import get_web_database
+from core.database import get_config, get_web_database
 
 
 AUTH_COLLECTION = 'auth'
+AUTH_SOURCE_LOCAL = 'local'
+AUTH_SOURCE_ACCOUNT_HUB = 'account_hub'
 ROLE_ADMIN = 'admin'
 ROLE_SUB_ADMIN = 'sub_admin'
 ROLE_USER = 'user'
@@ -19,6 +22,14 @@ MAX_PASSWORD_BYTES = 72
 BCRYPT_HASH_PATTERN = re.compile(r'^\$2[aby]\$(0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}$')
 EMAIL_PATTERN = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 _UNSET = object()
+
+
+def _account_hub_enabled():
+    """Read the active Flask setting, falling back to the database config."""
+    try:
+        return bool(current_app.config.get('ACCOUNT_HUB_ENABLED'))
+    except RuntimeError:
+        return bool(get_config().get('ACCOUNT_HUB_ENABLED'))
 
 
 def normalize_login(value):
@@ -44,6 +55,12 @@ def validate_email(value):
 
 def username_key(value):
     return normalize_username(value).casefold()
+
+
+def account_hub_uid_key(value):
+    if value is None or isinstance(value, bool):
+        return ''
+    return str(value).strip()
 
 
 def _validate_password(password):
@@ -126,6 +143,15 @@ def find_user_by_id(user_id):
     return get_web_database()[AUTH_COLLECTION].find_one({'_id': query_id})
 
 
+def find_user_by_account_hub_uid(uid):
+    uid = account_hub_uid_key(uid)
+    if not uid:
+        return None
+    return get_web_database()[AUTH_COLLECTION].find_one({
+        'account_hub_uid': uid,
+    })
+
+
 def verify_login(login, password):
     user = find_user(login)
     if user is None or user.get('disabled') or not verify_password(user, password):
@@ -136,7 +162,7 @@ def verify_login(login, password):
 def public_user(user):
     if not user:
         return None
-    return {
+    result = {
         'id': str(user.get('_id')) if user.get('_id') is not None else '',
         'username': user.get('username') or '',
         'email': user.get('email') or '',
@@ -147,11 +173,150 @@ def public_user(user):
             user.get('pause_managed_subscriptions_when_disabled')
         ),
     }
+    result.update({
+        'auth_source': user.get('auth_source') or AUTH_SOURCE_LOCAL,
+        'account_hub_uid': str(user.get('account_hub_uid'))
+        if user.get('account_hub_uid') not in (None, '') else '',
+        'account_hub_username': user.get('account_hub_username') or '',
+        'account_hub_bound': bool(user.get('account_hub_uid')),
+    })
+    for field in ('created_at', 'updated_at', 'last_account_hub_sync_at'):
+        if user.get(field) is not None and hasattr(user[field], 'isoformat'):
+            result[field] = user[field].isoformat()
+    return result
 
 
 def is_admin_role(role_or_user):
     role = role_or_user.get('role') if isinstance(role_or_user, dict) else role_or_user
     return role in ADMIN_ROLES
+
+
+def account_hub_role(permissions):
+    """Map configured Account Hub permissions to the portal's roles."""
+    if isinstance(permissions, str):
+        permissions = {permissions}
+    else:
+        permissions = {str(value) for value in (permissions or set())}
+    try:
+        config = current_app.config
+    except RuntimeError:
+        config = get_config()
+    admin_permission = str(config.get('ACCOUNT_HUB_ADMIN_PERMISSION') or '').strip()
+    sub_admin_permission = str(config.get('ACCOUNT_HUB_SUB_ADMIN_PERMISSION') or '').strip()
+    if admin_permission and admin_permission in permissions:
+        return ROLE_ADMIN
+    if sub_admin_permission and sub_admin_permission in permissions:
+        return ROLE_SUB_ADMIN
+    return ROLE_USER
+
+
+def ensure_account_hub_user(username, email=None):
+    """Create or update an approved Account Hub identity without a password."""
+    username = normalize_username(username)
+    if not username:
+        raise ValueError('Username is required.')
+    email = validate_email(email)
+    collection = get_web_database()[AUTH_COLLECTION]
+    user = _find_user_by_username(username)
+    if user is not None and (
+        user.get('auth_source') == AUTH_SOURCE_LOCAL
+        or (not user.get('auth_source') and user.get('role') == ROLE_ADMIN)
+    ):
+        raise ValueError('Username is reserved for the local administrator.')
+    now = datetime.now(timezone.utc)
+    updates = {
+        'username': username,
+        'username_key': username_key(username),
+        'auth_source': AUTH_SOURCE_ACCOUNT_HUB,
+        'must_change_password': False,
+        'updated_at': now,
+    }
+    if email:
+        updates['email'] = email
+    if user is None:
+        updates.update({
+            'role': ROLE_USER,
+            'disabled': False,
+            'pause_managed_subscriptions_when_disabled': False,
+            'created_at': now,
+        })
+        result = collection.insert_one(updates)
+        return collection.find_one({'_id': result.inserted_id})
+    collection.update_one({'_id': user['_id']}, {'$set': updates})
+    return collection.find_one({'_id': user['_id']})
+
+
+def list_account_hub_users():
+    return list(get_web_database()[AUTH_COLLECTION].find({
+        'auth_source': AUTH_SOURCE_ACCOUNT_HUB,
+    }).sort('username_key', 1))
+
+
+def update_account_hub_user(
+    user_id,
+    *,
+    email=_UNSET,
+    disabled=_UNSET,
+    pause_managed_subscriptions_when_disabled=_UNSET,
+):
+    user = find_user_by_id(user_id)
+    if user is None or user.get('auth_source') != AUTH_SOURCE_ACCOUNT_HUB:
+        raise LookupError('Account Hub user not found.')
+    updates = {'updated_at': datetime.now(timezone.utc)}
+    if email is not _UNSET:
+        email = validate_email(email)
+        updates['email'] = email or None
+    if disabled is not _UNSET:
+        updates['disabled'] = bool(disabled)
+    if pause_managed_subscriptions_when_disabled is not _UNSET:
+        updates['pause_managed_subscriptions_when_disabled'] = bool(
+            pause_managed_subscriptions_when_disabled
+        )
+    get_web_database()[AUTH_COLLECTION].update_one(
+        {'_id': user['_id']}, {'$set': updates},
+    )
+    return find_user_by_id(user['_id'])
+
+
+def find_account_hub_user(uid, username):
+    user = find_user_by_account_hub_uid(uid)
+    if user is not None:
+        return user
+    user = _find_user_by_username(username)
+    if user is None:
+        return None
+    if user.get('auth_source') == AUTH_SOURCE_LOCAL or (
+        not user.get('auth_source') and user.get('role') == ROLE_ADMIN
+    ):
+        return None
+    return user
+
+
+def sync_account_hub_user(user, claims):
+    uid = account_hub_uid_key(claims.get('uid'))
+    username = normalize_username(claims.get('username'))
+    if not uid or not username:
+        raise ValueError('Account Hub identity is incomplete.')
+    bound_uid = account_hub_uid_key(user.get('account_hub_uid'))
+    if bound_uid and bound_uid != uid:
+        raise ValueError('Account Hub identity does not match the approved user.')
+    by_uid = find_user_by_account_hub_uid(uid)
+    if by_uid is not None and by_uid['_id'] != user['_id']:
+        raise ValueError('Account Hub identity is already linked to another user.')
+    now = datetime.now(timezone.utc)
+    updates = {
+        'auth_source': AUTH_SOURCE_ACCOUNT_HUB,
+        'account_hub_uid': uid,
+        'account_hub_username': username,
+        'role': account_hub_role(claims.get('permissions')),
+        'must_change_password': False,
+        'last_account_hub_sync_at': now,
+        'updated_at': now,
+    }
+    get_web_database()[AUTH_COLLECTION].update_one(
+        {'_id': user['_id']}, {'$set': updates},
+    )
+    return find_user_by_id(user['_id'])
 
 
 def upsert_user(
@@ -161,12 +326,15 @@ def upsert_user(
     *,
     role=ROLE_USER,
     must_change_password=False,
+    auth_source=AUTH_SOURCE_LOCAL,
 ):
     username = normalize_username(username)
     if not username:
         raise ValueError('Username is required.')
     if role not in VALID_ROLES:
         raise ValueError('Invalid user role.')
+    if auth_source not in {AUTH_SOURCE_LOCAL, AUTH_SOURCE_ACCOUNT_HUB}:
+        raise ValueError('Invalid authentication source.')
     now = datetime.now(timezone.utc)
     document = {
         'username': username,
@@ -174,6 +342,7 @@ def upsert_user(
         'password': hash_password(password),
         'role': role,
         'must_change_password': bool(must_change_password),
+        'auth_source': auth_source,
         'updated_at': now,
     }
     email = validate_email(email)
@@ -226,7 +395,10 @@ def ensure_subscription_user(username, password=None, email=None, *, user_id=Non
         raise ValueError('Username is already used by the administrator.')
     if user_id and user is None:
         raise ValueError('User not found.')
-    if user is None and password is None:
+    account_hub_enabled = _account_hub_enabled()
+    if account_hub_enabled and password not in (None, ''):
+        raise ValueError('Account Hub users do not use local passwords.')
+    if user is None and password is None and not account_hub_enabled:
         raise ValueError('Password is required.')
     if password is not None and password != '':
         password = _validate_password(password)
@@ -237,9 +409,12 @@ def ensure_subscription_user(username, password=None, email=None, *, user_id=Non
         'username': username,
         'username_key': username_key(username),
         'role': ROLE_USER,
+        'auth_source': AUTH_SOURCE_ACCOUNT_HUB if account_hub_enabled else (
+            user.get('auth_source') if user else AUTH_SOURCE_LOCAL
+        ),
         'must_change_password': (
             False
-            if password_configured or user is None
+            if account_hub_enabled or password_configured or user is None
             else bool(user.get('must_change_password'))
         ),
         'updated_at': now,
@@ -320,6 +495,7 @@ def create_sub_admin(
         'username_key': username_key(username),
         'password': hash_password(password),
         'role': ROLE_SUB_ADMIN,
+        'auth_source': AUTH_SOURCE_LOCAL,
         'must_change_password': False,
         'disabled': bool(disabled),
         'pause_managed_subscriptions_when_disabled': bool(
@@ -415,42 +591,54 @@ def ensure_bootstrap_user(config):
     now = datetime.now(timezone.utc)
     created = False
 
-    admin = collection.find_one({'role': ROLE_ADMIN})
+    admin = _find_user_by_username(username) if username else None
     if admin is None:
-        admin = _find_user_by_username(username) if username else None
-        if admin is not None:
-            collection.update_one({'_id': admin['_id']}, {'$set': {
-                'role': ROLE_ADMIN,
-                'must_change_password': False,
-                'disabled': False,
-                'updated_at': now,
-            }})
-        elif username and password:
+        admin = collection.find_one({
+            'auth_source': AUTH_SOURCE_LOCAL,
+            'role': ROLE_ADMIN,
+        })
+    if admin is None:
+        # Legacy databases had no auth_source and a single role=admin record.
+        admin = collection.find_one({'role': ROLE_ADMIN})
+    if admin is None:
+        if username and password:
             upsert_user(
                 username,
                 password,
                 role=ROLE_ADMIN,
                 must_change_password=False,
+                auth_source=AUTH_SOURCE_LOCAL,
             )
-            admin = collection.find_one({'username': username})
+            admin = collection.find_one({'username_key': username_key(username)})
             created = True
-        else:
+        elif username:
+            admin = collection.find_one({'username_key': username_key(username)})
+        if admin is None:
             admin = collection.find_one({})
-            if admin is not None:
-                collection.update_one({'_id': admin['_id']}, {'$set': {
-                    'role': ROLE_ADMIN,
-                    'must_change_password': False,
-                    'disabled': False,
-                    'updated_at': now,
-                }})
-            else:
-                print(
-                    'WEB AUTH: web.auth is empty and bootstrap credentials are not configured.',
-                    flush=True,
-                )
-                return False
+        if admin is not None:
+            collection.update_one({'_id': admin['_id']}, {'$set': {
+                'role': ROLE_ADMIN,
+                'must_change_password': False,
+                'disabled': False,
+                'auth_source': AUTH_SOURCE_LOCAL,
+                'updated_at': now,
+            }})
+        else:
+            print(
+                'WEB AUTH: web.auth is empty and bootstrap credentials are not configured.',
+                flush=True,
+            )
+            return False
 
     admin_id = admin['_id']
+    collection.update_one({'_id': admin_id}, {'$set': {
+        'auth_source': AUTH_SOURCE_LOCAL,
+        'role': ROLE_ADMIN,
+        'disabled': False,
+        'must_change_password': False,
+        'username_key': username_key(admin.get('username') or username),
+        'updated_at': now,
+    }})
     if not is_password_hash(admin.get('password')) and password:
         collection.update_one({'_id': admin_id}, {'$set': {
             'password': hash_password(password),
@@ -458,8 +646,33 @@ def ensure_bootstrap_user(config):
             'updated_at': now,
         }})
 
+    account_hub_enabled = bool(
+        config.get('ACCOUNT_HUB_ENABLED')
+        if isinstance(config, dict)
+        else _account_hub_enabled()
+    )
     for user in collection.find({}):
+        if user['_id'] == admin_id:
+            continue
+        if account_hub_enabled:
+            updates = {}
+            if user.get('auth_source') != AUTH_SOURCE_ACCOUNT_HUB:
+                updates['auth_source'] = AUTH_SOURCE_ACCOUNT_HUB
+            if user.get('role') != ROLE_USER:
+                updates['role'] = ROLE_USER
+            if user.get('must_change_password'):
+                updates['must_change_password'] = False
+            if user.get('username') and user.get('username_key') != username_key(user['username']):
+                updates['username_key'] = username_key(user['username'])
+            if updates:
+                updates['updated_at'] = now
+                collection.update_one({'_id': user['_id']}, {'$set': updates})
+            continue
         updates = {}
+        if user.get('auth_source') != AUTH_SOURCE_LOCAL:
+            # Rollback keeps legacy hashes available for local recovery while
+            # the enabled mode never accepts them for ordinary sign-in.
+            updates['auth_source'] = AUTH_SOURCE_LOCAL
         if user.get('username') and user.get('username_key') != username_key(user['username']):
             updates['username_key'] = username_key(user['username'])
         if user['_id'] == admin_id:
@@ -509,6 +722,7 @@ def ensure_bootstrap_user(config):
 def ensure_legacy_subscription_users():
     web_database = get_web_database()
     auth_collection = web_database[AUTH_COLLECTION]
+    account_hub_enabled = _account_hub_enabled()
     now = datetime.now(timezone.utc)
     for subscription in web_database['sub_account'].find({}):
         emails = subscription.get('emails')
@@ -528,18 +742,21 @@ def ensure_legacy_subscription_users():
             user = auth_collection.find_one({'email': emails[0]})
         if user is None:
             username = username or emails[0]
-            result = auth_collection.insert_one({
+            document = {
                 'username': username,
                 'username_key': username_key(username),
                 'email': emails[0],
-                'password': hash_password(LEGACY_DEFAULT_PASSWORD),
                 'role': ROLE_USER,
-                'must_change_password': True,
+                'auth_source': AUTH_SOURCE_ACCOUNT_HUB if account_hub_enabled else AUTH_SOURCE_LOCAL,
+                'must_change_password': False if account_hub_enabled else True,
                 'created_at': now,
                 'updated_at': now,
-            })
+            }
+            if not account_hub_enabled:
+                document['password'] = hash_password(LEGACY_DEFAULT_PASSWORD)
+            result = auth_collection.insert_one(document)
             user = auth_collection.find_one({'_id': result.inserted_id})
-        if is_admin_role(user):
+        if user.get('auth_source') == AUTH_SOURCE_LOCAL and is_admin_role(user):
             continue
         updates = {}
         if not user.get('username'):
@@ -550,9 +767,16 @@ def ensure_legacy_subscription_users():
             })
         elif user.get('username_key') != username_key(user['username']):
             updates['username_key'] = username_key(user['username'])
-        if user.get('role') != ROLE_USER:
+        if not account_hub_enabled and user.get('role') != ROLE_USER:
             updates['role'] = ROLE_USER
-        if not is_password_hash(user.get('password')):
+        if not account_hub_enabled and user.get('auth_source') != AUTH_SOURCE_LOCAL:
+            updates['auth_source'] = AUTH_SOURCE_LOCAL
+        if account_hub_enabled:
+            if user.get('role') != ROLE_USER:
+                updates['role'] = ROLE_USER
+            updates['auth_source'] = AUTH_SOURCE_ACCOUNT_HUB
+            updates['must_change_password'] = False
+        elif not is_password_hash(user.get('password')):
             updates.update({
                 'password': hash_password(LEGACY_DEFAULT_PASSWORD),
                 'must_change_password': True,
@@ -581,7 +805,12 @@ def ensure_legacy_subscription_users():
 def ensure_admin_data_ownership():
     """Backfill manager ownership for records created before sub-admins existed."""
     database = get_web_database()
-    admin = database[AUTH_COLLECTION].find_one({'role': ROLE_ADMIN}, {'_id': 1})
+    admin = database[AUTH_COLLECTION].find_one(
+        {'auth_source': AUTH_SOURCE_LOCAL, 'role': ROLE_ADMIN},
+        {'_id': 1},
+    )
+    if admin is None:
+        admin = database[AUTH_COLLECTION].find_one({'role': ROLE_ADMIN}, {'_id': 1})
     if admin is None:
         return False
     manager_id = admin['_id']
@@ -595,3 +824,10 @@ def ensure_admin_data_ownership():
             {'$set': {'managed_by_user_id': manager_id}},
         )
     return True
+
+
+def ensure_account_hub_indexes():
+    """Keep one local identity row per Account Hub UID."""
+    get_web_database()[AUTH_COLLECTION].create_index(
+        'account_hub_uid', unique=True, sparse=True,
+    )

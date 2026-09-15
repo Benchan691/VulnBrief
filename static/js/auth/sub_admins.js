@@ -1,11 +1,11 @@
 (function () {
     const config = JSON.parse(document.getElementById('sub-admin-page-config').textContent);
     const modal = new bootstrap.Modal(document.getElementById('sub-admin-modal'));
-    const form = document.getElementById('sub-admin-form');
+    const form = document.getElementById('account-user-form');
     const rows = document.getElementById('sub-admin-rows');
     const message = document.getElementById('message');
     const modalMessage = document.getElementById('modal-message');
-    let subAdmins = [];
+    let users = [];
     let editingId = null;
 
     function requestJson(url, options) {
@@ -32,11 +32,16 @@
 
     function renderRows() {
         rows.replaceChildren();
-        document.getElementById('empty').classList.toggle('d-none', subAdmins.length !== 0);
-        subAdmins.forEach(function (item) {
+        document.getElementById('empty').classList.toggle('d-none', users.length !== 0);
+        users.forEach(function (item) {
             const row = document.createElement('tr');
             const username = document.createElement('td');
             username.textContent = item.username || '';
+            const role = document.createElement('td');
+            const roleLabels = {admin: t('Administrator'), sub_admin: t('Sub-admin'), user: t('User')};
+            role.textContent = item.account_hub_bound
+                ? (roleLabels[item.role] || item.role || t('User'))
+                : t('Pending first sign-in');
             const email = document.createElement('td');
             email.textContent = item.email || t('Not provided');
             const status = document.createElement('td');
@@ -52,43 +57,34 @@
             edit.onclick = function () { openEditor(item); };
             const toggle = button(item.disabled ? t('Enable') : t('Disable'), 'btn btn-outline-secondary btn-sm');
             toggle.onclick = function () {
-                requestJson(config.subAdminsUrl + '/' + encodeURIComponent(item.id), {
+                requestJson(config.accountUsersUrl + '/' + encodeURIComponent(item.id), {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
                     body: JSON.stringify({disabled: !item.disabled})
                 }).then(load).catch(function (error) { setMessage(message, error.message, 'danger'); });
             };
-            const remove = button(t('Delete'), 'btn btn-outline-danger btn-sm');
-            remove.onclick = function () {
-                if (!confirm(t('Delete sub-admin {username}?', {username: item.username}))) return;
-                requestJson(config.subAdminsUrl + '/' + encodeURIComponent(item.id), {
-                    method: 'DELETE',
-                    headers: {'Accept': 'application/json'}
-                }).then(load).catch(function (error) { setMessage(message, error.message, 'danger'); });
-            };
-            actions.append(edit, toggle, remove);
-            row.append(username, email, status, delivery, actions);
+            actions.append(edit, toggle);
+            row.append(username, role, email, status, delivery, actions);
             rows.append(row);
         });
     }
 
     function openEditor(item) {
         editingId = item ? item.id : null;
-        document.getElementById('modal-title').textContent = item ? t('Edit sub-admin') : t('Add sub-admin');
-        document.getElementById('sub-admin-username').value = item ? item.username : '';
-        document.getElementById('sub-admin-username').readOnly = Boolean(item);
-        document.getElementById('sub-admin-email').value = item ? (item.email || '') : '';
-        document.getElementById('sub-admin-password').value = '';
-        document.getElementById('sub-admin-password').required = !item;
-        document.getElementById('sub-admin-disabled').checked = Boolean(item && item.disabled);
-        document.getElementById('sub-admin-pause').checked = Boolean(item && item.pause_managed_subscriptions_when_disabled);
+        document.getElementById('modal-title').textContent = item ? t('Edit Account Hub user') : t('Add Account Hub user');
+        const username = document.getElementById('account-user-username');
+        username.value = item ? item.username : '';
+        username.readOnly = Boolean(item);
+        document.getElementById('account-user-email').value = item ? (item.email || '') : '';
+        document.getElementById('account-user-disabled').checked = Boolean(item && item.disabled);
+        document.getElementById('account-user-pause').checked = Boolean(item && item.pause_managed_subscriptions_when_disabled);
         setMessage(modalMessage, '', '');
         modal.show();
     }
 
     function load() {
-        return requestJson(config.subAdminsUrl).then(function (body) {
-            subAdmins = body.data || [];
+        return requestJson(config.accountUsersUrl).then(function (body) {
+            users = body.data || [];
             renderRows();
         }).catch(function (error) {
             setMessage(message, error.message, 'danger');
@@ -97,31 +93,25 @@
         });
     }
 
-    document.getElementById('add-sub-admin').onclick = function () { openEditor(null); };
+    document.getElementById('add-account-user').onclick = function () { openEditor(null); };
     form.onsubmit = function (event) {
         event.preventDefault();
         const payload = {
-            email: document.getElementById('sub-admin-email').value.trim(),
-            disabled: document.getElementById('sub-admin-disabled').checked,
-            pause_managed_subscriptions_when_disabled: document.getElementById('sub-admin-pause').checked,
+            email: document.getElementById('account-user-email').value.trim(),
+            disabled: document.getElementById('account-user-disabled').checked,
+            pause_managed_subscriptions_when_disabled: document.getElementById('account-user-pause').checked,
         };
-        const password = document.getElementById('sub-admin-password').value;
-        if (!editingId) {
-            payload.username = document.getElementById('sub-admin-username').value.trim();
-            payload.password = password;
-        } else if (password) {
-            payload.password = password;
-        }
+        if (!editingId) payload.username = document.getElementById('account-user-username').value.trim();
         setMessage(modalMessage, '', '');
         requestJson(editingId
-            ? config.subAdminsUrl + '/' + encodeURIComponent(editingId)
-            : config.subAdminsUrl, {
+            ? config.accountUsersUrl + '/' + encodeURIComponent(editingId)
+            : config.accountUsersUrl, {
                 method: editingId ? 'PUT' : 'POST',
                 headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
                 body: JSON.stringify(payload)
             }).then(function () {
                 modal.hide();
-                setMessage(message, t('Sub-admin saved.'), 'success');
+                setMessage(message, t('Account Hub user saved.'), 'success');
                 return load();
             }).catch(function (error) {
                 setMessage(modalMessage, error.message, 'danger');

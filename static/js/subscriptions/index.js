@@ -6,6 +6,7 @@
         vendorProductImportUrl,
         vendorProductTemplateUrl,
         isAdmin,
+        accountHubEnabled,
     } = JSON.parse(document.getElementById('page-config').textContent);
     const modal = new bootstrap.Modal(document.getElementById('subscription-modal'));
     const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionMeansAll: true});
@@ -619,7 +620,7 @@
         renderRecipientInputs(subscription ? (subscription.emails || [subscription.email]) : ['']);
         document.getElementById('team').value = subscription ? subscription.team : '';
         document.getElementById('delivery-mode').value = subscription ? (subscription.delivery_mode || 'individual') : 'individual';
-        if (isAdmin) {
+        if (isAdmin && !accountHubEnabled) {
             document.getElementById('password').value = '';
             document.getElementById('password-help').textContent = subscription
                 ? t('Leave blank to keep the current password.')
@@ -786,8 +787,8 @@
             return;
         }
         showModalMessage('', '');
-        const password = isAdmin ? document.getElementById('password').value : '';
-        if (isAdmin && !editingId && !password) {
+        const password = isAdmin && !accountHubEnabled ? document.getElementById('password').value : '';
+        if (isAdmin && !accountHubEnabled && !editingId && !password) {
             showModalMessage(t('Password is required.'), 'danger');
             return;
         }
@@ -802,7 +803,7 @@
         if (isAdmin) {
             payload.username = document.getElementById('username').value;
             payload.emails = recipientValues();
-            payload.password = password;
+            if (!accountHubEnabled) payload.password = password;
         }
         requestJson(editingId ? apiUrl(editingId) : subscriptionsUrl, {method:editingId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load();}).catch(function(e){showModalMessage(e.message,'danger');});
     };

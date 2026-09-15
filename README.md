@@ -8,6 +8,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 - **Subscriptions** — manage username-based subscription accounts with multiple recipient emails, private or grouped delivery, and optional confidence-aware vendor/product CSV filters on both newsletter and report profiles
 - **Vulnerability Reviews** — select records from MongoDB review collections for export and reporting
 - **Reports** — generate structured reports with **Enriched Weekly** (Tavily + llama-server) or a **Fixed Template**, then render preview/download HTML live without storing HTML in MongoDB
+- **Account Hub sign-in** — authenticate portal users through Account Hub OAuth, map configured permission claims to portal roles, and keep a local bootstrap administrator for break-glass access
 
 ## Architecture
 
@@ -15,6 +16,7 @@ Flask web application for managing cybersecurity newsletters, vulnerability revi
 flowchart LR
   Browser --> Web["Flask web :9100"]
   Web --> LocalMongo["Local MongoDB"]
+  Web -. optional SSO .-> Hub["Account Hub"]
   Web --> Search["Tavily API"]
   Web --> Llama["llama-server enriched.llm_base_url"]
 ```
@@ -23,6 +25,7 @@ flowchart LR
 |---------|------|
 | `web` | Flask UI, report job orchestration, enriched pipeline |
 | Local MongoDB | `vulnerabilities` DB for CVE/review data; `web` DB for auth, sub accounts, report jobs, enriched artifacts |
+| Account Hub (optional) | OAuth sign-in, token validation, global logout, and permission claims |
 
 ## Prerequisites
 
@@ -66,6 +69,15 @@ Minimum `.env` for local web:
 | `MONGO_URI` | Optional alias for `LOCAL_MONGO_URI` when both are set |
 | `FLASK_SECRET_KEY` | Session signing |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly) |
+
+To enable Account Hub, set `ACCOUNT_HUB_ENABLED=true` and provide the full
+authorize, token, token-check, logout, client, redirect, and permission mapping
+settings shown in [`.env.example`](.env.example). Account Hub URLs are supplied
+by the Account Hub deployment and are intentionally configured individually.
+While enabled, `/login` uses Account Hub and `/login/local` is reserved for the
+configured local bootstrap administrator. Start with the Account Hub test
+endpoints and promote the same verified settings to production only after a
+successful sign-in, logout, role-mapping, and revocation check.
 
 See **[docs/LOCAL_DEPLOY.md](docs/LOCAL_DEPLOY.md)** for full setup and troubleshooting.
 

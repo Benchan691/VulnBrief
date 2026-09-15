@@ -11,6 +11,7 @@ from core.templating import register_template_filters
 def create_app():
     from auth.routes import auth_blueprint
     from auth.store import (
+        ensure_account_hub_indexes,
         ensure_admin_data_ownership,
         ensure_bootstrap_user,
         ensure_legacy_subscription_users,
@@ -35,6 +36,7 @@ def create_app():
     application.permanent_session_lifetime = timedelta(hours=12)
     register_template_filters(application)
     ensure_sub_account_collection()
+    ensure_account_hub_indexes()
     ensure_bootstrap_user(config)
     ensure_legacy_subscription_users()
     ensure_admin_data_ownership()
@@ -44,7 +46,12 @@ def create_app():
         from core.auth import is_top_admin
 
         if is_top_admin():
-            return redirect(url_for('auth.sub_admins'))
+            endpoint = (
+                'auth.account_users'
+                if application.config.get('ACCOUNT_HUB_ENABLED')
+                else 'auth.sub_admins'
+            )
+            return redirect(url_for(endpoint))
         return redirect(url_for('subscription.subscriptions'))
 
     @application.route('/locale/<code>')

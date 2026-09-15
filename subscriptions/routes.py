@@ -763,12 +763,17 @@ def add_subscription():
     if not username or not team:
         return jsonify({'error': t('Username, email, and team are required.')}), 400
     password = data.get('password')
-    if not isinstance(password, str) or not password:
-        return jsonify({'error': t('Password is required.')}), 400
-    try:
-        validate_password(password)
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    if current_app.config.get('ACCOUNT_HUB_ENABLED'):
+        if password not in (None, ''):
+            return jsonify({'error': t('Account Hub users do not use local passwords.')}), 400
+        password = None
+    else:
+        if not isinstance(password, str) or not password:
+            return jsonify({'error': t('Password is required.')}), 400
+        try:
+            validate_password(password)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     try:
         database = get_vulnerabilities_database()
         newsletter_value = data.get('newsletter_profile')
@@ -847,6 +852,10 @@ def edit_subscription(subscription_id):
     if query is None:
         return _subscription_access_denied()
     password = data.get('password')
+    if password == '':
+        password = None
+    if current_app.config.get('ACCOUNT_HUB_ENABLED') and password not in (None, ''):
+        return jsonify({'error': t('Account Hub users do not use local passwords.')}), 400
     if password is not None and not is_admin():
         return jsonify({'error': t('Only an administrator can reset user passwords.')}), 403
     if password is not None and password != '' and (
@@ -864,7 +873,10 @@ def edit_subscription(subscription_id):
         if existing is None:
             return jsonify({'error': t('Subscription not found.')}), 404
         current = normalize_subscription(database, existing)
-        if not is_admin() and any(field in data for field in ('username', 'emails', 'email', 'password')):
+        if not is_admin() and (
+            any(field in data for field in ('username', 'emails', 'email'))
+            or ('password' in data and data.get('password') not in (None, ''))
+        ):
             return jsonify({'error': t('Only an administrator can edit subscription identity fields.')}), 403
         current_user_record = current_user()
         owner_id = current.get('owner_user_id') or (

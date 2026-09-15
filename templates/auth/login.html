@@ -25,6 +25,7 @@
                 </div>
                 {% endif %}
 
+                {% if local_login or not config.ACCOUNT_HUB_ENABLED %}
                 <form method="POST">
                     <div class="mb-3">
                         <label for="username" class="form-label fw-medium">{{ t('Username') }}</label>
@@ -46,6 +47,20 @@
                         <i class="bi bi-box-arrow-in-right me-2"></i>{{ t('Sign In') }}
                     </button>
                 </form>
+                {% if local_login and config.ACCOUNT_HUB_ENABLED %}
+                <p class="text-center small mt-3 mb-0 text-muted">
+                    <a href="{{ url_for('auth.login') }}">{{ t('Sign in with Account Hub') }}</a>
+                </p>
+                {% endif %}
+                {% else %}
+                <a class="btn btn-primary w-100 py-2 fw-medium" href="{{ url_for('auth.login') }}">
+                    <i class="bi bi-box-arrow-in-right me-2"></i>{{ t('Sign in with Account Hub') }}
+                </a>
+                <p class="text-center small mt-3 mb-0 text-muted">
+                    {{ t('Bootstrap administrator?') }}
+                    <a href="{{ url_for('auth.local_login') }}">{{ t('Use local admin sign-in') }}</a>
+                </p>
+                {% endif %}
                 <div class="text-center small mt-3 text-muted">
                     <a class="text-decoration-none {{ 'fw-semibold text-dark' if locale == 'en' else 'text-muted' }}" href="{{ url_for('set_locale', code='en', next=request.full_path) }}">{{ t('EN') }}</a>
                     <span class="mx-1">|</span>

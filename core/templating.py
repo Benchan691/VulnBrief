@@ -1,6 +1,7 @@
 from markupsafe import Markup, escape
 
 from core.i18n import catalog, get_locale, html_lang, t
+from integrations.account_hub import AccountHubError
 
 
 def nl2br(value):
@@ -22,7 +23,7 @@ def register_template_filters(application):
         locale = get_locale()
         try:
             user = current_user()
-        except RuntimeError:
+        except (RuntimeError, AccountHubError):
             user = None
         return {
             'locale': locale,
@@ -34,6 +35,10 @@ def register_template_filters(application):
                 'role': user.get('role') or 'user',
                 'must_change_password': bool(user.get('must_change_password')),
                 'disabled': bool(user.get('disabled')),
+                'auth_source': user.get('auth_source') or 'local',
+                'account_hub_uid': str(user.get('account_hub_uid'))
+                if user.get('account_hub_uid') not in (None, '') else '',
+                'account_hub_username': user.get('account_hub_username') or '',
             } if user else None,
             'is_admin': bool(user and user.get('role') in {'admin', 'sub_admin'}),
             'is_top_admin': bool(user and user.get('role') == 'admin'),

@@ -120,6 +120,32 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `FLASK_SECRET_KEY` | Flask session signing (use a long random string) |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly reports) |
 
+### Account Hub sign-in (optional)
+
+Set `ACCOUNT_HUB_ENABLED=true` only after the Account Hub client and callback
+have been registered. Configure every full endpoint URL separately:
+`ACCOUNT_HUB_AUTHORIZE_URL`, `ACCOUNT_HUB_TOKEN_URL`,
+`ACCOUNT_HUB_TOKEN_CHECK_URL`, and `ACCOUNT_HUB_LOGOUT_URL`. Also set the client
+ID/secret, exact redirect URI, and the permission names used for the portal
+administrator and sub-admin roles (`ACCOUNT_HUB_ADMIN_PERMISSION` and
+`ACCOUNT_HUB_SUB_ADMIN_PERMISSION`). Do not infer URL paths in deployment code.
+The portal uses a regular confidential OAuth client (client secret plus the
+authorization-code flow); Account Hub's wrapped token response is handled
+(`data.accessToken` and `data.refreshToken`).
+
+Use the Account Hub test environment first. Verify sign-in, global logout,
+permission-to-role mapping, disabled-user rejection, and token revocation; then
+promote the verified endpoint and client settings to production.
+
+When enabled, `/login` redirects to Account Hub and `/login/local` accepts only
+the configured local bootstrap administrator. The **Account Hub Users** page is
+an allowlist keyed by username. Approving a row does not assign a local role or
+password; the first successful Account Hub sign-in binds its UID, and each
+protected request revalidates the Account Hub session. Disabling a row blocks
+access without deleting its subscriptions or delivery history. Account Hub
+tokens are kept in process memory, so restarting the single Gunicorn worker
+signs out active SSO sessions.
+
 ### Common `config/config.json` sections
 
 | JSON path | Purpose |
@@ -128,6 +154,7 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `report.*` | Report compaction settings |
 | `enriched.*` | Enriched Weekly llama-server tuning |
 | `tavily.*` | Search defaults |
+| `account_hub.*` | Account Hub OAuth URLs, client settings, permission mappings, and timeout |
 
 See [`.env.example`](../.env.example), [`config/config.json`](../config/config.json),
 and [`core/config.py`](../core/config.py) for every supported setting.
@@ -173,25 +200,32 @@ Open: **http://localhost:9100**
 
 ## 8. Sign in
 
-On first startup, the app creates a bootstrap user from `WEB_AUTH_BOOTSTRAP_USERNAME`
-and `WEB_AUTH_BOOTSTRAP_PASSWORD` in `.env` (default `admin` / `changeme`).
-This account is the only administrator. Change its password from Settings after
-first login. Administrators create grouped user accounts from Subscription
-Management. Each account has one username/password and one or more recipient
-emails; the password is stored only as a bcrypt hash. Users sign in with the
-username, not an email address, and can manage only their own subscription.
-Existing subscription accounts without a configured password are migrated to
-the temporary password `1234` and must change it after login. Existing usernames
-are preserved during migration, including usernames that happen to look like
-email addresses; the email field remains delivery/contact metadata.
+When Account Hub is disabled, the bootstrap account is the local administrator;
+local subscription users use username/password sign-in. Existing subscription
+accounts without a configured password are migrated to the temporary password
+`1234` and must change it after login.
 
-For a separate non-admin login, use:
+When Account Hub is enabled, the bootstrap account remains available only as a
+local break-glass administrator at `/login/local`. Normal users sign in through
+Account Hub at `/login`, and administrators manage the approved-user allowlist
+from **Account Hub Users**. Account Hub permission claims map to portal roles
+using the configured permission strings. Account Hub users do not have local
+passwords; revocation and disabled-row checks are enforced on every protected
+request.
+
+For a separate local login while Account Hub is disabled, use:
 
 ```sh
 .venv/bin/python scripts/create_auth_user.py myuser 'secure-password' --email you@example.com
 ```
 
-The optional email is contact metadata only; it cannot be used to sign in.
+The optional email is contact metadata only; it cannot be used to sign in. With
+Account Hub enabled, this command instead approves an Account Hub username and
+does not create a local password; omit the password argument in that mode:
+
+```sh
+.venv/bin/python scripts/create_auth_user.py hubuser --email you@example.com
+```
 
 ## 9. Verify the setup
 
