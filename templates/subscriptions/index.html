@@ -31,7 +31,6 @@
                             </div>
                         </div>
                     </div>
-                    <div class="form-text">{{ t('Choose one or more teams, or leave all unchecked to show every team.') }}</div>
                 </div>
                 <div class="col-12 col-lg-4">
                     <label for="subscription-email-filter" class="form-label">{{ t('Email') }}</label>
@@ -40,6 +39,9 @@
                 <div class="col-12 col-lg-2 d-flex gap-2">
                     <button class="btn btn-primary btn-sm flex-grow-1" type="submit"><i class="bi bi-search me-1"></i>{{ t('Apply Filter') }}</button>
                     <button id="clear-filter-btn" class="btn btn-outline-secondary btn-sm" type="button">{{ t('Clear') }}</button>
+                </div>
+                <div class="col-12 col-lg-6">
+                    <div class="form-text">{{ t('Choose one or more teams, or leave all unchecked to show every team.') }}</div>
                 </div>
             </div>
         </div>
