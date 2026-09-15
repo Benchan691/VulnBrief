@@ -69,3 +69,18 @@ def test_login_rejects_plain_text_password_hash():
 
     assert response.status_code == 200
     assert b'Invalid username or password' in response.data
+
+
+def test_logout_clears_session_and_redirects_to_login():
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session['username'] = 'admin'
+        session['unrelated'] = 'value'
+
+    response = client.get('/logout', follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers['Location'].endswith('/login')
+    with client.session_transaction() as session:
+        assert dict(session) == {}
+    assert client.get('/subscriptions').status_code == 302

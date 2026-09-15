@@ -12,8 +12,43 @@
         <button id="add-btn" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>{{ t('Add Subscription') }}</button>
     </div>
     <div id="message" class="alert d-none"></div>
+    <form id="subscription-filter-form" class="card shadow-sm border-0 mb-4">
+        <div class="card-body">
+            <div class="row g-3 align-items-end">
+                <div class="col-12 col-lg-6">
+                    <label for="team-filter-toggle" class="form-label">{{ t('Team') }}</label>
+                    <div class="dropdown w-100">
+                        <button id="team-filter-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            {{ t('All teams') }}
+                        </button>
+                        <div id="team-filter-menu" class="dropdown-menu subscription-team-filter-menu w-100 shadow-sm p-2">
+                            <input id="team-filter-search" type="search" class="form-control form-control-sm mb-2" placeholder="{{ t('Search teams...') }}" autocomplete="off">
+                            <div id="team-filter-options" class="subscription-team-options"></div>
+                            <div class="dropdown-divider my-2"></div>
+                            <div class="d-flex justify-content-between px-1">
+                                <button type="button" class="btn btn-link btn-sm p-0 team-filter-action" data-action="all">{{ t('Select all') }}</button>
+                                <button type="button" class="btn btn-link btn-sm p-0 text-muted team-filter-action" data-action="clear">{{ t('Clear') }}</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-text">{{ t('Choose one or more teams, or leave all unchecked to show every team.') }}</div>
+                </div>
+                <div class="col-12 col-lg-4">
+                    <label for="subscription-email-filter" class="form-label">{{ t('Email') }}</label>
+                    <input id="subscription-email-filter" type="search" class="form-control form-control-sm" placeholder="{{ t('Search by email') }}" autocomplete="off">
+                </div>
+                <div class="col-12 col-lg-2 d-flex gap-2">
+                    <button class="btn btn-primary btn-sm flex-grow-1" type="submit"><i class="bi bi-search me-1"></i>{{ t('Apply Filter') }}</button>
+                    <button id="clear-filter-btn" class="btn btn-outline-secondary btn-sm" type="button">{{ t('Clear') }}</button>
+                </div>
+            </div>
+        </div>
+    </form>
     <div class="card shadow-sm border-0 overflow-hidden">
-        <div class="table-responsive">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 px-3 py-3 border-bottom">
+            <span id="results-count" class="text-muted small"></span>
+        </div>
+        <div id="table-wrap" class="table-responsive">
             <table class="table table-hover align-middle mb-0">
                 <thead class="table-dark"><tr><th>{{ t('Email / Team') }}</th><th>{{ t('Newsletter') }}</th><th>{{ t('Report') }}</th><th>{{ t('Actions') }}</th></tr></thead>
                 <tbody id="rows"></tbody>
@@ -21,6 +56,12 @@
         </div>
         <div id="loading" class="text-center text-muted py-5">{{ t('Loading subscriptions...') }}</div>
         <div id="empty" class="text-center text-muted py-5 d-none">{{ t('No subscriptions yet.') }}</div>
+        <div id="no-matches" class="text-center text-muted py-5 d-none">{{ t('No subscriptions match these filters.') }}</div>
+        <div id="pagination" class="d-flex justify-content-between align-items-center gap-3 px-3 py-3 border-top d-none">
+            <button id="previous-page" class="btn btn-outline-secondary btn-sm" type="button">{{ t('Previous') }}</button>
+            <span id="page-label" class="text-muted small"></span>
+            <button id="next-page" class="btn btn-outline-secondary btn-sm" type="button">{{ t('Next') }}</button>
+        </div>
     </div>
 </div>
 

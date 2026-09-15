@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -33,6 +34,7 @@ from core.i18n import t
 subscription_blueprint = Blueprint('subscription', __name__)
 
 REPORT_PREVIEW_SAMPLE_LIMIT = 25
+SUBSCRIPTIONS_PAGE_SIZE = 10
 VENDOR_PRODUCT_CSV_TEMPLATE = """vendor,product,vendor_aliases,product_aliases
 Red Hat,Enterprise Linux,"Red Hat, Inc.|RedHat",RHEL|Red Hat Enterprise Linux
 Microsoft,Windows Server,Microsoft Corporation,Windows Server 2019|Windows Server 2022
@@ -441,8 +443,47 @@ def import_vendor_products():
 def get_subscriptions():
     try:
         database = get_vulnerabilities_database()
-        data = [_public_subscription(database, item) for item in get_collection().find({})]
-        return jsonify({'data': data})
+        collection = get_collection()
+        page = max(request.args.get('page', 1, type=int) or 1, 1)
+        teams_filter = sorted({
+            value.strip()
+            for value in request.args.getlist('team')
+            if isinstance(value, str) and value.strip()
+        })
+        email_filter = (request.args.get('email') or '').strip()
+
+        query = {}
+        if teams_filter:
+            query['team'] = {'$in': teams_filter}
+        if email_filter:
+            query['email'] = {
+                '$regex': re.escape(email_filter),
+                '$options': 'i',
+            }
+
+        total = collection.count_documents(query)
+        pages = max((total + SUBSCRIPTIONS_PAGE_SIZE - 1) // SUBSCRIPTIONS_PAGE_SIZE, 1)
+        page = min(page, pages)
+        data = [
+            _public_subscription(database, item)
+            for item in collection.find(query)
+            .sort([('email', 1), ('_id', 1)])
+            .skip((page - 1) * SUBSCRIPTIONS_PAGE_SIZE)
+            .limit(SUBSCRIPTIONS_PAGE_SIZE)
+        ]
+        teams = sorted({
+            str(value).strip()
+            for value in collection.distinct('team')
+            if value is not None and str(value).strip()
+        }, key=lambda value: (value.casefold(), value))
+        return jsonify({
+            'data': data,
+            'page': page,
+            'page_size': SUBSCRIPTIONS_PAGE_SIZE,
+            'total': total,
+            'pages': pages,
+            'teams': teams,
+        })
     except (PyMongoError, ValueError):
         return jsonify({'error': t('Unable to load subscriptions.')}), 503
 

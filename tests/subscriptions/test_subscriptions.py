@@ -118,6 +118,72 @@ def test_subscription_schema_describes_live_public_configuration(client, monkeyp
         assert internal not in serialized
 
 
+def test_subscriptions_api_paginates_and_filters_by_team_and_email(client):
+    authenticate(client)
+    prefix = 'subscription-page-'
+    documents = [
+        {
+            'email': f'{prefix}{index:02d}@example.com',
+            'team': 'Page Alpha' if index < 6 else 'Page Beta' if index < 9 else 'Page Gamma',
+            'newsletter_profile': {'enabled': False, 'filters': {}},
+            'report_profile': {'enabled': False, 'filters': {}},
+        }
+        for index in range(12)
+    ]
+    collection = get_web_database()[SUBSCRIPTION_COLLECTION]
+    collection.delete_many({'email': {'$regex': f'^{prefix}'}})
+    collection.insert_many(documents)
+
+    try:
+        first = client.get(f'/api/subscriptions?email={prefix}&page=1')
+        assert first.status_code == 200
+        first_body = first.get_json()
+        assert first_body['page'] == 1
+        assert first_body['page_size'] == 10
+        assert first_body['total'] == 12
+        assert first_body['pages'] == 2
+        assert len(first_body['data']) == 10
+        assert [item['email'] for item in first_body['data']] == [
+            f'{prefix}{index:02d}@example.com' for index in range(10)
+        ]
+        assert {'Page Alpha', 'Page Beta', 'Page Gamma'}.issubset(first_body['teams'])
+
+        out_of_range = client.get(f'/api/subscriptions?email={prefix}&page=99')
+        assert out_of_range.status_code == 200
+        out_of_range_body = out_of_range.get_json()
+        assert out_of_range_body['page'] == 2
+        assert len(out_of_range_body['data']) == 2
+
+        one_team = client.get(
+            f'/api/subscriptions?email={prefix}&team=Page%20Alpha&page=1',
+        ).get_json()
+        assert one_team['total'] == 6
+        assert {item['team'] for item in one_team['data']} == {'Page Alpha'}
+
+        multiple_teams = client.get(
+            f'/api/subscriptions?email={prefix}&team=Page%20Alpha&team=Page%20Gamma&page=1',
+        ).get_json()
+        assert multiple_teams['total'] == 9
+        assert {item['team'] for item in multiple_teams['data']} == {
+            'Page Alpha', 'Page Gamma',
+        }
+
+        case_insensitive_email = client.get(
+            f'/api/subscriptions?email={prefix.upper()}00%40EXAMPLE.COM',
+        ).get_json()
+        assert case_insensitive_email['total'] == 1
+        assert case_insensitive_email['data'][0]['email'] == f'{prefix}00@example.com'
+
+        no_match = client.get(
+            f'/api/subscriptions?email={prefix}&team=Page%20Missing&page=1',
+        ).get_json()
+        assert no_match['data'] == []
+        assert no_match['total'] == 0
+        assert no_match['pages'] == 1
+    finally:
+        collection.delete_many({'email': {'$regex': f'^{prefix}'}})
+
+
 def test_subscription_collections_endpoint_includes_optional_provider_sources(client, monkeypatch):
     authenticate(client)
 
@@ -247,6 +313,11 @@ def test_subscriptions_crud_validates_review_views(client):
     assert b'id="page-config"' in page.data
     assert b'vendorProductImportUrl' in page.data
     assert b'vendorProductTemplateUrl' in page.data
+    assert b'/logout' in page.data
+    assert b'id="subscription-filter-form"' in page.data
+    assert b'id="team-filter-options"' in page.data
+    assert b'id="previous-page"' in page.data
+    assert b'id="next-page"' in page.data
 
     invalid = client.post('/api/subscriptions', json={
         'email': TEST_EMAIL,
