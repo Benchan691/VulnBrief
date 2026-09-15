@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from core.database import get_web_database
 from reviews.repository import MAX_EXPORT_SELECTIONS
-from subscriptions.sources import subscription_review_views
+from subscriptions.sources import source_collection_for_review, subscription_review_views
 from subscriptions.vendor_products import (
     CSV_COLUMNS,
     DEFAULT_VENDOR_PRODUCT_FILTER,
@@ -24,18 +24,11 @@ from subscriptions.vendor_products import (
 review_views = subscription_review_views
 
 
-SUB_ACCOUNT_COLLECTION = 'sub_account'
+SUBSCRIPTION_COLLECTION = 'subscriptions'
 
 
-def get_sub_account_collection():
-    return get_web_database()[SUB_ACCOUNT_COLLECTION]
-
-
-def ensure_sub_account_collection():
-    database = get_web_database()
-    if SUB_ACCOUNT_COLLECTION in database.list_collection_names():
-        return
-    database.create_collection(SUB_ACCOUNT_COLLECTION)
+def get_subscription_collection():
+    return get_web_database()[SUBSCRIPTION_COLLECTION]
 
 
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')
@@ -392,16 +385,74 @@ def validate_profile(database, value, profile_type, *, allow_legacy_report_keywo
     return profile
 
 
+LEGACY_SOURCE_ALIASES = {
+    'huawei': 'huawei_sa',
+    'ransome': 'ransomwarelive',
+}
+LEGACY_REPORT_GENERATION_MODES = {'company_ai', 'ai'}
+
+
+def _legacy_collection_names(database, values):
+    views = review_views(database)
+    source_to_review = {}
+    for name, view in views.items():
+        source = source_collection_for_review(name, view)
+        if source:
+            source_to_review[source] = name
+
+    mapped = []
+    for value in values or []:
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if not value:
+            continue
+        candidate = value if value in views else source_to_review.get(value)
+        if candidate is None:
+            source = LEGACY_SOURCE_ALIASES.get(value, value)
+            candidate = source_to_review.get(source)
+        if candidate and candidate not in mapped:
+            mapped.append(candidate)
+    return mapped
+
+
+def _legacy_profile_value(database, value):
+    if not isinstance(value, dict):
+        return value
+    profile = deepcopy(value)
+    filters = profile.get('filters')
+    if isinstance(filters, dict) and isinstance(filters.get('collections'), list):
+        filters['collections'] = _legacy_collection_names(database, filters['collections'])
+    return profile
+
+
 def normalize_subscription(database, document):
     normalized = dict(document)
     legacy_collections = document.get('subscriptions', [])
-    newsletter_value = document.get('newsletter_profile', {})
+    newsletter_value = document.get('newsletter_profile')
+    if newsletter_value is None:
+        newsletter_value = {
+            'enabled': bool(document.get('enabled', False)),
+            'filters': {'collections': legacy_collections},
+        }
+    newsletter_value = _legacy_profile_value(database, newsletter_value)
+
     report_value = document.get('report_profile')
     if report_value is None:
         report_value = {
-            'enabled': True,
+            'enabled': bool(document.get('report', True)),
             'filters': {'collections': legacy_collections},
         }
+    report_value = _legacy_profile_value(database, report_value)
+    if (
+        isinstance(report_value, dict)
+        and report_value.get('generation_mode') in LEGACY_REPORT_GENERATION_MODES
+        and not report_value.get('enabled')
+    ):
+        # Disabled company_ai profiles were written by the retired report
+        # system. They must not make an otherwise valid subscription unreadable.
+        report_value = {'enabled': False, 'filters': {}}
+
     normalized['newsletter_profile'] = validate_profile(database, newsletter_value, 'newsletter')
     normalized['report_profile'] = validate_profile(
         database,

@@ -5,7 +5,7 @@ from pymongo.errors import ServerSelectionTimeoutError
 from zoneinfo import ZoneInfo
 
 from app import app
-from subscriptions.profiles import SUB_ACCOUNT_COLLECTION
+from subscriptions.profiles import SUBSCRIPTION_COLLECTION
 from core.database import get_web_database
 
 
@@ -31,11 +31,11 @@ def client(monkeypatch):
     monkeypatch.setattr('subscriptions.routes.Mailer', FakeMailer)
     app.config.update(TESTING=True)
     with app.app_context():
-        get_web_database()[SUB_ACCOUNT_COLLECTION].delete_many({'email': TEST_EMAIL})
+        get_web_database()[SUBSCRIPTION_COLLECTION].delete_many({'email': TEST_EMAIL})
     client = app.test_client()
     yield client
     with app.app_context():
-        get_web_database()[SUB_ACCOUNT_COLLECTION].delete_many({'email': TEST_EMAIL})
+        get_web_database()[SUBSCRIPTION_COLLECTION].delete_many({'email': TEST_EMAIL})
 
 
 def authenticate(client):
@@ -162,7 +162,7 @@ def test_subscription_preview_normalizes_without_writing_or_sending(client, monk
             raise AssertionError('preview must not construct a mailer')
 
     monkeypatch.setattr('subscriptions.routes.Mailer', UnexpectedMailer)
-    before = get_web_database()[SUB_ACCOUNT_COLLECTION].count_documents({'email': TEST_EMAIL})
+    before = get_web_database()[SUBSCRIPTION_COLLECTION].count_documents({'email': TEST_EMAIL})
     response = client.post('/api/subscriptions/preview', json={
         'mode': 'create',
         'email': TEST_EMAIL,
@@ -182,7 +182,7 @@ def test_subscription_preview_normalizes_without_writing_or_sending(client, monk
     assert preview['normalized_profiles']['newsletter_profile']['filters']['severity_threshold'] == 'High'
     assert preview['normalized_profiles']['report_profile']['report_language'] == 'en'
     assert preview['applied_defaults']
-    assert get_web_database()[SUB_ACCOUNT_COLLECTION].count_documents({'email': TEST_EMAIL}) == before
+    assert get_web_database()[SUBSCRIPTION_COLLECTION].count_documents({'email': TEST_EMAIL}) == before
 
 
 def test_subscription_preview_update_preserves_existing_profiles_without_writing(client, monkeypatch):
@@ -198,7 +198,7 @@ def test_subscription_preview_update_preserves_existing_profiles_without_writing
         'report_profile': {'enabled': True, 'filters': {'collections': ['cve_review']}},
     })
     assert created.status_code == 201
-    collection = get_web_database()[SUB_ACCOUNT_COLLECTION]
+    collection = get_web_database()[SUBSCRIPTION_COLLECTION]
     before = collection.find_one({'email': TEST_EMAIL})
 
     response = client.post('/api/subscriptions/preview', json={
@@ -277,6 +277,54 @@ def test_subscriptions_crud_validates_review_views(client):
     assert updated.status_code == 200
 
     assert client.delete(f'/api/subscriptions/{TEST_EMAIL}').status_code == 200
+
+
+def test_newsletter_severity_filters_round_trip(client):
+    authenticate(client)
+    created = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {
+                'collections': ['cve_review'],
+                'status': ['Critical', 'High'],
+                'include_unknown': True,
+            },
+        },
+        'report_profile': {'enabled': False},
+    })
+    assert created.status_code == 201
+
+    public = next(
+        item for item in client.get('/api/subscriptions').get_json()['data']
+        if item['email'] == TEST_EMAIL
+    )
+    newsletter = public['newsletter_profile']['filters']
+    assert newsletter['status'] == ['Critical', 'High']
+    assert newsletter['include_unknown'] is True
+
+    updated = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {
+                'collections': ['cve_review'],
+                'status': ['Low'],
+                'include_unknown': False,
+            },
+        },
+        'report_profile': {'enabled': False},
+    })
+    assert updated.status_code == 200
+
+    reloaded = next(
+        item for item in client.get('/api/subscriptions').get_json()['data']
+        if item['email'] == TEST_EMAIL
+    )
+    newsletter = reloaded['newsletter_profile']['filters']
+    assert newsletter['status'] == ['Low']
+    assert newsletter['include_unknown'] is False
+
 
 
 def test_new_subscription_sends_confirmation_email(client, monkeypatch):
@@ -387,7 +435,7 @@ def test_subscription_edit_preserves_hidden_cve_delivery_cutoff(client):
 
     cutoff = '2026-07-23T04:00:00+00:00'
     with app.app_context():
-        get_web_database()[SUB_ACCOUNT_COLLECTION].update_one(
+        get_web_database()[SUBSCRIPTION_COLLECTION].update_one(
             {'email': TEST_EMAIL},
             {'$set': {'newsletter_profile.cve_delivery_cutoff': cutoff}},
         )
@@ -404,7 +452,7 @@ def test_subscription_edit_preserves_hidden_cve_delivery_cutoff(client):
 
     assert response.status_code == 200
     with app.app_context():
-        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+        stored = get_web_database()[SUBSCRIPTION_COLLECTION].find_one({'email': TEST_EMAIL})
     assert stored['newsletter_profile']['cve_delivery_cutoff'] == cutoff
 
 
@@ -441,7 +489,7 @@ def test_unchanged_subscription_update_does_not_send_email(client, monkeypatch):
 def test_existing_report_keywords_are_preserved_until_csv_replaces_them(client):
     authenticate(client)
     with app.app_context():
-        get_web_database()[SUB_ACCOUNT_COLLECTION].insert_one({
+        get_web_database()[SUBSCRIPTION_COLLECTION].insert_one({
             'email': TEST_EMAIL,
             'team': 'Legacy',
             'newsletter_profile': {'enabled': False, 'filters': {}},
@@ -461,7 +509,7 @@ def test_existing_report_keywords_are_preserved_until_csv_replaces_them(client):
     unchanged = client.put(f'/api/subscriptions/{TEST_EMAIL}', json={'team': 'Renamed'})
     assert unchanged.status_code == 200
     with app.app_context():
-        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+        stored = get_web_database()[SUBSCRIPTION_COLLECTION].find_one({'email': TEST_EMAIL})
     assert stored['report_profile']['filters']['keywords'] == ['Red Hat']
 
     report = public['report_profile']
@@ -494,7 +542,7 @@ def test_existing_report_keywords_are_preserved_until_csv_replaces_them(client):
     })
     assert replaced.status_code == 200
     with app.app_context():
-        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+        stored = get_web_database()[SUBSCRIPTION_COLLECTION].find_one({'email': TEST_EMAIL})
     assert stored['report_profile']['filters']['keywords'] == []
     assert stored['report_profile']['filters']['vendor_product_filter']['enabled'] is True
 
@@ -560,7 +608,7 @@ def test_update_and_cancellation_keep_changes_when_notification_email_fails(clie
         'Subscription was updated, but the notification email could not be sent.'
     )
     with app.app_context():
-        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+        stored = get_web_database()[SUBSCRIPTION_COLLECTION].find_one({'email': TEST_EMAIL})
     assert stored['team'] == 'Updated team'
 
     cancelled = client.delete(f'/api/subscriptions/{TEST_EMAIL}')
@@ -569,7 +617,7 @@ def test_update_and_cancellation_keep_changes_when_notification_email_fails(clie
         'Subscription was cancelled, but the notification email could not be sent.'
     )
     with app.app_context():
-        assert get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL}) is None
+        assert get_web_database()[SUBSCRIPTION_COLLECTION].find_one({'email': TEST_EMAIL}) is None
 
 
 def test_new_subscription_keeps_record_when_confirmation_email_fails(client, monkeypatch):
@@ -598,7 +646,7 @@ def test_new_subscription_keeps_record_when_confirmation_email_fails(client, mon
         'Subscription was saved, but the confirmation email could not be sent.'
     )
     with app.app_context():
-        stored = get_web_database()[SUB_ACCOUNT_COLLECTION].find_one({'email': TEST_EMAIL})
+        stored = get_web_database()[SUBSCRIPTION_COLLECTION].find_one({'email': TEST_EMAIL})
     assert stored is not None
 
 

@@ -155,7 +155,7 @@ def test_operations_health_api(monkeypatch):
                 },
             },
         },
-        'sub_account': {
+        'subscriptions': {
             account_id: {
                 '_id': account_id,
                 'email': 'ops@example.com',
@@ -314,7 +314,7 @@ def test_build_health_snapshot_includes_due_report(monkeypatch):
                 'pid': 1,
             },
         },
-        'sub_account': {
+        'subscriptions': {
             account_id: {
                 '_id': account_id,
                 'email': 'a@example.com',

@@ -9,7 +9,7 @@ from core.database import get_vulnerabilities_database
 from integrations.email import Mailer
 from reviews.scoring import rank_scored_selections, score_review_document
 from subscriptions.profiles import (
-    get_sub_account_collection,
+    get_subscription_collection,
     normalize_subscription,
     profile_with_window,
     subscription_schema,
@@ -50,7 +50,7 @@ FILTER_LABELS = {
 
 
 def get_collection():
-    return get_sub_account_collection()
+    return get_subscription_collection()
 
 
 SCHEDULE_FIELD_UNSET = {

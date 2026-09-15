@@ -15,7 +15,7 @@ from operations.templates import get_newsletter_template_config
 from reports.progress import append_job_log
 from reports.harness import _render_job_html, run_job
 from reviews.repository import resolve_vulnerability_document
-from subscriptions.profiles import HONG_KONG, normalize_subscription
+from subscriptions.profiles import HONG_KONG, SUBSCRIPTION_COLLECTION, normalize_subscription
 from subscriptions.query import query_profile_matches
 from subscriptions.sources import source_collection_for_review, subscription_review_views
 
@@ -117,7 +117,7 @@ def due_scheduled_subscriptions(web_database, vuln_database, now=None):
         ],
     }
     due = []
-    for document in web_database['sub_account'].find(query):
+    for document in web_database[SUBSCRIPTION_COLLECTION].find(query):
         try:
             due.append(normalize_subscription(vuln_database, document))
         except ValueError:
@@ -144,7 +144,7 @@ def due_monthly_statistic_subscriptions(web_database, vuln_database, now=None):
         ],
     }
     due = []
-    for document in web_database['sub_account'].find(query):
+    for document in web_database[SUBSCRIPTION_COLLECTION].find(query):
         try:
             due.append(normalize_subscription(vuln_database, document))
         except ValueError:
@@ -395,7 +395,7 @@ def run_scheduled_report(app, subscription_id):
     with app.app_context():
         web_database = get_web_database()
         vuln_database = get_vulnerabilities_database()
-        collection = web_database['sub_account']
+        collection = web_database[SUBSCRIPTION_COLLECTION]
         now = _now()
         raw = collection.find_one({'_id': ObjectId(subscription_id)})
         if raw is None:
@@ -440,7 +440,7 @@ def tick_scheduled_reports(app, web_database, now=None):
     vuln_database = get_vulnerabilities_database()
     started = 0
     for subscription in due_scheduled_subscriptions(web_database, vuln_database, now):
-        if not _claim(web_database['sub_account'], subscription, now):
+        if not _claim(web_database[SUBSCRIPTION_COLLECTION], subscription, now):
             continue
         threading.Thread(
             target=run_scheduled_report,
@@ -455,7 +455,7 @@ def run_monthly_statistic(app, subscription_id, now=None):
     with app.app_context():
         web_database = get_web_database()
         vuln_database = get_vulnerabilities_database()
-        collection = web_database['sub_account']
+        collection = web_database[SUBSCRIPTION_COLLECTION]
         now = now or _now()
         raw = collection.find_one({'_id': ObjectId(subscription_id)})
         if raw is None:
@@ -495,7 +495,7 @@ def tick_monthly_statistics(app, web_database, now=None):
     vuln_database = get_vulnerabilities_database()
     started = 0
     for subscription in due_monthly_statistic_subscriptions(web_database, vuln_database, now):
-        if not _claim_statistic_schedule(web_database['sub_account'], subscription, now):
+        if not _claim_statistic_schedule(web_database[SUBSCRIPTION_COLLECTION], subscription, now):
             continue
         threading.Thread(
             target=run_monthly_statistic,
@@ -798,7 +798,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
     cursor = str(profile.get('delivery_cursor') or '').strip()
     if not cursor:
         cursor_value = now.isoformat()
-        web_database['sub_account'].update_one(
+        web_database[SUBSCRIPTION_COLLECTION].update_one(
             {'_id': subscription['_id']},
             {'$set': {
                 'newsletter_profile.delivery_cursor': cursor_value,
@@ -874,7 +874,7 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
                 max_cursor = observed_at
 
     if max_cursor != cursor:
-        web_database['sub_account'].update_one(
+        web_database[SUBSCRIPTION_COLLECTION].update_one(
             {'_id': subscription['_id']},
             {'$set': {
                 'newsletter_profile.delivery_cursor': max_cursor,
@@ -889,7 +889,7 @@ def tick_newsletter_deliveries(app, web_database, now=None):
     ensure_newsletter_delivery_indexes(web_database)
     vuln_database = get_vulnerabilities_database()
     sent_total = 0
-    for document in web_database['sub_account'].find({'newsletter_profile.enabled': True}):
+    for document in web_database[SUBSCRIPTION_COLLECTION].find({'newsletter_profile.enabled': True}):
         try:
             subscription = normalize_subscription(vuln_database, document)
         except ValueError:
