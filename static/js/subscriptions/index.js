@@ -7,7 +7,7 @@
         vendorProductTemplateUrl,
     } = JSON.parse(document.getElementById('page-config').textContent);
     const modal = new bootstrap.Modal(document.getElementById('subscription-modal'));
-    const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionMeansAll: true});
+    const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionLabel: 'No collections'});
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
     const filterForm = document.getElementById('subscription-filter-form');
@@ -82,14 +82,14 @@
         '<div class="col-md-6">' +
         '<label for="newsletter-collections-toggle" class="form-label small">' + t('Collections') + '</label>' +
         '<div class="dropdown w-100">' +
-        '<button id="newsletter-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">' + t('All collections') + '</button>' +
+        '<button id="newsletter-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">' + t('No collections') + '</button>' +
         '<div id="newsletter-collections-menu" class="dropdown-menu w-100 shadow-sm p-2">' +
         '<input id="newsletter-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="' + t('Search collections...') + '" autocomplete="off">' +
         '<div id="newsletter-collections-options" class="subscription-collections-options"></div>' +
         '<div class="dropdown-divider my-2"></div>' +
         '<div class="d-flex justify-content-between px-1">' +
         '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">' + t('Select all') + '</button>' +
-        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="reset">' + t('Reset to all') + '</button>' +
+        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="clear">' + t('Clear all') + '</button>' +
         '</div></div></div></div>' +
         '<div class="col-12"><label class="form-label small">' + t('Severity / status') + '</label><div class="d-flex flex-wrap gap-3">' +
         severityLevels.map(function (level) {
@@ -538,10 +538,13 @@
             .filter(function (input) { return input.checked; })
             .map(function (input) { return input.value; });
     }
-    function setFilters(prefix, filters) {
+    function setFilters(prefix, filters, options) {
         filters = filters || {};
+        options = options || {};
         if (prefix === 'newsletter') {
-            newsletterCollections.render(collections, filters.collections || []);
+            newsletterCollections.render(collections, filters.collections || [], {
+                allMode: options.collectionSelection === 'all'
+            });
             setVendorProductFilter(prefix, normalizeVendorProductFilter(filters.vendor_product_filter));
             document.getElementById(prefix + '-include-possible-matches').checked = getVendorProductFilter(prefix).include_possible_matches;
             document.getElementById(prefix + '-vendor-product-file').value = '';
@@ -671,9 +674,11 @@
         document.getElementById('modal-title').textContent = subscription ? t('Edit Subscription') : t('Add Subscription');
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
-        const newsletter = subscription ? subscription.newsletter_profile : {enabled:false,filters:{}};
+        const newsletter = subscription
+            ? subscription.newsletter_profile
+            : {enabled:false,filters:{},collection_selection:'selected'};
         const report = subscription ? subscription.report_profile : {enabled:false,filters:{},generation_mode:'template',report_language:'en'};
-        document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters);
+        document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters, {collectionSelection: newsletter.collection_selection});
         document.getElementById('newsletter-statistic-schedule-enabled').checked = newsletter.statistic_schedule_enabled === true;
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
         setVendorProductImportBusy(false);
@@ -723,7 +728,9 @@
                 const newsletterSummary = [
                     collectionCount
                         ? t('Enabled · {count} collection(s)', {count: collectionCount})
-                        : t('Enabled · all collection(s)')
+                        : item.newsletter_profile.collection_selection === 'selected'
+                            ? t('Enabled · no collection(s)')
+                            : t('Enabled · all collection(s)')
                 ];
                 const inventorySuffix = inventorySummarySuffix(item.newsletter_profile.filters);
                 if (inventorySuffix) {
@@ -875,6 +882,7 @@
             newsletter_profile:{
                 enabled:document.getElementById('newsletter-enabled').checked,
                 filters:readFilters('newsletter'),
+                collection_selection:newsletterCollections.allMode ? 'all' : 'selected',
                 statistic_schedule_enabled:document.getElementById('newsletter-statistic-schedule-enabled').checked
             },
             report_profile: buildReportProfilePayload().report_profile };

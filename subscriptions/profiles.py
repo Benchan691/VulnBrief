@@ -46,6 +46,7 @@ VALID_WINDOWS = {'all', 'daily', 'week', 'custom'}
 VALID_GENERATION_MODES = {'template', 'enriched_weekly'}
 VALID_LANGUAGES = {'en', 'zh', 'ch'}
 VALID_WEEKDAYS = {'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'}
+VALID_COLLECTION_SELECTIONS = {'all', 'selected'}
 
 DEFAULT_FILTERS = {
     'collections': [],
@@ -69,6 +70,10 @@ DEFAULT_FILTERS = {
 DEFAULT_NEWSLETTER_PROFILE = {
     'enabled': False,
     'filters': DEFAULT_FILTERS,
+    # Legacy newsletter profiles without this field continue to mean all
+    # collections. New UI saves an explicit selected mode, including when the
+    # selected collection list is empty.
+    'collection_selection': 'all',
     'delivery_cursor': '',
     # Set during deployment to prevent delivery of CVEs scraped before the
     # repaired scheduler is live. This is an internal delivery setting, not a
@@ -135,6 +140,7 @@ def subscription_schema(database):
             'generation_mode_aliases': ['ai', 'company_ai'],
             'report_language': sorted(VALID_LANGUAGES),
             'schedule_weekday': sorted(VALID_WEEKDAYS),
+            'collection_selection': sorted(VALID_COLLECTION_SELECTIONS),
         },
         'profiles': {
             'newsletter': {
@@ -142,6 +148,7 @@ def subscription_schema(database):
                 'fields': [
                     {'name': 'enabled', 'type': 'boolean'},
                     {'name': 'filters', 'type': 'filters'},
+                    {'name': 'collection_selection', 'type': 'collection_selection'},
                     {'name': 'statistic_schedule_enabled', 'type': 'boolean'},
                 ],
             },
@@ -326,6 +333,13 @@ def validate_profile(database, value, profile_type, *, allow_legacy_report_keywo
         # A validated inventory atomically replaces the old keyword filter.
         profile['filters']['keywords'] = []
     if profile_type == 'newsletter':
+        collection_selection = value.get(
+            'collection_selection',
+            default.get('collection_selection', 'all'),
+        )
+        if not isinstance(collection_selection, str) or collection_selection not in VALID_COLLECTION_SELECTIONS:
+            raise ValueError('Invalid newsletter collection selection.')
+        profile['collection_selection'] = collection_selection
         if 'delivery_cursor' in value:
             profile['delivery_cursor'] = value.get('delivery_cursor') or ''
         if 'cve_delivery_cutoff' in value:

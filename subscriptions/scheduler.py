@@ -765,6 +765,8 @@ def _newsletter_delivery_filter_overrides(profile):
     """Apply CVE-only delivery safeguards without changing other sources."""
     filters = profile.get('filters') or {}
     collections = filters.get('collections') or []
+    if profile.get('collection_selection') == 'selected' and not collections:
+        return {}
     if collections and 'cve_review' not in collections:
         return {}
 
@@ -812,7 +814,10 @@ def deliver_pending_newsletters(app, subscription, *, now=None, limit=NEWSLETTER
     database_name = _vulnerabilities_database_name()
     matches = query_profile_matches(
         vuln_database,
-        {'filters': profile.get('filters') or {}},
+        {
+            'filters': profile.get('filters') or {},
+            'collection_selection': profile.get('collection_selection', 'all'),
+        },
         limit=None,
         include_documents=True,
         collection_filter_overrides=_newsletter_delivery_filter_overrides(profile),

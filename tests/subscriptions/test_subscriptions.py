@@ -398,6 +398,28 @@ def test_newsletter_severity_filters_round_trip(client):
 
 
 
+def test_newsletter_empty_collection_selection_is_preserved_as_none(client):
+    authenticate(client)
+    created = client.post('/api/subscriptions', json={
+        'email': TEST_EMAIL,
+        'team': 'Test',
+        'newsletter_profile': {
+            'enabled': True,
+            'collection_selection': 'selected',
+            'filters': {},
+        },
+        'report_profile': {'enabled': False},
+    })
+    assert created.status_code == 201
+
+    public = next(
+        item for item in client.get('/api/subscriptions').get_json()['data']
+        if item['email'] == TEST_EMAIL
+    )
+    assert public['newsletter_profile']['collection_selection'] == 'selected'
+    assert public['newsletter_profile']['filters']['collections'] == []
+
+
 def test_new_subscription_sends_confirmation_email(client, monkeypatch):
     authenticate(client)
     sent = {}

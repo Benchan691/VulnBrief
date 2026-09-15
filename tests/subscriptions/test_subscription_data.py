@@ -10,6 +10,7 @@ from subscriptions.profiles import (
     validate_profile,
 )
 from subscriptions.query import (
+    _profile_collection_names,
     build_match_filter,
     count_profile_matches_by_confidence,
     preview_profile_matches,
@@ -92,6 +93,19 @@ def test_severity_filter_uses_fixed_choices_and_separate_unknown_switch():
 
     known_only = build_match_filter({**filters, 'status': [], 'include_unknown': False})
     assert known_only['severity']['$regex'].startswith('^(?:Critical')
+
+
+def test_newsletter_collection_selection_distinguishes_none_from_legacy_all():
+    filters = validate_filters(FakeDatabase(), {})
+
+    selected = _profile_collection_names(FakeDatabase(), {
+        'filters': filters,
+        'collection_selection': 'selected',
+    })
+    legacy_default = _profile_collection_names(FakeDatabase(), {'filters': filters})
+
+    assert selected[2] == []
+    assert legacy_default[2] == ['avd_review', 'cve_review']
 
 
 def test_zimbra_patch_records_are_not_excluded_by_default_severity_filter():

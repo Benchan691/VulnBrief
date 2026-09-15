@@ -4,6 +4,7 @@
             this.prefix = prefix;
             options = options || {};
             this.emptySelectionMeansAll = options.emptySelectionMeansAll === true;
+            this.emptySelectionLabel = options.emptySelectionLabel || 'No collections';
             this.allMode = false;
         }
 
@@ -38,14 +39,17 @@
         updateLabel() {
             const checked = this.checkboxes().filter(function (input) { return input.checked; });
             const toggle = this.element('toggle');
-            toggle.textContent = this.allMode || checked.length === 0
-                ? t('All collections')
+            toggle.textContent = checked.length === 0
+                ? t(this.allMode ? 'All collections' : this.emptySelectionLabel)
                 : checked.length === 1 ? checked[0].value : t('{count} collections', {count: checked.length});
         }
 
-        render(collections, selected) {
+        render(collections, selected, renderOptions) {
             selected = Array.isArray(selected) ? selected : [];
-            this.allMode = this.emptySelectionMeansAll && selected.length === 0;
+            renderOptions = renderOptions || {};
+            this.allMode = typeof renderOptions.allMode === 'boolean'
+                ? renderOptions.allMode
+                : this.emptySelectionMeansAll && selected.length === 0;
             const options = this.element('options');
             options.replaceChildren();
             collections.forEach((name) => {
@@ -83,12 +87,6 @@
                 const action = event.target.closest('.collections-action');
                 if (!action) return;
                 event.preventDefault();
-                if (this.emptySelectionMeansAll && action.dataset.action === 'reset') {
-                    this.allMode = true;
-                    this.checkboxes().forEach(function (input) { input.checked = false; });
-                    this.updateLabel();
-                    return;
-                }
                 const checkboxes = action.dataset.action === 'all'
                     ? this.checkboxes().filter(function (input) {
                         return !input.closest('.form-check').classList.contains('d-none');

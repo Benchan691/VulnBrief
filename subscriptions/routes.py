@@ -115,6 +115,8 @@ def _preview_default_paths(data, *, include_missing_profiles=True):
             continue
         if not isinstance(value, dict):
             continue
+        if name == 'newsletter_profile' and 'collection_selection' not in value:
+            paths.append(f'{name}.collection_selection')
         if 'filters' not in value:
             paths.append(f'{name}.filters')
         elif isinstance(value.get('filters'), dict):
@@ -221,11 +223,13 @@ def _with_statistic_next_run(profile):
     return profile
 
 
-def _filter_summary(filters):
+def _filter_summary(filters, collection_selection='all'):
     parts = []
     collections = filters.get('collections') or []
     if collections:
         parts.append(f"Collections: {', '.join(collections)}")
+    elif collection_selection == 'selected':
+        parts.append('Collections: no collections')
     else:
         parts.append('Collections: all collections')
     for field, label in FILTER_LABELS.items():
@@ -258,7 +262,7 @@ def _filter_summary(filters):
 def _profile_confirmation_summary(name, profile):
     if not profile.get('enabled'):
         return f'{name}: disabled'
-    return f"{name}: enabled; {'; '.join(_filter_summary(profile['filters']))}"
+    return f"{name}: enabled; {'; '.join(_filter_summary(profile['filters'], profile.get('collection_selection', 'all')))}"
 
 
 def _profile_notification_card(name, profile):
@@ -267,7 +271,10 @@ def _profile_notification_card(name, profile):
         'name': name,
         'enabled': enabled,
         'status': 'Enabled' if enabled else 'Disabled',
-        'summary_lines': _filter_summary(profile['filters']) if enabled else [],
+        'summary_lines': _filter_summary(
+            profile['filters'],
+            profile.get('collection_selection', 'all'),
+        ) if enabled else [],
     }
 
 
@@ -336,7 +343,7 @@ def subscription_confirmation_email(subscription, cancellation_url):
 def _admin_profile_settings(profile, profile_type):
     fields = ['enabled', 'filters']
     if profile_type == 'newsletter':
-        fields.append('statistic_schedule_enabled')
+        fields.extend(['collection_selection', 'statistic_schedule_enabled'])
     if profile_type == 'report':
         fields.extend([
             'generation_mode', 'report_language', 'search_prompt',

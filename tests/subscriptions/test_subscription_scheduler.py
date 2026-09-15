@@ -430,6 +430,10 @@ def test_newsletter_delivery_cve_override_honors_collections_and_severity_filter
         'filters': {'collections': ['avd_review']},
         'cve_delivery_cutoff': cutoff,
     }) == {}
+    assert _newsletter_delivery_filter_overrides({
+        'filters': {'collections': []},
+        'collection_selection': 'selected',
+    }) == {}
 
 
 def test_deliver_pending_newsletters_initializes_cursor_without_sending(monkeypatch):
