@@ -79,9 +79,9 @@ def test_run_monthly_statistic_emails_previous_month_and_advances(monkeypatch):
         web = get_web_database()
         subscription_id = ObjectId()
         email = 'monthly-stat@example.com'
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': email})
-        web['sub_account'].insert_one({
+        web['subscriptions'].insert_one({
             '_id': subscription_id,
             'email': email,
             'team': 'Monthly',
@@ -133,7 +133,7 @@ def test_run_monthly_statistic_emails_previous_month_and_advances(monkeypatch):
         now = datetime(2026, 7, 1, 1, 5, tzinfo=timezone.utc)
         run_monthly_statistic(app, str(subscription_id), now=now)
 
-        stored = web['sub_account'].find_one({'_id': subscription_id})
+        stored = web['subscriptions'].find_one({'_id': subscription_id})
         assert stored['newsletter_profile'].get('statistic_last_error', '') == ''
         next_run = stored['newsletter_profile']['statistic_next_run_at']
         assert next_run.replace(tzinfo=timezone.utc).isoformat() == '2026-08-01T01:00:00+00:00'
@@ -144,7 +144,7 @@ def test_run_monthly_statistic_emails_previous_month_and_advances(monkeypatch):
         assert '1</p>' in sent['html'] or '>1<' in sent['html']
         assert 'avd' in sent['html'] or 'June' in sent['html']
 
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': email})
 
 
@@ -154,8 +154,8 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
     with app.app_context():
         web = get_web_database()
         subscription_id = ObjectId()
-        web['sub_account'].delete_many({'_id': subscription_id})
-        web['sub_account'].insert_one({
+        web['subscriptions'].delete_many({'_id': subscription_id})
+        web['subscriptions'].insert_one({
             '_id': subscription_id,
             'email': 'scheduled@example.com',
             'team': 'Scheduled',
@@ -228,7 +228,7 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
 
         run_scheduled_report(app, str(subscription_id))
 
-        stored = web['sub_account'].find_one({'_id': subscription_id})
+        stored = web['subscriptions'].find_one({'_id': subscription_id})
         assert stored['report_profile'].get('last_error', '') == ''
         assert stored['report_profile']['last_job_id']
         assert stored['report_profile']['last_match_count'] == 1
@@ -243,7 +243,7 @@ def test_run_scheduled_report_creates_job_and_sends_email(monkeypatch):
         })
         assert queued_input['vendor_product_match']['confidence'] == 'confirmed'
 
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['report_job_inputs'].delete_many({
             'job_id': ObjectId(stored['report_profile']['last_job_id']),
         })
@@ -254,8 +254,8 @@ def test_run_scheduled_report_completes_without_email_when_inventory_has_no_matc
     with app.app_context():
         web = get_web_database()
         subscription_id = ObjectId()
-        web['sub_account'].delete_many({'_id': subscription_id})
-        web['sub_account'].insert_one({
+        web['subscriptions'].delete_many({'_id': subscription_id})
+        web['subscriptions'].insert_one({
             '_id': subscription_id,
             'email': 'no-matches@example.com',
             'team': 'No matches',
@@ -291,7 +291,7 @@ def test_run_scheduled_report_completes_without_email_when_inventory_has_no_matc
 
         run_scheduled_report(app, str(subscription_id))
 
-        stored = web['sub_account'].find_one({'_id': subscription_id})
+        stored = web['subscriptions'].find_one({'_id': subscription_id})
         job_id = ObjectId(stored['report_profile']['last_job_id'])
         job = web['report_jobs'].find_one({'_id': job_id})
         assert stored['report_profile']['last_error'] == ''
@@ -302,7 +302,7 @@ def test_run_scheduled_report_completes_without_email_when_inventory_has_no_matc
         assert job['status_message'] == 'No matching CVEs; no email was sent.'
         assert web['report_job_inputs'].count_documents({'job_id': job_id}) == 0
 
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['report_jobs'].delete_many({'_id': job_id})
 
 
@@ -430,6 +430,10 @@ def test_newsletter_delivery_cve_override_honors_collections_and_severity_filter
         'filters': {'collections': ['avd_review']},
         'cve_delivery_cutoff': cutoff,
     }) == {}
+    assert _newsletter_delivery_filter_overrides({
+        'filters': {'collections': []},
+        'collection_selection': 'selected',
+    }) == {}
 
 
 def test_deliver_pending_newsletters_initializes_cursor_without_sending(monkeypatch):
@@ -439,11 +443,11 @@ def test_deliver_pending_newsletters_initializes_cursor_without_sending(monkeypa
     with app.app_context():
         web = get_web_database()
         subscription_id = ObjectId()
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
 
 
-        web['sub_account'].insert_one({
+        web['subscriptions'].insert_one({
             '_id': subscription_id,
             'email': 'newsletter@example.com',
             'team': 'News',
@@ -502,14 +506,14 @@ def test_deliver_pending_newsletters_initializes_cursor_without_sending(monkeypa
             now=now,
         )
 
-        stored = web['sub_account'].find_one({'_id': subscription_id})
+        stored = web['subscriptions'].find_one({'_id': subscription_id})
         assert result['sent'] == 0
         assert result['cursor_initialized'] is True
         assert stored['newsletter_profile']['delivery_cursor'] == now.isoformat()
         assert sent == []
         assert web['newsletter_deliveries'].count_documents({'email': 'newsletter@example.com'}) == 0
 
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
 
 
@@ -520,11 +524,11 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
     with app.app_context():
         web = get_web_database()
         subscription_id = ObjectId()
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
 
         cursor = '2026-07-01T00:00:00+00:00'
-        web['sub_account'].insert_one({
+        web['subscriptions'].insert_one({
             '_id': subscription_id,
             'email': 'newsletter@example.com',
             'team': 'News',
@@ -607,7 +611,7 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
             now=datetime(2026, 7, 16, 4, 1, tzinfo=timezone.utc),
         )
 
-        stored = web['sub_account'].find_one({'_id': subscription_id})
+        stored = web['subscriptions'].find_one({'_id': subscription_id})
         delivery = web['newsletter_deliveries'].find_one({
             'email': 'newsletter@example.com',
             'source_collection': 'avd',
@@ -622,7 +626,7 @@ def test_deliver_pending_newsletters_sends_once_and_is_idempotent(monkeypatch):
         assert delivery is not None
         assert delivery['title'] == newsletter_title
 
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
 
 
@@ -639,9 +643,9 @@ def test_deliver_pending_newsletters_skips_updated_cves(monkeypatch):
             'change_type': 'updated',
             'title': 'Updated CVE',
         }
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})
-        web['sub_account'].insert_one({
+        web['subscriptions'].insert_one({
             '_id': subscription_id,
             'email': 'newsletter@example.com',
             'newsletter_profile': {
@@ -699,12 +703,12 @@ def test_deliver_pending_newsletters_skips_updated_cves(monkeypatch):
             now=datetime(2026, 7, 16, 4, 0, tzinfo=timezone.utc),
         )
 
-        stored = web['sub_account'].find_one({'_id': subscription_id})
+        stored = web['subscriptions'].find_one({'_id': subscription_id})
         assert result['sent'] == 0
         assert result['delivery_cursor'] == document['observed_at'].isoformat()
         assert sent == []
         assert stored['newsletter_profile']['delivery_cursor'] == document['observed_at'].isoformat()
         assert web['newsletter_deliveries'].count_documents({'email': 'newsletter@example.com'}) == 0
 
-        web['sub_account'].delete_many({'_id': subscription_id})
+        web['subscriptions'].delete_many({'_id': subscription_id})
         web['newsletter_deliveries'].delete_many({'email': 'newsletter@example.com'})

@@ -27,3 +27,9 @@ def login():
             ), 503
 
     return render_template('auth/login.html')
+
+
+@auth_blueprint.get('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('auth.login'))

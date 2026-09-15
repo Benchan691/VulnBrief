@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -9,7 +10,7 @@ from core.database import get_vulnerabilities_database
 from integrations.email import Mailer
 from reviews.scoring import rank_scored_selections, score_review_document
 from subscriptions.profiles import (
-    get_sub_account_collection,
+    get_subscription_collection,
     normalize_subscription,
     profile_with_window,
     subscription_schema,
@@ -33,6 +34,7 @@ from core.i18n import t
 subscription_blueprint = Blueprint('subscription', __name__)
 
 REPORT_PREVIEW_SAMPLE_LIMIT = 25
+SUBSCRIPTIONS_PAGE_SIZE = 10
 VENDOR_PRODUCT_CSV_TEMPLATE = """vendor,product,vendor_aliases,product_aliases
 Red Hat,Enterprise Linux,"Red Hat, Inc.|RedHat",RHEL|Red Hat Enterprise Linux
 Microsoft,Windows Server,Microsoft Corporation,Windows Server 2019|Windows Server 2022
@@ -50,7 +52,7 @@ FILTER_LABELS = {
 
 
 def get_collection():
-    return get_sub_account_collection()
+    return get_subscription_collection()
 
 
 SCHEDULE_FIELD_UNSET = {
@@ -113,6 +115,8 @@ def _preview_default_paths(data, *, include_missing_profiles=True):
             continue
         if not isinstance(value, dict):
             continue
+        if name == 'newsletter_profile' and 'collection_selection' not in value:
+            paths.append(f'{name}.collection_selection')
         if 'filters' not in value:
             paths.append(f'{name}.filters')
         elif isinstance(value.get('filters'), dict):
@@ -219,11 +223,13 @@ def _with_statistic_next_run(profile):
     return profile
 
 
-def _filter_summary(filters):
+def _filter_summary(filters, collection_selection='all'):
     parts = []
     collections = filters.get('collections') or []
     if collections:
         parts.append(f"Collections: {', '.join(collections)}")
+    elif collection_selection == 'selected':
+        parts.append('Collections: no collections')
     else:
         parts.append('Collections: all collections')
     for field, label in FILTER_LABELS.items():
@@ -256,7 +262,7 @@ def _filter_summary(filters):
 def _profile_confirmation_summary(name, profile):
     if not profile.get('enabled'):
         return f'{name}: disabled'
-    return f"{name}: enabled; {'; '.join(_filter_summary(profile['filters']))}"
+    return f"{name}: enabled; {'; '.join(_filter_summary(profile['filters'], profile.get('collection_selection', 'all')))}"
 
 
 def _profile_notification_card(name, profile):
@@ -265,7 +271,10 @@ def _profile_notification_card(name, profile):
         'name': name,
         'enabled': enabled,
         'status': 'Enabled' if enabled else 'Disabled',
-        'summary_lines': _filter_summary(profile['filters']) if enabled else [],
+        'summary_lines': _filter_summary(
+            profile['filters'],
+            profile.get('collection_selection', 'all'),
+        ) if enabled else [],
     }
 
 
@@ -334,7 +343,7 @@ def subscription_confirmation_email(subscription, cancellation_url):
 def _admin_profile_settings(profile, profile_type):
     fields = ['enabled', 'filters']
     if profile_type == 'newsletter':
-        fields.append('statistic_schedule_enabled')
+        fields.extend(['collection_selection', 'statistic_schedule_enabled'])
     if profile_type == 'report':
         fields.extend([
             'generation_mode', 'report_language', 'search_prompt',
@@ -441,8 +450,47 @@ def import_vendor_products():
 def get_subscriptions():
     try:
         database = get_vulnerabilities_database()
-        data = [_public_subscription(database, item) for item in get_collection().find({})]
-        return jsonify({'data': data})
+        collection = get_collection()
+        page = max(request.args.get('page', 1, type=int) or 1, 1)
+        teams_filter = sorted({
+            value.strip()
+            for value in request.args.getlist('team')
+            if isinstance(value, str) and value.strip()
+        })
+        email_filter = (request.args.get('email') or '').strip()
+
+        query = {}
+        if teams_filter:
+            query['team'] = {'$in': teams_filter}
+        if email_filter:
+            query['email'] = {
+                '$regex': re.escape(email_filter),
+                '$options': 'i',
+            }
+
+        total = collection.count_documents(query)
+        pages = max((total + SUBSCRIPTIONS_PAGE_SIZE - 1) // SUBSCRIPTIONS_PAGE_SIZE, 1)
+        page = min(page, pages)
+        data = [
+            _public_subscription(database, item)
+            for item in collection.find(query)
+            .sort([('email', 1), ('_id', 1)])
+            .skip((page - 1) * SUBSCRIPTIONS_PAGE_SIZE)
+            .limit(SUBSCRIPTIONS_PAGE_SIZE)
+        ]
+        teams = sorted({
+            str(value).strip()
+            for value in collection.distinct('team')
+            if value is not None and str(value).strip()
+        }, key=lambda value: (value.casefold(), value))
+        return jsonify({
+            'data': data,
+            'page': page,
+            'page_size': SUBSCRIPTIONS_PAGE_SIZE,
+            'total': total,
+            'pages': pages,
+            'teams': teams,
+        })
     except (PyMongoError, ValueError):
         return jsonify({'error': t('Unable to load subscriptions.')}), 503
 

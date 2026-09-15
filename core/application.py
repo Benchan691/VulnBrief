@@ -15,7 +15,6 @@ def create_app():
     from operations.routes import operations_blueprint
     from reports.routes import report_blueprint
     from reviews.routes import review_blueprint
-    from subscriptions.profiles import ensure_sub_account_collection
     from subscriptions.routes import subscription_blueprint
     from subscriptions.scheduler import start_scheduler
 
@@ -30,7 +29,6 @@ def create_app():
     application.config['TEMPLATES_AUTO_RELOAD'] = True
     application.permanent_session_lifetime = timedelta(hours=12)
     register_template_filters(application)
-    ensure_sub_account_collection()
     ensure_bootstrap_user(config)
 
     @application.route('/')

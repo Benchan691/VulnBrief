@@ -4,11 +4,13 @@ import subscriptions.query
 from subscriptions.profiles import (
     build_observed_at_window,
     parse_hong_kong_datetime,
+    normalize_subscription,
     parse_include_unknown,
     validate_filters,
     validate_profile,
 )
 from subscriptions.query import (
+    _profile_collection_names,
     build_match_filter,
     count_profile_matches_by_confidence,
     preview_profile_matches,
@@ -91,6 +93,19 @@ def test_severity_filter_uses_fixed_choices_and_separate_unknown_switch():
 
     known_only = build_match_filter({**filters, 'status': [], 'include_unknown': False})
     assert known_only['severity']['$regex'].startswith('^(?:Critical')
+
+
+def test_newsletter_collection_selection_distinguishes_none_from_legacy_all():
+    filters = validate_filters(FakeDatabase(), {})
+
+    selected = _profile_collection_names(FakeDatabase(), {
+        'filters': filters,
+        'collection_selection': 'selected',
+    })
+    legacy_default = _profile_collection_names(FakeDatabase(), {'filters': filters})
+
+    assert selected[2] == []
+    assert legacy_default[2] == ['avd_review', 'cve_review']
 
 
 def test_zimbra_patch_records_are_not_excluded_by_default_severity_filter():
@@ -553,20 +568,40 @@ def test_enriched_scope_limit_caps_both_confidence_count_and_selection():
         'confirmed-0', 'confirmed-1',
     ]
 
+def test_normalize_legacy_subscription_maps_sources_and_preserves_newsletter_severity():
+    normalized = normalize_subscription(FakeDatabase(), {
+        '_id': 'legacy',
+        'subscriptions': ['avd', 'ransomwarelive'],
+        'newsletter_profile': {
+            'enabled': True,
+            'filters': {
+                'collections': ['avd_review', 'ransomwarelive_review'],
+                'status': ['Critical'],
+                'include_unknown': True,
+            },
+        },
+        'report_profile': {
+            'enabled': False,
+            'generation_mode': 'company_ai',
+            'filters': {'collections': ['avd_review']},
+        },
+    })
 
-def test_ensure_sub_account_collection_creates_empty_collection():
-    from app import app
-    from core.database import get_web_database
-    from subscriptions.profiles import SUB_ACCOUNT_COLLECTION, ensure_sub_account_collection
+    newsletter = normalized['newsletter_profile']
+    assert newsletter['filters']['collections'] == ['avd_review']
+    assert newsletter['filters']['status'] == ['Critical']
+    assert newsletter['filters']['include_unknown'] is True
+    assert normalized['report_profile']['enabled'] is False
+    assert normalized['report_profile']['generation_mode'] == 'template'
 
-    with app.app_context():
-        database = get_web_database()
-        if SUB_ACCOUNT_COLLECTION in database.list_collection_names():
-            database.drop_collection(SUB_ACCOUNT_COLLECTION)
 
-        ensure_sub_account_collection()
+def test_normalize_legacy_subscription_falls_back_to_top_level_fields():
+    normalized = normalize_subscription(FakeDatabase(), {
+        'enabled': True,
+        'report': False,
+        'subscriptions': ['avd'],
+    })
 
-        assert SUB_ACCOUNT_COLLECTION in database.list_collection_names()
-        assert database[SUB_ACCOUNT_COLLECTION].find_one({}) is None
-
-        database.drop_collection(SUB_ACCOUNT_COLLECTION)
+    assert normalized['newsletter_profile']['enabled'] is True
+    assert normalized['newsletter_profile']['filters']['collections'] == ['avd_review']
+    assert normalized['report_profile']['enabled'] is False

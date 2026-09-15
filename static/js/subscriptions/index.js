@@ -7,10 +7,26 @@
         vendorProductTemplateUrl,
     } = JSON.parse(document.getElementById('page-config').textContent);
     const modal = new bootstrap.Modal(document.getElementById('subscription-modal'));
-    const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionMeansAll: true});
+    const newsletterCollections = new CollectionPicker('newsletter', {emptySelectionLabel: 'No collections'});
     const rows = document.getElementById('rows');
     const message = document.getElementById('message');
+    const filterForm = document.getElementById('subscription-filter-form');
+    const teamFilterToggle = document.getElementById('team-filter-toggle');
+    const teamFilterMenu = document.getElementById('team-filter-menu');
+    const teamFilterSearch = document.getElementById('team-filter-search');
+    const teamFilterOptions = document.getElementById('team-filter-options');
+    const emailFilter = document.getElementById('subscription-email-filter');
+    const resultsCount = document.getElementById('results-count');
+    const pagination = document.getElementById('pagination');
+    const previousPage = document.getElementById('previous-page');
+    const nextPage = document.getElementById('next-page');
+    const pageLabel = document.getElementById('page-label');
     let collections = [], subscriptions = [], editingEmail = null;
+    let availableTeams = [];
+    let selectedTeams = new Set();
+    let activeFilters = {teams: [], email: ''};
+    let currentPage = 1;
+    let totalPages = 1;
     let newsletterVendorProductFilter = emptyVendorProductFilter();
     let reportVendorProductFilter = emptyVendorProductFilter();
     let reportLegacyKeywords = [];
@@ -66,14 +82,14 @@
         '<div class="col-md-6">' +
         '<label for="newsletter-collections-toggle" class="form-label small">' + t('Collections') + '</label>' +
         '<div class="dropdown w-100">' +
-        '<button id="newsletter-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">' + t('All collections') + '</button>' +
+        '<button id="newsletter-collections-toggle" type="button" class="form-select form-select-sm dropdown-toggle subscription-collections-toggle text-start w-100" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">' + t('No collections') + '</button>' +
         '<div id="newsletter-collections-menu" class="dropdown-menu w-100 shadow-sm p-2">' +
         '<input id="newsletter-collections-search" type="search" class="form-control form-control-sm mb-2" placeholder="' + t('Search collections...') + '" autocomplete="off">' +
         '<div id="newsletter-collections-options" class="subscription-collections-options"></div>' +
         '<div class="dropdown-divider my-2"></div>' +
         '<div class="d-flex justify-content-between px-1">' +
         '<button type="button" class="btn btn-link btn-sm p-0 collections-action" data-action="all">' + t('Select all') + '</button>' +
-        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="reset">' + t('Reset to all') + '</button>' +
+        '<button type="button" class="btn btn-link btn-sm p-0 text-muted collections-action" data-action="clear">' + t('Clear all') + '</button>' +
         '</div></div></div></div>' +
         '<div class="col-12"><label class="form-label small">' + t('Severity / status') + '</label><div class="d-flex flex-wrap gap-3">' +
         severityLevels.map(function (level) {
@@ -154,6 +170,104 @@
                 return body;
             });
         });
+    }
+    function teamCheckboxes() {
+        return Array.from(teamFilterOptions.querySelectorAll('input[type="checkbox"]'));
+    }
+    function selectedTeamValues() {
+        return teamCheckboxes()
+            .filter(function (input) { return input.checked; })
+            .map(function (input) { return input.value; });
+    }
+    function updateTeamFilterLabel() {
+        const selected = selectedTeamValues();
+        selectedTeams = new Set(selected);
+        teamFilterToggle.textContent = selected.length === 0
+            ? t('All teams')
+            : selected.length === 1
+                ? selected[0]
+                : t('{count} teams', {count: selected.length});
+    }
+    function filterTeamOptions() {
+        const query = teamFilterSearch.value.trim().toLowerCase();
+        teamFilterOptions.querySelectorAll('.form-check').forEach(function (wrap) {
+            const input = wrap.querySelector('input');
+            const name = input ? input.value.toLowerCase() : '';
+            wrap.classList.toggle('d-none', query !== '' && !name.includes(query));
+        });
+    }
+    function renderTeamFilterOptions(teams) {
+        availableTeams = Array.isArray(teams) ? teams.slice() : [];
+        const available = new Set(availableTeams);
+        selectedTeams = new Set(Array.from(selectedTeams).filter(function (team) {
+            return available.has(team);
+        }));
+        teamFilterOptions.replaceChildren();
+        if (availableTeams.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'text-muted small py-1';
+            empty.textContent = t('No teams available.');
+            teamFilterOptions.append(empty);
+        } else {
+            availableTeams.forEach(function (team, index) {
+                const wrap = document.createElement('div');
+                wrap.className = 'form-check mb-1';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.className = 'form-check-input team-filter-checkbox';
+                input.id = 'team-filter-team-' + index;
+                input.value = team;
+                input.checked = selectedTeams.has(team);
+                const label = document.createElement('label');
+                label.className = 'form-check-label small';
+                label.htmlFor = input.id;
+                label.textContent = team;
+                wrap.append(input, label);
+                teamFilterOptions.append(wrap);
+            });
+        }
+        filterTeamOptions();
+        updateTeamFilterLabel();
+    }
+    function clearTeamSelection() {
+        selectedTeams.clear();
+        teamCheckboxes().forEach(function (input) { input.checked = false; });
+        updateTeamFilterLabel();
+    }
+    function buildSubscriptionsUrl(page) {
+        const params = new URLSearchParams();
+        params.set('page', String(page));
+        activeFilters.teams.forEach(function (team) { params.append('team', team); });
+        if (activeFilters.email) params.set('email', activeFilters.email);
+        return subscriptionsUrl + '?' + params.toString();
+    }
+    function hasActiveFilters() {
+        return activeFilters.teams.length > 0 || activeFilters.email !== '';
+    }
+    function renderPagination(body) {
+        const total = Number(body.total) || 0;
+        const page = Number(body.page) || 1;
+        const pageSize = Number(body.page_size) || 10;
+        totalPages = Math.max(Number(body.pages) || 1, 1);
+        currentPage = page;
+        if (total) {
+            const start = (page - 1) * pageSize + 1;
+            const end = Math.min(page * pageSize, total);
+            resultsCount.textContent = t('{start}-{end} of {total} subscriptions', {
+                start: start,
+                end: end,
+                total: total
+            });
+        } else {
+            resultsCount.textContent = t('{total} subscriptions', {total: 0});
+        }
+        pageLabel.textContent = t('Page {current} of {total}', {
+            current: currentPage,
+            total: totalPages
+        });
+        previousPage.disabled = currentPage <= 1;
+        nextPage.disabled = currentPage >= totalPages;
+        pagination.classList.toggle('d-none', totalPages <= 1 || total === 0);
     }
     function apiUrl(email, suffix) { return subscriptionsUrl + '/' + encodeURIComponent(email) + (suffix || ''); }
     function setReportPreview(summary, kind, examples) {
@@ -424,10 +538,13 @@
             .filter(function (input) { return input.checked; })
             .map(function (input) { return input.value; });
     }
-    function setFilters(prefix, filters) {
+    function setFilters(prefix, filters, options) {
         filters = filters || {};
+        options = options || {};
         if (prefix === 'newsletter') {
-            newsletterCollections.render(collections, filters.collections || []);
+            newsletterCollections.render(collections, filters.collections || [], {
+                allMode: options.collectionSelection === 'all'
+            });
             setVendorProductFilter(prefix, normalizeVendorProductFilter(filters.vendor_product_filter));
             document.getElementById(prefix + '-include-possible-matches').checked = getVendorProductFilter(prefix).include_possible_matches;
             document.getElementById(prefix + '-vendor-product-file').value = '';
@@ -557,9 +674,11 @@
         document.getElementById('modal-title').textContent = subscription ? t('Edit Subscription') : t('Add Subscription');
         document.getElementById('email').value = subscription ? subscription.email : ''; document.getElementById('email').disabled = !!subscription;
         document.getElementById('team').value = subscription ? subscription.team : '';
-        const newsletter = subscription ? subscription.newsletter_profile : {enabled:false,filters:{}};
+        const newsletter = subscription
+            ? subscription.newsletter_profile
+            : {enabled:false,filters:{},collection_selection:'selected'};
         const report = subscription ? subscription.report_profile : {enabled:false,filters:{},generation_mode:'template',report_language:'en'};
-        document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters);
+        document.getElementById('newsletter-enabled').checked = newsletter.enabled; setFilters('newsletter', newsletter.filters, {collectionSelection: newsletter.collection_selection});
         document.getElementById('newsletter-statistic-schedule-enabled').checked = newsletter.statistic_schedule_enabled === true;
         document.getElementById('report-enabled').checked = report.enabled; setFilters('report', report.filters);
         setVendorProductImportBusy(false);
@@ -592,8 +711,14 @@
         }
         return '';
     }
-    function renderRows() {
-        rows.replaceChildren(); document.getElementById('empty').classList.toggle('d-none', subscriptions.length !== 0);
+    function renderRows(body) {
+        const total = Number(body.total) || 0;
+        const noSubscriptions = total === 0 && availableTeams.length === 0;
+        const noMatches = total === 0 && !noSubscriptions && hasActiveFilters();
+        rows.replaceChildren();
+        document.getElementById('table-wrap').classList.toggle('d-none', subscriptions.length === 0);
+        document.getElementById('empty').classList.toggle('d-none', !noSubscriptions);
+        document.getElementById('no-matches').classList.toggle('d-none', !noMatches);
         subscriptions.forEach(function (item) {
             const tr = document.createElement('tr');
             tr.innerHTML = '<td><strong></strong><div class="text-muted small"></div></td><td></td><td></td><td></td>';
@@ -603,7 +728,9 @@
                 const newsletterSummary = [
                     collectionCount
                         ? t('Enabled · {count} collection(s)', {count: collectionCount})
-                        : t('Enabled · all collection(s)')
+                        : item.newsletter_profile.collection_selection === 'selected'
+                            ? t('Enabled · no collection(s)')
+                            : t('Enabled · all collection(s)')
                 ];
                 const inventorySuffix = inventorySummarySuffix(item.newsletter_profile.filters);
                 if (inventorySuffix) {
@@ -630,11 +757,68 @@
             const actions = document.createElement('div'); actions.className = 'd-flex flex-wrap gap-1';
             actions.innerHTML = '<button class="btn btn-outline-primary btn-sm edit" type="button">' + t('Edit') + '</button><button class="btn btn-outline-danger btn-sm remove" type="button">' + t('Delete') + '</button>';
             actions.querySelector('.edit').onclick = function () { openEditor(item); };
-            actions.querySelector('.remove').onclick = function () { if (confirm(t('Delete subscription for {email}?', {email: item.email}))) requestJson(apiUrl(item.email), {method:'DELETE'}).then(load).catch(function(e){showMessage(e.message,'danger');}); };
+            actions.querySelector('.remove').onclick = function () {
+                if (!confirm(t('Delete subscription for {email}?', {email: item.email}))) return;
+                requestJson(apiUrl(item.email), {method: 'DELETE'})
+                    .then(function () { return load(currentPage); })
+                    .catch(function (e) { showMessage(e.message, 'danger'); });
+            };
             tr.children[3].append(actions); rows.append(tr);
         });
     }
-    function load() { return requestJson(subscriptionsUrl).then(function(body){subscriptions=body.data;renderRows();}).catch(function(e){showMessage(e.message,'danger');}).finally(function(){document.getElementById('loading').classList.add('d-none');}); }
+    function load(page) {
+        page = Math.max(Number(page) || 1, 1);
+        document.getElementById('loading').classList.remove('d-none');
+        return requestJson(buildSubscriptionsUrl(page))
+            .then(function (body) {
+                subscriptions = Array.isArray(body.data) ? body.data : [];
+                renderTeamFilterOptions(body.teams || []);
+                renderRows(body);
+                renderPagination(body);
+            })
+            .catch(function (e) { showMessage(e.message, 'danger'); })
+            .finally(function () { document.getElementById('loading').classList.add('d-none'); });
+    }
+    teamFilterSearch.addEventListener('input', filterTeamOptions);
+    teamFilterSearch.addEventListener('click', function (event) { event.stopPropagation(); });
+    teamFilterSearch.addEventListener('keydown', function (event) { event.stopPropagation(); });
+    teamFilterOptions.addEventListener('change', updateTeamFilterLabel);
+    teamFilterMenu.addEventListener('click', function (event) {
+        const action = event.target.closest('.team-filter-action');
+        if (!action) return;
+        event.preventDefault();
+        const visible = teamCheckboxes().filter(function (input) {
+            return !input.closest('.form-check').classList.contains('d-none');
+        });
+        if (action.dataset.action === 'all') {
+            visible.forEach(function (input) { input.checked = true; });
+        } else if (action.dataset.action === 'clear') {
+            clearTeamSelection();
+            return;
+        }
+        updateTeamFilterLabel();
+    });
+    teamFilterToggle.addEventListener('shown.bs.dropdown', function () {
+        teamFilterSearch.value = '';
+        filterTeamOptions();
+        teamFilterSearch.focus();
+    });
+    filterForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        activeFilters = {
+            teams: selectedTeamValues(),
+            email: emailFilter.value.trim()
+        };
+        load(1);
+    });
+    document.getElementById('clear-filter-btn').addEventListener('click', function () {
+        emailFilter.value = '';
+        clearTeamSelection();
+        activeFilters = {teams: [], email: ''};
+        load(1);
+    });
+    previousPage.addEventListener('click', function () { load(currentPage - 1); });
+    nextPage.addEventListener('click', function () { load(currentPage + 1); });
     newsletterCollections.wire();
     document.getElementById('report-time-window').addEventListener('change', function () { toggleCustomWindow('report'); });
     ['newsletter', 'report'].forEach(function (prefix) {
@@ -698,10 +882,11 @@
             newsletter_profile:{
                 enabled:document.getElementById('newsletter-enabled').checked,
                 filters:readFilters('newsletter'),
+                collection_selection:newsletterCollections.allMode ? 'all' : 'selected',
                 statistic_schedule_enabled:document.getElementById('newsletter-statistic-schedule-enabled').checked
             },
             report_profile: buildReportProfilePayload().report_profile };
-        requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load();}).catch(function(e){showModalMessage(e.message,'danger');});
+        requestJson(editingEmail ? apiUrl(editingEmail) : subscriptionsUrl, {method:editingEmail?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(){modal.hide();showMessage(t('Subscription saved.'),'success');return load(currentPage);}).catch(function(e){showModalMessage(e.message,'danger');});
     };
-    requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load();}).catch(function(e){showMessage(e.message,'danger');});
+    requestJson(reviewsUrl).then(function(body){collections=body.data.map(function(item){return item.name;});return load(1);}).catch(function(e){showMessage(e.message,'danger');});
 })();

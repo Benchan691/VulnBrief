@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 
-from subscriptions.profiles import normalize_subscription
+from subscriptions.profiles import SUBSCRIPTION_COLLECTION, normalize_subscription
 from subscriptions.scheduler import (
     NEWSLETTER_DELIVERIES,
     _parse_time,
@@ -115,7 +115,7 @@ def build_health_snapshot(web_database, vuln_database, now=None):
     scheduler = read_scheduler_health(web_database, now=now)
     reports = []
     newsletters = []
-    for document in web_database['sub_account'].find({}):
+    for document in web_database[SUBSCRIPTION_COLLECTION].find({}):
         try:
             subscription = normalize_subscription(vuln_database, document)
         except ValueError:

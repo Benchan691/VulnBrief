@@ -252,7 +252,10 @@ def _projection_pipeline(view):
 def _profile_collection_names(database, profile):
     filters = profile['filters']
     views = review_views(database)
-    collection_names = filters['collections'] or sorted(views)
+    if profile.get('collection_selection') == 'selected' and not filters['collections']:
+        collection_names = []
+    else:
+        collection_names = filters['collections'] or sorted(views)
     if profile.get('generation_mode') == 'enriched_weekly':
         collection_names = ['cve_review']
     return filters, views, collection_names

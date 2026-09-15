@@ -8,6 +8,15 @@
     overflow-y: auto;
 }
 
+.subscription-team-options {
+    max-height: 12rem;
+    overflow-y: auto;
+}
+
+.subscription-team-filter-menu {
+    min-width: min(100%, 24rem);
+}
+
 .subscription-vendor-product-import {
     background: var(--bs-light-bg-subtle);
 }

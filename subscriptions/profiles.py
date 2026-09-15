@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from core.database import get_web_database
 from reviews.repository import MAX_EXPORT_SELECTIONS
-from subscriptions.sources import subscription_review_views
+from subscriptions.sources import source_collection_for_review, subscription_review_views
 from subscriptions.vendor_products import (
     CSV_COLUMNS,
     DEFAULT_VENDOR_PRODUCT_FILTER,
@@ -24,18 +24,11 @@ from subscriptions.vendor_products import (
 review_views = subscription_review_views
 
 
-SUB_ACCOUNT_COLLECTION = 'sub_account'
+SUBSCRIPTION_COLLECTION = 'subscriptions'
 
 
-def get_sub_account_collection():
-    return get_web_database()[SUB_ACCOUNT_COLLECTION]
-
-
-def ensure_sub_account_collection():
-    database = get_web_database()
-    if SUB_ACCOUNT_COLLECTION in database.list_collection_names():
-        return
-    database.create_collection(SUB_ACCOUNT_COLLECTION)
+def get_subscription_collection():
+    return get_web_database()[SUBSCRIPTION_COLLECTION]
 
 
 HONG_KONG = ZoneInfo('Asia/Hong_Kong')
@@ -53,6 +46,7 @@ VALID_WINDOWS = {'all', 'daily', 'week', 'custom'}
 VALID_GENERATION_MODES = {'template', 'enriched_weekly'}
 VALID_LANGUAGES = {'en', 'zh', 'ch'}
 VALID_WEEKDAYS = {'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'}
+VALID_COLLECTION_SELECTIONS = {'all', 'selected'}
 
 DEFAULT_FILTERS = {
     'collections': [],
@@ -76,6 +70,10 @@ DEFAULT_FILTERS = {
 DEFAULT_NEWSLETTER_PROFILE = {
     'enabled': False,
     'filters': DEFAULT_FILTERS,
+    # Legacy newsletter profiles without this field continue to mean all
+    # collections. New UI saves an explicit selected mode, including when the
+    # selected collection list is empty.
+    'collection_selection': 'all',
     'delivery_cursor': '',
     # Set during deployment to prevent delivery of CVEs scraped before the
     # repaired scheduler is live. This is an internal delivery setting, not a
@@ -142,6 +140,7 @@ def subscription_schema(database):
             'generation_mode_aliases': ['ai', 'company_ai'],
             'report_language': sorted(VALID_LANGUAGES),
             'schedule_weekday': sorted(VALID_WEEKDAYS),
+            'collection_selection': sorted(VALID_COLLECTION_SELECTIONS),
         },
         'profiles': {
             'newsletter': {
@@ -149,6 +148,7 @@ def subscription_schema(database):
                 'fields': [
                     {'name': 'enabled', 'type': 'boolean'},
                     {'name': 'filters', 'type': 'filters'},
+                    {'name': 'collection_selection', 'type': 'collection_selection'},
                     {'name': 'statistic_schedule_enabled', 'type': 'boolean'},
                 ],
             },
@@ -333,6 +333,13 @@ def validate_profile(database, value, profile_type, *, allow_legacy_report_keywo
         # A validated inventory atomically replaces the old keyword filter.
         profile['filters']['keywords'] = []
     if profile_type == 'newsletter':
+        collection_selection = value.get(
+            'collection_selection',
+            default.get('collection_selection', 'all'),
+        )
+        if not isinstance(collection_selection, str) or collection_selection not in VALID_COLLECTION_SELECTIONS:
+            raise ValueError('Invalid newsletter collection selection.')
+        profile['collection_selection'] = collection_selection
         if 'delivery_cursor' in value:
             profile['delivery_cursor'] = value.get('delivery_cursor') or ''
         if 'cve_delivery_cutoff' in value:
@@ -392,16 +399,74 @@ def validate_profile(database, value, profile_type, *, allow_legacy_report_keywo
     return profile
 
 
+LEGACY_SOURCE_ALIASES = {
+    'huawei': 'huawei_sa',
+    'ransome': 'ransomwarelive',
+}
+LEGACY_REPORT_GENERATION_MODES = {'company_ai', 'ai'}
+
+
+def _legacy_collection_names(database, values):
+    views = review_views(database)
+    source_to_review = {}
+    for name, view in views.items():
+        source = source_collection_for_review(name, view)
+        if source:
+            source_to_review[source] = name
+
+    mapped = []
+    for value in values or []:
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if not value:
+            continue
+        candidate = value if value in views else source_to_review.get(value)
+        if candidate is None:
+            source = LEGACY_SOURCE_ALIASES.get(value, value)
+            candidate = source_to_review.get(source)
+        if candidate and candidate not in mapped:
+            mapped.append(candidate)
+    return mapped
+
+
+def _legacy_profile_value(database, value):
+    if not isinstance(value, dict):
+        return value
+    profile = deepcopy(value)
+    filters = profile.get('filters')
+    if isinstance(filters, dict) and isinstance(filters.get('collections'), list):
+        filters['collections'] = _legacy_collection_names(database, filters['collections'])
+    return profile
+
+
 def normalize_subscription(database, document):
     normalized = dict(document)
     legacy_collections = document.get('subscriptions', [])
-    newsletter_value = document.get('newsletter_profile', {})
+    newsletter_value = document.get('newsletter_profile')
+    if newsletter_value is None:
+        newsletter_value = {
+            'enabled': bool(document.get('enabled', False)),
+            'filters': {'collections': legacy_collections},
+        }
+    newsletter_value = _legacy_profile_value(database, newsletter_value)
+
     report_value = document.get('report_profile')
     if report_value is None:
         report_value = {
-            'enabled': True,
+            'enabled': bool(document.get('report', True)),
             'filters': {'collections': legacy_collections},
         }
+    report_value = _legacy_profile_value(database, report_value)
+    if (
+        isinstance(report_value, dict)
+        and report_value.get('generation_mode') in LEGACY_REPORT_GENERATION_MODES
+        and not report_value.get('enabled')
+    ):
+        # Disabled company_ai profiles were written by the retired report
+        # system. They must not make an otherwise valid subscription unreadable.
+        report_value = {'enabled': False, 'filters': {}}
+
     normalized['newsletter_profile'] = validate_profile(database, newsletter_value, 'newsletter')
     normalized['report_profile'] = validate_profile(
         database,
