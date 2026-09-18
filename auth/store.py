@@ -734,9 +734,8 @@ def ensure_bootstrap_user(config):
         if user['_id'] == admin_id:
             continue
         if account_hub_enabled:
-            # Do not silently approve or migrate existing local identities.
-            # They must be explicitly represented in the Account Hub allowlist
-            # (or removed by the one-time migration cleanup utility).
+            # Do not silently migrate existing local identities. Hub sign-in
+            # creates its own local row after remote verification.
             continue
         updates = {}
         if user.get('auth_source') != AUTH_SOURCE_LOCAL:
@@ -794,9 +793,8 @@ def ensure_legacy_subscription_users():
     auth_collection = web_database[AUTH_COLLECTION]
     account_hub_enabled = _account_hub_enabled()
     if account_hub_enabled:
-        # Account Hub access is allowlist-gated.  Migrating a legacy
-        # subscription into an auth row here would implicitly approve its
-        # username, so development/production cleanup must be explicit.
+        # Hub users are created after remote verification. A legacy
+        # subscription must not create an auth row on its own.
         return
     now = datetime.now(timezone.utc)
     for subscription in web_database['sub_account'].find({}):

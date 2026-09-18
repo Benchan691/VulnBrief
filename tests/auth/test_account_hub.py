@@ -136,6 +136,9 @@ def test_local_admin_can_assign_and_revoke_sub_admin_role(monkeypatch):
     with app.app_context():
         assert get_web_database()['auth'].find_one({'username': username})['role'] == 'sub_admin'
     assert member.get('/settings').status_code == 200
+    assert member.post('/login', data={'username': username, 'password': 'password'}).status_code == 302
+    with app.app_context():
+        assert get_web_database()['auth'].find_one({'username': username})['role'] == 'sub_admin'
     assert admin.put(update_url, json={'role': 'user'}).status_code == 200
     assert member.get('/admin/account-users').status_code == 403
 

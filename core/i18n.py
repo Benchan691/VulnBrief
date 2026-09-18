@@ -49,6 +49,7 @@ TRANSLATIONS = {
         'Unable to update Account Hub user.': '无法更新 Account Hub 用户。',
         'Account Hub user management has replaced sub-admin management.': 'Account Hub 用户管理已取代子管理员管理。',
         'Account Hub users do not use local passwords.': 'Account Hub 用户不使用本地密码。',
+        'Assign a local role after creating the user.': '创建用户后再分配本地角色。',
         'Invalid user role.': '无效的用户角色。',
         'CVE_SYSTEM role is required.': '需要 CVE_SYSTEM 角色。',
         'Invalid Account Hub username, password, or CAPTCHA.': 'Account Hub 用户名、密码或验证码无效。',

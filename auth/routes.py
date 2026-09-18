@@ -228,8 +228,10 @@ def add_account_user():
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({'error': t('Account Hub user details must be an object.')}), 400
-    if 'password' in data or 'role' in data:
-        return jsonify({'error': t('Account Hub users are managed without local passwords or roles.')}), 400
+    if 'password' in data:
+        return jsonify({'error': t('Account Hub users do not use local passwords.')}), 400
+    if 'role' in data:
+        return jsonify({'error': t('Assign a local role after creating the user.')}), 400
     try:
         disabled = _boolean_field(data, 'disabled')
         pause = _boolean_field(data, 'pause_managed_subscriptions_when_disabled')

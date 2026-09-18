@@ -168,7 +168,7 @@ Account Hub rows; vulnerability data and caches are not touched.
 | `report.*` | Report compaction settings |
 | `enriched.*` | Enriched Weekly llama-server tuning |
 | `tavily.*` | Search defaults |
-| `account_hub.*` | Account Hub OAuth URLs, client settings, permission mappings, and timeout |
+| `account_hub.*` | Account Hub login URL, token-check URL, and timeout |
 
 See [`.env.example`](../.env.example), [`config/config.json`](../config/config.json),
 and [`core/config.py`](../core/config.py) for every supported setting.
@@ -221,12 +221,12 @@ accounts without a configured password are migrated to the temporary password
 
 When Account Hub is enabled, the bootstrap account remains available only as a
 local break-glass administrator at `/login/local`. Normal users sign in through
-Account Hub at `/login`, and administrators manage the approved-user allowlist
-from **Account Hub Users**. Account Hub permission claims map to delegated
-`sub_admin` or regular `user` roles using the configured permission strings.
-Account Hub users do not have local passwords; revocation and disabled-row
-checks are enforced on every protected request. The local bootstrap
-administrator is the only full portal administrator.
+Account Hub at `/login`. A first successful sign-in with `CVE_SYSTEM` creates
+a local `user` profile; the local administrator assigns `sub_admin` or `user`
+in **Account Hub Users**. Account Hub users do not have local passwords.
+Disabled-row and local-role checks run on every protected request; Hub roles
+are checked on each new sign-in. The local bootstrap administrator is the
+only full portal administrator.
 
 For a separate local login while Account Hub is disabled, use:
 
@@ -235,7 +235,7 @@ For a separate local login while Account Hub is disabled, use:
 ```
 
 The optional email is contact metadata only; it cannot be used to sign in. With
-Account Hub enabled, this command instead approves an Account Hub username and
+Account Hub enabled, this command creates a local Hub profile in advance and
 does not create a local password; omit the password argument in that mode:
 
 ```sh
