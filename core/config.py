@@ -161,61 +161,16 @@ def load_application_config(base_dir):
             False,
             bool,
         ),
-        'ACCOUNT_HUB_AUTHORIZE_URL': _resolve(
-            'ACCOUNT_HUB_AUTHORIZE_URL',
+        'ACCOUNT_HUB_LOGIN_URL': _resolve(
+            'ACCOUNT_HUB_LOGIN_URL',
             file_config,
-            ('account_hub', 'authorize_url'),
-            '',
-        ),
-        'ACCOUNT_HUB_TOKEN_URL': _resolve(
-            'ACCOUNT_HUB_TOKEN_URL',
-            file_config,
-            ('account_hub', 'token_url'),
+            ('account_hub', 'login_url'),
             '',
         ),
         'ACCOUNT_HUB_TOKEN_CHECK_URL': _resolve(
             'ACCOUNT_HUB_TOKEN_CHECK_URL',
             file_config,
             ('account_hub', 'token_check_url'),
-            '',
-        ),
-        'ACCOUNT_HUB_LOGOUT_URL': _resolve(
-            'ACCOUNT_HUB_LOGOUT_URL',
-            file_config,
-            ('account_hub', 'logout_url'),
-            '',
-        ),
-        'ACCOUNT_HUB_CLIENT_ID': _resolve(
-            'ACCOUNT_HUB_CLIENT_ID',
-            file_config,
-            ('account_hub', 'client_id'),
-            '',
-        ),
-        'ACCOUNT_HUB_CLIENT_SECRET': os.environ.get('ACCOUNT_HUB_CLIENT_SECRET') or str(
-            _dig(file_config, 'account_hub', 'client_secret') or '',
-        ),
-        'ACCOUNT_HUB_REDIRECT_URI': _resolve(
-            'ACCOUNT_HUB_REDIRECT_URI',
-            file_config,
-            ('account_hub', 'redirect_uri'),
-            '',
-        ),
-        'ACCOUNT_HUB_SCOPE': _resolve(
-            'ACCOUNT_HUB_SCOPE',
-            file_config,
-            ('account_hub', 'scope'),
-            'openid',
-        ),
-        'ACCOUNT_HUB_ADMIN_PERMISSION': _resolve(
-            'ACCOUNT_HUB_ADMIN_PERMISSION',
-            file_config,
-            ('account_hub', 'admin_permission'),
-            '',
-        ),
-        'ACCOUNT_HUB_SUB_ADMIN_PERMISSION': _resolve(
-            'ACCOUNT_HUB_SUB_ADMIN_PERMISSION',
-            file_config,
-            ('account_hub', 'sub_admin_permission'),
             '',
         ),
         'ACCOUNT_HUB_TIMEOUT_SECONDS': _resolve(

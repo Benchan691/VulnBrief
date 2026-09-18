@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Account Hub SSO integration guide for the Newsletter Management portal">
+  <title>Account Hub integration guide</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08111f;
+      --panel: rgba(15, 29, 51, .84);
+      --panel-strong: #112541;
+      --ink: #eff6ff;
+      --muted: #a7bad4;
+      --line: rgba(167, 186, 214, .2);
+      --blue: #72b8ff;
+      --cyan: #58e0d2;
+      --violet: #b19cff;
+      --amber: #ffd083;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .28);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(93, 168, 255, .2), transparent 34rem),
+        radial-gradient(circle at 90% 12%, rgba(112, 87, 255, .18), transparent 30rem),
+        var(--bg);
+      line-height: 1.6;
+    }
+
+    a { color: var(--blue); }
+
+    .page {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 64px 0 92px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--cyan);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 { line-height: 1.15; }
+    h1 { max-width: 760px; margin: 0; font-size: clamp(2.4rem, 6vw, 4.8rem); letter-spacing: -.055em; }
+    h2 { margin: 0 0 12px; font-size: clamp(1.45rem, 3vw, 2.1rem); letter-spacing: -.025em; }
+    h3 { margin: 0 0 8px; font-size: 1rem; }
+
+    .lede {
+      max-width: 720px;
+      margin: 22px 0 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 2vw, 1.18rem);
+    }
+
+    .badges { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 28px; }
+    .badge {
+      padding: 6px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .055);
+      color: #d7e8ff;
+      font-size: .78rem;
+      font-weight: 700;
+    }
+
+    .section { margin-top: 64px; }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .diagram-panel { margin-top: 40px; padding: clamp(18px, 4vw, 34px); overflow: hidden; }
+    .diagram-title { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
+    .diagram-title p { margin: 0; color: var(--muted); font-size: .92rem; }
+    .diagram-wrap { overflow-x: auto; padding-bottom: 6px; }
+    svg { display: block; width: 100%; min-width: 850px; height: auto; }
+    .svg-label { fill: #dcecff; font: 700 18px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .svg-small { fill: #a7bad4; font: 500 14px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .svg-edge { fill: none; stroke: #72b8ff; stroke-width: 2.5; }
+    .svg-edge.alt { stroke: #58e0d2; }
+    .svg-edge.dashed { stroke: #b19cff; stroke-dasharray: 8 8; }
+    .svg-node { stroke: rgba(209, 230, 255, .24); stroke-width: 1.5; }
+    .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 18px; color: var(--muted); font-size: .82rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 8px; }
+    .key { width: 28px; height: 0; border-top: 2px solid var(--blue); }
+    .key.dashed { border-top-style: dashed; border-color: var(--violet); }
+
+    .intro-grid, .card-grid, .flow-grid { display: grid; gap: 16px; }
+    .intro-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 24px; }
+    .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 22px; }
+    .flow-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 22px; }
+
+    .card { padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255, 255, 255, .045); }
+    .card p { margin: 0; color: var(--muted); font-size: .93rem; }
+    .number { display: inline-grid; place-items: center; width: 30px; height: 30px; margin-bottom: 14px; border-radius: 10px; background: rgba(114, 184, 255, .16); color: var(--blue); font-weight: 800; }
+    .number.cyan { background: rgba(88, 224, 210, .14); color: var(--cyan); }
+    .number.violet { background: rgba(177, 156, 255, .16); color: var(--violet); }
+    .number.amber { background: rgba(255, 208, 131, .14); color: var(--amber); }
+
+    .flow-step { position: relative; padding: 22px 22px 22px 68px; }
+    .flow-step .number { position: absolute; left: 22px; top: 22px; }
+    .flow-step p { margin: 0; color: var(--muted); font-size: .92rem; }
+
+    .config {
+      margin: 20px 0 0;
+      padding: 22px;
+      overflow-x: auto;
+      border: 1px solid rgba(88, 224, 210, .22);
+      border-radius: 16px;
+      background: #06101d;
+      color: #c8f7ed;
+      font: 500 .88rem/1.8 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .table-wrap { overflow-x: auto; margin-top: 22px; border: 1px solid var(--line); border-radius: 18px; }
+    table { width: 100%; min-width: 680px; border-collapse: collapse; background: rgba(255, 255, 255, .035); }
+    th, td { padding: 15px 18px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #dcecff; font-size: .82rem; letter-spacing: .05em; text-transform: uppercase; }
+    td { color: var(--muted); font-size: .92rem; }
+    tr:last-child td { border-bottom: 0; }
+    code { padding: 2px 6px; border-radius: 6px; background: rgba(255, 255, 255, .08); color: #dff5ff; font-size: .88em; }
+
+    .callout { margin-top: 24px; padding: 18px 20px; border-left: 3px solid var(--amber); border-radius: 0 14px 14px 0; background: rgba(255, 208, 131, .08); color: #f8e3ba; }
+    .callout strong { color: var(--amber); }
+    footer { margin-top: 56px; color: #8297b2; font-size: .82rem; }
+
+    @media (max-width: 820px) {
+      .page { width: min(100% - 26px, 1180px); padding-top: 38px; }
+      .intro-grid, .card-grid, .flow-grid { grid-template-columns: 1fr; }
+      .diagram-panel { border-radius: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <p class="eyebrow">Integration guide · Newsletter Management</p>
+      <h1>Account Hub becomes the front door for the portal.</h1>
+      <p class="lede">The portal checks passwords and the CVE_SYSTEM role with Account Hub at sign-in, then stores local roles and ownership records in MongoDB. A local bootstrap administrator retains full configuration access.</p>
+      <div class="badges" aria-label="Integration properties">
+        <span class="badge">Password API sign-in</span>
+        <span class="badge">UID-bound identities</span>
+        <span class="badge">Fail-closed validation</span>
+        <span class="badge">Break-glass local admin</span>
+      </div>
+    </header>
+
+    <section class="panel diagram-panel" aria-labelledby="architecture-title">
+      <div class="diagram-title">
+        <div>
+          <p class="eyebrow">01 · Architecture</p>
+          <h2 id="architecture-title">Where Account Hub fits</h2>
+        </div>
+        <p>Solid lines are portal traffic; dashed lines are Account Hub API traffic at sign-in.</p>
+      </div>
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 1200 560" role="img" aria-labelledby="diagram-heading diagram-description">
+          <title id="diagram-heading">Account Hub integration architecture</title>
+          <desc id="diagram-description">A browser sends credentials to the Flask portal. The portal verifies them and the CVE_SYSTEM role with Account Hub, stores local roles and ownership data in MongoDB, and keeps the local bootstrap administrator as the full configuration path.</desc>
+          <defs>
+            <linearGradient id="browser" x1="0" x2="1"><stop offset="0" stop-color="#173556"/><stop offset="1" stop-color="#1b426c"/></linearGradient>
+            <linearGradient id="portal" x1="0" x2="1"><stop offset="0" stop-color="#173d55"/><stop offset="1" stop-color="#185d63"/></linearGradient>
+            <linearGradient id="hub" x1="0" x2="1"><stop offset="0" stop-color="#352968"/><stop offset="1" stop-color="#513e89"/></linearGradient>
+            <linearGradient id="mongo" x1="0" x2="1"><stop offset="0" stop-color="#493c28"/><stop offset="1" stop-color="#67502b"/></linearGradient>
+            <filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="12" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#72b8ff"/></marker>
+            <marker id="arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#58e0d2"/></marker>
+            <marker id="arrow-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#b19cff"/></marker>
+          </defs>
+
+          <path class="svg-edge" marker-end="url(#arrow-blue)" d="M 270 270 C 310 270, 320 270, 360 270"/>
+          <path class="svg-edge" marker-end="url(#arrow-blue)" d="M 360 320 C 315 340, 312 370, 270 370"/>
+          <path class="svg-edge dashed" marker-end="url(#arrow-violet)" d="M 620 225 C 690 185, 735 175, 820 175"/>
+          <path class="svg-edge dashed" marker-end="url(#arrow-violet)" d="M 820 225 C 740 270, 695 285, 620 285"/>
+          <path class="svg-edge dashed" marker-end="url(#arrow-violet)" d="M 620 360 C 710 400, 750 405, 820 405"/>
+          <path class="svg-edge alt" marker-end="url(#arrow-cyan)" d="M 820 440 C 740 480, 690 465, 620 400"/>
+
+          <g filter="url(#glow)" opacity=".35"><circle cx="490" cy="285" r="88" fill="#58e0d2"/></g>
+          <rect class="svg-node" x="70" y="210" width="200" height="120" rx="20" fill="url(#browser)"/>
+          <text class="svg-label" x="100" y="258">Browser</text>
+          <text class="svg-small" x="100" y="285">sign in · portal pages</text>
+          <text class="svg-small" x="100" y="307">protected API requests</text>
+
+          <rect class="svg-node" x="360" y="150" width="260" height="260" rx="24" fill="url(#portal)"/>
+          <text class="svg-label" x="392" y="205">Flask portal</text>
+          <text class="svg-small" x="392" y="238">/login · /logout</text>
+          <text class="svg-small" x="392" y="266">token check at sign-in</text>
+          <text class="svg-small" x="392" y="294">CVE_SYSTEM access gate</text>
+          <text class="svg-small" x="392" y="322">local roles + ownership</text>
+          <rect x="392" y="345" width="150" height="34" rx="10" fill="rgba(5, 19, 29, .35)"/>
+          <text class="svg-small" x="407" y="367" fill="#c8f7ed">LOCAL SESSION</text>
+
+          <rect class="svg-node" x="820" y="90" width="310" height="170" rx="24" fill="url(#hub)"/>
+          <text class="svg-label" x="852" y="145">Account Hub</text>
+          <text class="svg-small" x="852" y="177">password login → token check</text>
+          <text class="svg-small" x="852" y="205">UID, username, email, claims</text>
+          <text class="svg-small" x="852" y="233">CVE_SYSTEM roleName</text>
+
+          <path class="svg-edge dashed" marker-end="url(#arrow-violet)" d="M 948 260 L 948 316"/>
+          <text class="svg-small" x="967" y="296">local profile</text>
+          <path class="svg-edge alt" marker-end="url(#arrow-cyan)" d="M 820 395 C 760 365, 700 340, 620 340"/>
+
+          <path class="svg-node" d="M820 380 C820 355 890 335 975 335 C1060 335 1130 355 1130 380 L1130 450 C1130 475 1060 495 975 495 C890 495 820 475 820 450 Z" fill="url(#mongo)"/>
+          <ellipse cx="975" cy="380" rx="155" ry="45" fill="rgba(255, 220, 150, .08)" stroke="rgba(209, 230, 255, .24)"/>
+          <text class="svg-label" x="884" y="405">Local MongoDB</text>
+          <text class="svg-small" x="884" y="433">auth · sub accounts · history</text>
+          <text class="svg-small" x="884" y="459">disabled state is retained</text>
+
+          <text class="svg-small" x="285" y="255">GET /login</text>
+          <text class="svg-small" x="278" y="361">portal UI / API</text>
+          <text class="svg-small" x="654" y="166">Login + check APIs</text>
+          <text class="svg-small" x="652" y="317">claims + token response</text>
+          <text class="svg-small" x="657" y="430">local role lookup</text>
+        </svg>
+      </div>
+      <div class="legend" aria-label="Diagram legend">
+        <span><i class="key"></i> browser or database traffic</span>
+        <span><i class="key dashed"></i> Account Hub login / validation</span>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="merge-title">
+      <p class="eyebrow">02 · The merge</p>
+      <h2 id="merge-title">What changes in the existing system</h2>
+      <div class="intro-grid">
+        <article class="card"><span class="number">A</span><h3>Account Hub owns authentication</h3><p><code>/login</code> sends the submitted username and Base64-encoded password to Account Hub over HTTPS.</p></article>
+        <article class="card"><span class="number cyan">B</span><h3>The portal checks eligibility</h3><p>After login, the portal checks tokens and requires <code>roles[].roleName</code> to contain <code>CVE_SYSTEM</code>.</p></article>
+        <article class="card"><span class="number violet">C</span><h3>Local roles control access</h3><p>New Hub users are <code>user</code> by default. The local admin can assign <code>sub_admin</code> or <code>user</code>; only the bootstrap account is <code>admin</code>.</p></article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="flow-title">
+      <p class="eyebrow">03 · Runtime flow</p>
+      <h2 id="flow-title">Hub verification at sign-in, local authorization afterward</h2>
+      <div class="flow-grid">
+        <article class="card flow-step"><span class="number">1</span><h3>Credentials</h3><p>The browser submits username and password to <code>/login</code>.</p></article>
+        <article class="card flow-step"><span class="number cyan">2</span><h3>Hub login</h3><p>Flask calls the Account Hub password endpoint. Wrong credentials block sign-in.</p></article>
+        <article class="card flow-step"><span class="number violet">3</span><h3>Check role</h3><p>Flask calls token-check, rejects inactive or anonymous accounts, and requires <code>CVE_SYSTEM</code> in <code>roles[].roleName</code>.</p></article>
+        <article class="card flow-step"><span class="number amber">4</span><h3>Create profile</h3><p>The portal stores the Hub UID and creates a local <code>user</code> profile if needed.</p></article>
+        <article class="card flow-step"><span class="number">5</span><h3>Authorize locally</h3><p>Each protected request reads the current local role and disabled state. The admin can change roles in the panel.</p></article>
+        <article class="card flow-step"><span class="number cyan">6</span><h3>Local logout</h3><p><code>/logout</code> clears the portal session.</p></article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="config-title">
+      <p class="eyebrow">04 · Configuration</p>
+      <h2 id="config-title">Enable it only after the test endpoints work</h2>
+      <p class="lede">Use the test Account Hub endpoints first. Keep each full endpoint URL explicit; the portal does not guess or append an <code>/auth</code> path.</p>
+      <pre class="config"><code>ACCOUNT_HUB_ENABLED=true
+ACCOUNT_HUB_LOGIN_URL=https://test.example/auth/user/oauth/login
+ACCOUNT_HUB_TOKEN_CHECK_URL=https://test.example/token/check
+ACCOUNT_HUB_TIMEOUT_SECONDS=5</code></pre>
+      <div class="callout"><strong>Important:</strong> Hub credentials and tokens are checked only at sign-in. An active portal session lasts up to 12 hours unless the local account is disabled or the user signs out. A slider CAPTCHA may be required after repeated failures; the portal accepts a verification token but does not provide the slider widget.</div>
+    </section>
+
+    <section class="section" aria-labelledby="rollout-title">
+      <p class="eyebrow">05 · Rollout checklist</p>
+      <h2 id="rollout-title">Test, then promote</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Check</th><th>Expected result</th><th>Why it matters</th></tr></thead>
+          <tbody>
+            <tr><td>Sign in</td><td>Valid credentials and <code>CVE_SYSTEM</code> allow a local session.</td><td>Confirms Hub login and token-check.</td></tr>
+            <tr><td>Role assignment</td><td>New users start as <code>user</code>; admin changes persist.</td><td>Confirms local authorization.</td></tr>
+            <tr><td>Local recovery</td><td>Bootstrap credentials at <code>/login/local</code> reach top-level configuration.</td><td>Confirms the independent break-glass administrator.</td></tr>
+            <tr><td>Hub role removal</td><td>Next login without <code>CVE_SYSTEM</code> is denied.</td><td>Confirms the sign-in gate.</td></tr>
+            <tr><td>Disable user</td><td>Access is blocked while subscriptions and history remain.</td><td>Preserves ownership and delivery records.</td></tr>
+            <tr><td>Logout</td><td>The portal session is cleared.</td><td>Ends local access.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      This guide mirrors the integration implemented in <code>integrations/account_hub.py</code>, <code>auth/routes.py</code>, <code>core/auth.py</code>, and <code>auth/store.py</code>.
+    </footer>
+  </main>
+</body>
+</html>

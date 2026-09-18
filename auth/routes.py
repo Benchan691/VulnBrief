@@ -1,5 +1,3 @@
-import secrets
-
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, session, url_for
 from pymongo.errors import PyMongoError
 
@@ -8,30 +6,27 @@ from auth.store import (
     AUTH_SOURCE_LOCAL,
     create_sub_admin,
     ensure_account_hub_user,
-    find_account_hub_user,
+    login_account_hub_user,
     list_sub_admins,
     list_account_hub_users,
     normalize_login,
+    is_local_bootstrap_user,
     public_user,
     remove_sub_admin,
-    sync_account_hub_user,
     update_sub_admin,
     update_account_hub_user,
     update_user_password,
     validate_email,
     verify_login,
     verify_password,
-    username_key,
 )
 from core.auth import _clear_session, current_user, login_required, top_admin_required
 from core.i18n import t
 from integrations.account_hub import (
     AccountHubClient,
-    AccountHubError,
     AccountHubInvalid,
     AccountHubMisconfigured,
     AccountHubUnavailable,
-    SESSION_STORE,
 )
 
 
@@ -83,74 +78,45 @@ def _account_user_public(user):
         value = user.get(field)
         if value is not None and hasattr(value, 'isoformat'):
             result[field] = value.isoformat()
-    result['role_source'] = 'Account Hub'
+    result['role_source'] = 'local'
     return result
-
-
-def _begin_account_hub_login():
-    state = secrets.token_urlsafe(32)
-    session['account_hub_state'] = state
-    session['account_hub_next'] = _safe_next(request.args.get('next'))
-    try:
-        return redirect(AccountHubClient(current_app.config).authorization_url(state))
-    except AccountHubMisconfigured:
-        session.pop('account_hub_state', None)
-        session.pop('account_hub_next', None)
-        return _account_hub_error('Account Hub is not configured.')
-
-
-def _finish_account_hub_login():
-    expected_state = session.pop('account_hub_state', '')
-    next_url = session.pop('account_hub_next', url_for('subscription.subscriptions'))
-    received_state = request.args.get('state', '')
-    if not expected_state or not received_state or not secrets.compare_digest(
-        expected_state, received_state,
-    ):
-        return _account_hub_error('Invalid Account Hub sign-in state.', 400)
-    if request.args.get('error'):
-        return _account_hub_error('Account Hub sign-in was cancelled.', 403)
-    code = request.args.get('code', '')
-    if not code:
-        return _account_hub_error('Account Hub did not return an authorization code.', 400)
-    client = AccountHubClient(current_app.config)
-    try:
-        access_token, refresh_token = client.exchange_code(code)
-        claims = client.check_tokens(access_token, refresh_token)
-        user = find_account_hub_user(claims['uid'], claims['username'])
-        if user is None:
-            raise AccountHubInvalid('This Account Hub user is not approved for the portal.')
-        if user.get('disabled'):
-            raise AccountHubInvalid('This portal account is disabled.')
-        user = sync_account_hub_user(user, claims)
-        session_id = SESSION_STORE.create(access_token, refresh_token, user['_id'])
-    except AccountHubInvalid as exc:
-        return _account_hub_error(str(exc), 403)
-    except AccountHubMisconfigured:
-        return _account_hub_error('Account Hub is not configured.')
-    except AccountHubUnavailable:
-        return _account_hub_error('Account Hub is unavailable.')
-    except ValueError as exc:
-        if str(exc).startswith('Account Hub identity'):
-            return _account_hub_error(str(exc), 403)
-        return _account_hub_error('Unable to establish the Account Hub session.')
-    except PyMongoError:
-        return _account_hub_error('Unable to establish the Account Hub session.')
-
-    _clear_session()
-    session.permanent = True
-    session['auth_method'] = AUTH_SOURCE_ACCOUNT_HUB
-    session['account_hub_session_id'] = session_id
-    session['user_id'] = str(user['_id'])
-    session['username'] = user.get('username') or claims['username']
-    return redirect(_safe_next(next_url))
 
 
 @auth_blueprint.route('/login', methods=['GET', 'POST'])
 def login():
     if _account_hub_enabled():
-        if request.method == 'POST':
-            return _account_hub_error('Use Account Hub to sign in.', 405)
-        return _begin_account_hub_login()
+        if request.method == 'GET':
+            return render_template('auth/login.html')
+        username = normalize_login(request.form.get('username'))
+        password = request.form.get('password') or ''
+        if not username or not password:
+            return _account_hub_error('Invalid username or password', 401)
+        try:
+            client = AccountHubClient(current_app.config)
+            access_token, refresh_token = client.login(
+                username, password, request.form.get('captchaVerification') or '',
+            )
+            claims = client.check_tokens(access_token, refresh_token)
+            if 'CVE_SYSTEM' not in claims['role_names']:
+                return _account_hub_error('CVE_SYSTEM role is required.', 403)
+            user = login_account_hub_user(claims)
+        except AccountHubInvalid as exc:
+            return _account_hub_error(str(exc), 401)
+        except AccountHubMisconfigured:
+            return _account_hub_error('Account Hub is not configured.')
+        except AccountHubUnavailable:
+            return _account_hub_error('Account Hub is unavailable.')
+        except ValueError as exc:
+            return _account_hub_error(str(exc), 403)
+        except PyMongoError:
+            return _account_hub_error('Unable to establish the Account Hub session.')
+        _clear_session()
+        session.permanent = True
+        session['auth_method'] = AUTH_SOURCE_ACCOUNT_HUB
+        session['user_id'] = str(user['_id'])
+        session['account_hub_uid'] = claims['uid']
+        session['username'] = user['username']
+        return redirect(_safe_next(request.form.get('next')))
     if request.method == 'POST':
         login_name = normalize_login(request.form.get('username'))
         password = request.form.get('password') or ''
@@ -182,13 +148,7 @@ def local_login():
         password = request.form.get('password') or ''
         try:
             user = verify_login(login_name, password)
-            expected = normalize_login(current_app.config.get('WEB_AUTH_BOOTSTRAP_USERNAME'))
-            if (
-                user is not None
-                and username_key(user.get('username')) == username_key(expected)
-                and user.get('role') == 'admin'
-                and (user.get('auth_source') or AUTH_SOURCE_LOCAL) == AUTH_SOURCE_LOCAL
-            ):
+            if user is not None and is_local_bootstrap_user(user):
                 _clear_session()
                 session.permanent = True
                 session['auth_method'] = AUTH_SOURCE_LOCAL
@@ -207,25 +167,12 @@ def local_login():
 
 @auth_blueprint.route('/auth/account-hub/callback')
 def account_hub_callback():
-    if not _account_hub_enabled():
-        return redirect(url_for('auth.login'))
-    return _finish_account_hub_login()
+    return redirect(url_for('auth.login'))
 
 
 @auth_blueprint.route('/logout', methods=['GET', 'POST'])
 def logout():
-    account_hub_session = session.get('account_hub_session_id')
-    is_account_hub = session.get('auth_method') == AUTH_SOURCE_ACCOUNT_HUB
-    SESSION_STORE.remove(account_hub_session)
     session.clear()
-    if is_account_hub and _account_hub_enabled():
-        try:
-            return render_template(
-                'auth/account_hub_logout.html',
-                logout_url=AccountHubClient(current_app.config).global_logout_url(),
-            )
-        except AccountHubError:
-            pass
     return redirect(url_for('auth.login'))
 
 
@@ -309,12 +256,14 @@ def edit_account_user(account_user_id):
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({'error': t('Account Hub user details must be an object.')}), 400
-    if any(field in data for field in ('username', 'password', 'role', 'account_hub_uid')):
+    if any(field in data for field in ('username', 'password', 'account_hub_uid')):
         return jsonify({'error': t('Account Hub identity fields cannot be changed.')}), 400
     fields = {}
     try:
         if 'email' in data:
             fields['email'] = validate_email(data.get('email'))
+        if 'role' in data:
+            fields['role'] = data['role']
         for name in ('disabled', 'pause_managed_subscriptions_when_disabled'):
             value = _boolean_field(data, name)
             if value is not None:

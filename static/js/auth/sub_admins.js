@@ -39,9 +39,7 @@
             username.textContent = item.username || '';
             const role = document.createElement('td');
             const roleLabels = {admin: t('Administrator'), sub_admin: t('Sub-admin'), user: t('User')};
-            role.textContent = item.account_hub_bound
-                ? (roleLabels[item.role] || item.role || t('User'))
-                : t('Pending first sign-in');
+            role.textContent = roleLabels[item.role] || t('User');
             const email = document.createElement('td');
             email.textContent = item.email || t('Not provided');
             const status = document.createElement('td');
@@ -76,6 +74,8 @@
         username.value = item ? item.username : '';
         username.readOnly = Boolean(item);
         document.getElementById('account-user-email').value = item ? (item.email || '') : '';
+        document.getElementById('account-user-role-group').classList.toggle('d-none', !item);
+        document.getElementById('account-user-role').value = item ? item.role : 'user';
         document.getElementById('account-user-disabled').checked = Boolean(item && item.disabled);
         document.getElementById('account-user-pause').checked = Boolean(item && item.pause_managed_subscriptions_when_disabled);
         setMessage(modalMessage, '', '');
@@ -102,6 +102,7 @@
             pause_managed_subscriptions_when_disabled: document.getElementById('account-user-pause').checked,
         };
         if (!editingId) payload.username = document.getElementById('account-user-username').value.trim();
+        if (editingId) payload.role = document.getElementById('account-user-role').value;
         setMessage(modalMessage, '', '');
         requestJson(editingId
             ? config.accountUsersUrl + '/' + encodeURIComponent(editingId)

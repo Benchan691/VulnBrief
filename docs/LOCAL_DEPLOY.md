@@ -118,33 +118,47 @@ a different JSON file with `APP_CONFIG=/path/to/config.json`.
 | `LOCAL_MONGO_URI` | Local MongoDB for both `web` and `vulnerabilities` databases (default `mongodb://localhost:27017/`) |
 | `MONGO_URI` | Optional alias for `LOCAL_MONGO_URI` when both are set |
 | `FLASK_SECRET_KEY` | Flask session signing (use a long random string) |
+| `WEB_AUTH_BOOTSTRAP_USERNAME` | Exact username of the one local break-glass administrator |
+| `WEB_AUTH_BOOTSTRAP_PASSWORD` | Local password for that administrator |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly reports) |
 
 ### Account Hub sign-in (optional)
 
-Set `ACCOUNT_HUB_ENABLED=true` only after the Account Hub client and callback
-have been registered. Configure every full endpoint URL separately:
-`ACCOUNT_HUB_AUTHORIZE_URL`, `ACCOUNT_HUB_TOKEN_URL`,
-`ACCOUNT_HUB_TOKEN_CHECK_URL`, and `ACCOUNT_HUB_LOGOUT_URL`. Also set the client
-ID/secret, exact redirect URI, and the permission names used for the portal
-administrator and sub-admin roles (`ACCOUNT_HUB_ADMIN_PERMISSION` and
-`ACCOUNT_HUB_SUB_ADMIN_PERMISSION`). Do not infer URL paths in deployment code.
-The portal uses a regular confidential OAuth client (client secret plus the
-authorization-code flow); Account Hub's wrapped token response is handled
-(`data.accessToken` and `data.refreshToken`).
+Set `ACCOUNT_HUB_ENABLED=true` and configure the full
+`ACCOUNT_HUB_LOGIN_URL` (`/auth/user/oauth/login`) and
+`ACCOUNT_HUB_TOKEN_CHECK_URL` (`/auth/open-api/v1/token/check`). Do not infer
+URL paths in deployment code. The portal sends the submitted password Base64
+encoded over HTTPS, as required by the API, then checks the returned tokens.
+It admits the user only if `data.roles[].roleName` contains `CVE_SYSTEM`.
+Bad credentials, inactive accounts, and missing roles block sign-in.
 
-Use the Account Hub test environment first. Verify sign-in, global logout,
-permission-to-role mapping, disabled-user rejection, and token revocation; then
-promote the verified endpoint and client settings to production.
+`/login/local` remains reserved for the local bootstrap administrator. A valid
+Account Hub user is created locally on first login with role `user`. The
+**Account Hub Users** page lets the local administrator set `user` or
+`sub_admin`; Hub role changes do not overwrite that local choice. Local role
+and disabled status are read on each request. Account Hub credentials and
+tokens are checked at sign-in only; an existing portal session lasts up to 12
+hours unless the local account is disabled or the user signs out.
 
-When enabled, `/login` redirects to Account Hub and `/login/local` accepts only
-the configured local bootstrap administrator. The **Account Hub Users** page is
-an allowlist keyed by username. Approving a row does not assign a local role or
-password; the first successful Account Hub sign-in binds its UID, and each
-protected request revalidates the Account Hub session. Disabling a row blocks
-access without deleting its subscriptions or delivery history. Account Hub
-tokens are kept in process memory, so restarting the single Gunicorn worker
-signs out active SSO sessions.
+After repeated failures, Account Hub may require `captchaVerification`. The
+login form accepts that token, but the supplied API documentation does not
+specify enough of the slider challenge protocol to embed a complete slider
+widget. The token must be obtained from a compatible Account Hub CAPTCHA
+client. Add an identity manually before creating a subscription for a user
+who has not signed in yet; the subscription API still requires a local row.
+
+If a development database contains records from the older schema, audit it
+before enabling Account Hub:
+
+```sh
+.venv/bin/python scripts/cleanup_account_hub_migration.py \
+  --bootstrap-username admin
+```
+
+The command is dry-run by default. It backs up candidates before deletion and
+requires both `--apply --confirm` to remove incompatible documents and their
+orphaned dependent records. It preserves the named bootstrap account and valid
+Account Hub rows; vulnerability data and caches are not touched.
 
 ### Common `config/config.json` sections
 
@@ -208,10 +222,11 @@ accounts without a configured password are migrated to the temporary password
 When Account Hub is enabled, the bootstrap account remains available only as a
 local break-glass administrator at `/login/local`. Normal users sign in through
 Account Hub at `/login`, and administrators manage the approved-user allowlist
-from **Account Hub Users**. Account Hub permission claims map to portal roles
-using the configured permission strings. Account Hub users do not have local
-passwords; revocation and disabled-row checks are enforced on every protected
-request.
+from **Account Hub Users**. Account Hub permission claims map to delegated
+`sub_admin` or regular `user` roles using the configured permission strings.
+Account Hub users do not have local passwords; revocation and disabled-row
+checks are enforced on every protected request. The local bootstrap
+administrator is the only full portal administrator.
 
 For a separate local login while Account Hub is disabled, use:
 

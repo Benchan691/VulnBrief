@@ -3,7 +3,7 @@ import shutil
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from core.auth import admin_required
+from core.auth import admin_required, top_admin_required
 from core.database import get_vulnerabilities_database, get_web_database
 from newsletters.normalizer import render_newsletter
 from operations.templates import get_newsletter_template_config
@@ -21,7 +21,7 @@ def get_news(lang):
 
 
 @newsletter_blueprint.route('/set-news', methods=['POST'])
-@admin_required
+@top_admin_required
 def set_news():
     data = request.get_json()
     lang = (data.get('lang') or '').lower()

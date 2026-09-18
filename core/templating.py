@@ -18,7 +18,7 @@ def register_template_filters(application):
 
     @application.context_processor
     def inject_i18n():
-        from core.auth import current_user
+        from core.auth import current_user, is_admin, is_top_admin
 
         locale = get_locale()
         try:
@@ -40,6 +40,6 @@ def register_template_filters(application):
                 if user.get('account_hub_uid') not in (None, '') else '',
                 'account_hub_username': user.get('account_hub_username') or '',
             } if user else None,
-            'is_admin': bool(user and user.get('role') in {'admin', 'sub_admin'}),
-            'is_top_admin': bool(user and user.get('role') == 'admin'),
+            'is_admin': is_admin(user),
+            'is_top_admin': is_top_admin(user),
         }

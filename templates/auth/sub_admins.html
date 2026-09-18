@@ -5,7 +5,7 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="mb-1"><i class="bi bi-person-gear me-2"></i>{{ t('Account Hub Users') }}</h2>
-            <p class="text-muted mb-0">{{ t('Approve portal users and manage their local access. Roles come from Account Hub.') }}</p>
+            <p class="text-muted mb-0">{{ t('Hub users appear after their first successful sign-in. Assign their local role here; the default is User.') }}</p>
         </div>
         <button id="add-account-user" class="btn btn-primary" type="button"><i class="bi bi-plus-lg me-1"></i>{{ t('Add Account Hub user') }}</button>
     </div>
@@ -15,7 +15,7 @@
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
                 <thead class="table-dark">
-                    <tr><th>{{ t('Username') }}</th><th>{{ t('Account Hub role') }}</th><th>{{ t('Email') }}</th><th>{{ t('Status') }}</th><th>{{ t('Managed delivery') }}</th><th>{{ t('Actions') }}</th></tr>
+                    <tr><th>{{ t('Username') }}</th><th>{{ t('Local role') }}</th><th>{{ t('Email') }}</th><th>{{ t('Status') }}</th><th>{{ t('Managed delivery') }}</th><th>{{ t('Actions') }}</th></tr>
                 </thead>
                 <tbody id="sub-admin-rows"></tbody>
             </table>
@@ -43,6 +43,13 @@
                     <label class="form-label" for="account-user-email">{{ t('Email (optional)') }}</label>
                     <input id="account-user-email" class="form-control" type="email" autocomplete="email">
                 </div>
+                <div class="mb-3" id="account-user-role-group">
+                    <label class="form-label" for="account-user-role">{{ t('Local role') }}</label>
+                    <select id="account-user-role" class="form-select">
+                        <option value="user">{{ t('User') }}</option>
+                        <option value="sub_admin">{{ t('Sub-admin') }}</option>
+                    </select>
+                </div>
                 <div class="form-check form-switch mb-2">
                     <input id="account-user-disabled" class="form-check-input" type="checkbox">
                     <label class="form-check-label" for="account-user-disabled">{{ t('Disabled') }}</label>
@@ -63,5 +70,5 @@
 {% endblock %}
 {% block script %}
 <script id="sub-admin-page-config" type="application/json">{{ {'accountUsersUrl': url_for('auth.get_account_users')}|tojson }}</script>
-<script src="{{ url_for('static', filename='js/auth/sub_admins.js', v='20260914-1') }}"></script>
+<script src="{{ url_for('static', filename='js/auth/sub_admins.js', v='20260918-1') }}"></script>
 {% endblock %}

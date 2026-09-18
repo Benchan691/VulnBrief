@@ -9,17 +9,13 @@ from auth.store import (
     ADMIN_ROLES,
     ROLE_ADMIN,
     find_user,
-    find_account_hub_user,
     find_user_by_id,
-    sync_account_hub_user,
+    is_local_bootstrap_user,
 )
 from core.i18n import t
 from integrations.account_hub import (
-    AccountHubClient,
-    AccountHubInvalid,
     AccountHubMisconfigured,
     AccountHubUnavailable,
-    SESSION_STORE,
 )
 
 
@@ -37,40 +33,24 @@ def current_user():
         if not current_app.config.get('ACCOUNT_HUB_ENABLED'):
             _clear_session()
             return None
-        token_session = SESSION_STORE.get(session.get('account_hub_session_id'))
-        if token_session is None:
+        hub_uid = session.get('account_hub_uid')
+        if not user_id or not hub_uid:
             _clear_session()
             return None
         try:
-            claims = AccountHubClient(current_app.config).check_tokens(
-                token_session.access_token,
-                token_session.refresh_token,
-            )
-        except AccountHubInvalid:
-            _clear_session()
-            return None
-        try:
-            user = find_user_by_id(token_session.user_id)
+            user = find_user_by_id(user_id)
         except (PyMongoError, RuntimeError):
             _clear_session()
             return None
-        if user is None or user.get('disabled'):
+        if (
+            user is None or user.get('disabled')
+            or user.get('auth_source') != AUTH_SOURCE_ACCOUNT_HUB
+            or str(user.get('account_hub_uid') or '') != str(hub_uid)
+            or user.get('role') not in {'user', 'sub_admin'}
+        ):
             _clear_session()
             return None
-        try:
-            matched_user = find_account_hub_user(claims['uid'], claims['username'])
-            if matched_user is None or matched_user['_id'] != user['_id']:
-                _clear_session()
-                return None
-            user = sync_account_hub_user(matched_user, claims)
-        except (ValueError, PyMongoError):
-            _clear_session()
-            return None
-        if user is None or user.get('disabled'):
-            _clear_session()
-            return None
-        session['user_id'] = str(user['_id'])
-        session['username'] = user.get('username') or claims['username']
+        session['username'] = user.get('username') or ''
         g.current_user = user
         return user
     if user_id:
@@ -99,14 +79,7 @@ def current_user():
     # configured break-glass administrator. This also expires cookies created
     # by the legacy local-login flow before Account Hub was enabled.
     if current_app.config.get('ACCOUNT_HUB_ENABLED'):
-        bootstrap_username = str(
-            current_app.config.get('WEB_AUTH_BOOTSTRAP_USERNAME') or '',
-        ).strip().casefold()
-        if (
-            (user.get('auth_source') or AUTH_SOURCE_LOCAL) != AUTH_SOURCE_LOCAL
-            or user.get('role') != ROLE_ADMIN
-            or str(user.get('username') or '').strip().casefold() != bootstrap_username
-        ):
+        if not is_local_bootstrap_user(user):
             _clear_session()
             return None
 
@@ -116,7 +89,6 @@ def current_user():
 
 
 def _clear_session():
-    SESSION_STORE.remove(session.get('account_hub_session_id'))
     session.clear()
 
 
@@ -190,7 +162,7 @@ def local_admin_required(function):
         user, response = _guarded_user(allow_password_change=True)
         if response is not None:
             return response
-        if user.get('role') != ROLE_ADMIN or user.get('auth_source') == AUTH_SOURCE_ACCOUNT_HUB:
+        if not is_top_admin(user):
             return _forbidden('Local administrator access required.')
         return function(*args, **kwargs)
 
@@ -203,7 +175,7 @@ def admin_required(function):
         user, response = _guarded_user()
         if response is not None:
             return response
-        if user.get('role') not in ADMIN_ROLES:
+        if not is_admin(user):
             return _forbidden()
         return function(*args, **kwargs)
 
@@ -216,7 +188,11 @@ def is_admin(user=None):
             user = current_user()
         except (AccountHubMisconfigured, AccountHubUnavailable):
             return False
-    return bool(user and user.get('role') in ADMIN_ROLES)
+    if not user or user.get('role') not in ADMIN_ROLES:
+        return False
+    if user.get('role') == ROLE_ADMIN:
+        return is_top_admin(user)
+    return True
 
 
 def is_top_admin(user=None):
@@ -225,7 +201,15 @@ def is_top_admin(user=None):
             user = current_user()
         except (AccountHubMisconfigured, AccountHubUnavailable):
             return False
-    return bool(user and user.get('role') == ROLE_ADMIN)
+    if not user or user.get('role') != ROLE_ADMIN:
+        return False
+    # A stale or forged non-local row must never be treated as the portal's
+    # top administrator, even while SSO is disabled for maintenance.
+    if user.get('auth_source') not in (None, AUTH_SOURCE_LOCAL):
+        return False
+    if current_app.config.get('ACCOUNT_HUB_ENABLED'):
+        return is_local_bootstrap_user(user)
+    return True
 
 
 def top_admin_required(function):
@@ -234,7 +218,7 @@ def top_admin_required(function):
         user, response = _guarded_user()
         if response is not None:
             return response
-        if user.get('role') != ROLE_ADMIN:
+        if not is_top_admin(user):
             return _forbidden('Top-level administrator access required.')
         return function(*args, **kwargs)
 
@@ -244,7 +228,7 @@ def top_admin_required(function):
 def admin_data_scope(user=None):
     """Return the server-side ownership filter for admin-managed records."""
     user = user if user is not None else current_user()
-    if user and user.get('role') == ROLE_ADMIN:
+    if is_top_admin(user):
         return {}
     if user and user.get('role') in ADMIN_ROLES and user.get('_id') is not None:
         return {'managed_by_user_id': user['_id']}

@@ -68,18 +68,36 @@ Minimum `.env` for local web:
 | `LOCAL_MONGO_URI` | Local MongoDB (both `web` and `vulnerabilities` databases) |
 | `MONGO_URI` | Optional alias for `LOCAL_MONGO_URI` when both are set |
 | `FLASK_SECRET_KEY` | Session signing |
+| `WEB_AUTH_BOOTSTRAP_USERNAME` | Exact username of the local break-glass administrator |
+| `WEB_AUTH_BOOTSTRAP_PASSWORD` | Local password for that administrator |
 | `TAVILY_API_KEY` / `TAVILY_API_KEYS` | Tavily search (Enriched Weekly) |
 
 To enable Account Hub, set `ACCOUNT_HUB_ENABLED=true` and provide the full
-authorize, token, token-check, logout, client, redirect, and permission mapping
-settings shown in [`.env.example`](.env.example). Account Hub URLs are supplied
-by the Account Hub deployment and are intentionally configured individually.
-While enabled, `/login` uses Account Hub and `/login/local` is reserved for the
-configured local bootstrap administrator. Start with the Account Hub test
-endpoints and promote the same verified settings to production only after a
-successful sign-in, logout, role-mapping, and revocation check.
+password login and token-check URLs shown in [`.env.example`](.env.example).
+While enabled, `/login` verifies the password with Account Hub and admits only
+users whose `roles[].roleName` contains `CVE_SYSTEM`. Their local profile is
+created at first sign-in with the `user` role. The local administrator can set
+`sub_admin` or `user` on the Account Hub Users page. `/login/local` is reserved
+for the configured local bootstrap administrator.
+Set `WEB_AUTH_BOOTSTRAP_USERNAME` to the exact existing local account you intend
+to keep as the break-glass administrator before enabling SSO.
+Add a user to the local list before creating a subscription for an identity
+that has not signed in yet. Start with the Account Hub test endpoints.
+
+For a visual explanation of the merge, open
+[the Account Hub integration guide](docs/account_hub_integration.html).
 
 See **[docs/LOCAL_DEPLOY.md](docs/LOCAL_DEPLOY.md)** for full setup and troubleshooting.
+
+For a development database that contains records from the older schema, run the
+dry-run cleanup audit first:
+
+```sh
+.venv/bin/python scripts/cleanup_account_hub_migration.py \
+  --bootstrap-username admin
+```
+
+Apply only after reviewing the report, with `--apply --confirm`.
 
 TLS certificate files `cert.pem` and `key.pem` are also gitignored; keep them local if your deployment uses them.
 

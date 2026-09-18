@@ -3,7 +3,7 @@ from bson import ObjectId, json_util
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from pymongo.errors import PyMongoError
 
-from core.auth import admin_required, current_user, scoped_admin_query
+from core.auth import admin_required, current_user, scoped_admin_query, top_admin_required
 from core.database import get_web_database
 from reports.enriched.evidence_cache import purge_evidence_cache
 from reports.enriched.search_results_cache import purge_search_cache
@@ -142,7 +142,7 @@ def create_report_job():
 
 
 @report_blueprint.route('/api/reports/evidence-cache/purge', methods=['POST'])
-@admin_required
+@top_admin_required
 def purge_report_evidence_cache():
     try:
         deleted_count = purge_evidence_cache(get_web_database())
@@ -152,7 +152,7 @@ def purge_report_evidence_cache():
 
 
 @report_blueprint.route('/api/reports/search-cache/purge', methods=['POST'])
-@admin_required
+@top_admin_required
 def purge_report_search_cache():
     try:
         deleted_count = purge_search_cache(get_web_database())

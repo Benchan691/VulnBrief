@@ -3,7 +3,15 @@ from unittest.mock import Mock
 import pytest
 
 from app import app
-from auth.store import AUTH_SOURCE_ACCOUNT_HUB, ensure_account_hub_user, upsert_user
+from auth.store import (
+    AUTH_SOURCE_ACCOUNT_HUB,
+    AUTH_SOURCE_LOCAL,
+    ROLE_ADMIN,
+    ROLE_SUB_ADMIN,
+    ensure_account_hub_user,
+    ensure_bootstrap_user,
+    upsert_user,
+)
 from core.database import get_web_database
 from integrations.account_hub import AccountHubInvalid, AccountHubClient
 
@@ -15,16 +23,8 @@ PREFIX = 'account-hub-test-'
 def account_hub_config(monkeypatch):
     values = {
         'ACCOUNT_HUB_ENABLED': True,
-        'ACCOUNT_HUB_AUTHORIZE_URL': 'https://hub.example/authorize',
-        'ACCOUNT_HUB_TOKEN_URL': 'https://hub.example/token',
+        'ACCOUNT_HUB_LOGIN_URL': 'https://hub.example/auth/user/oauth/login',
         'ACCOUNT_HUB_TOKEN_CHECK_URL': 'https://hub.example/check',
-        'ACCOUNT_HUB_LOGOUT_URL': 'https://hub.example/logout',
-        'ACCOUNT_HUB_CLIENT_ID': 'portal',
-        'ACCOUNT_HUB_CLIENT_SECRET': 'secret',
-        'ACCOUNT_HUB_REDIRECT_URI': 'https://portal.example/auth/account-hub/callback',
-        'ACCOUNT_HUB_SCOPE': 'openid',
-        'ACCOUNT_HUB_ADMIN_PERMISSION': 'portal:admin',
-        'ACCOUNT_HUB_SUB_ADMIN_PERMISSION': 'portal:sub-admin',
     }
     for key, value in values.items():
         monkeypatch.setitem(app.config, key, value)
@@ -53,31 +53,22 @@ def _bootstrap_session(client):
         session['username'] = app.config['WEB_AUTH_BOOTSTRAP_USERNAME']
 
 
-def _state(client):
-    with client.session_transaction() as session:
-        return session['account_hub_state']
-
-
-def _claims(username='alice', uid=42, permissions=None):
+def _claims(username='alice', uid=42, permissions=None, role_names=None):
     return {
         'uid': str(uid),
         'username': username,
         'email': f'{username}@example.com',
         'permissions': set(permissions or ()),
+        'role_names': {'CVE_SYSTEM'} if role_names is None else set(role_names),
     }
 
 
-def test_login_callback_binds_approved_user_and_revalidates_every_request(monkeypatch):
+def test_password_login_creates_user_with_default_local_role(monkeypatch):
     client = app.test_client()
-    with app.app_context():
-        ensure_account_hub_user(f'{PREFIX}alice', 'alice@example.com')
-
     begin = client.get('/login?next=/settings')
-    assert begin.status_code == 302
-    assert begin.headers['Location'].startswith('https://hub.example/authorize?')
-    state = _state(client)
-
-    monkeypatch.setattr(AccountHubClient, 'exchange_code', lambda self, code: ('access', 'refresh'))
+    assert begin.status_code == 200
+    assert b'name="username"' in begin.data
+    monkeypatch.setattr(AccountHubClient, 'login', lambda self, username, password, captcha: ('access', 'refresh'))
     monkeypatch.setattr(
         AccountHubClient,
         'check_tokens',
@@ -85,9 +76,11 @@ def test_login_callback_binds_approved_user_and_revalidates_every_request(monkey
             f'{PREFIX}alice', 42, {'portal:sub-admin'},
         ),
     )
-    callback = client.get(f'/auth/account-hub/callback?code=code&state={state}')
-    assert callback.status_code == 302
-    assert callback.headers['Location'].endswith('/settings')
+    logged_in = client.post('/login', data={
+        'username': f'{PREFIX}alice', 'password': 'remote-password', 'next': '/settings',
+    })
+    assert logged_in.status_code == 302
+    assert logged_in.headers['Location'].endswith('/settings')
     with client.session_transaction() as session:
         assert session['auth_method'] == AUTH_SOURCE_ACCOUNT_HUB
         assert session['username'] == f'{PREFIX}alice'
@@ -95,30 +88,201 @@ def test_login_callback_binds_approved_user_and_revalidates_every_request(monkey
     with app.app_context():
         user = get_web_database()['auth'].find_one({'username': f'{PREFIX}alice'})
         assert user['account_hub_uid'] == '42'
-        assert user['role'] == 'sub_admin'
-
-    revoked = Mock(side_effect=AccountHubInvalid('revoked'))
-    monkeypatch.setattr(AccountHubClient, 'check_tokens', revoked)
-    response = client.get('/settings')
-    assert response.status_code == 302
-    assert response.headers['Location'].startswith('/login?next=')
-    with client.session_transaction() as session:
-        assert not session
+        assert user['role'] == 'user'
+    monkeypatch.setattr(AccountHubClient, 'check_tokens', Mock(side_effect=AssertionError('unexpected remote call')))
+    assert client.get('/settings').status_code == 200
 
 
-def test_unknown_account_hub_identity_is_rejected(monkeypatch):
+def test_user_without_cve_system_role_is_rejected(monkeypatch):
     client = app.test_client()
-    client.get('/login')
-    state = _state(client)
-    monkeypatch.setattr(AccountHubClient, 'exchange_code', lambda self, code: ('access', 'refresh'))
+    monkeypatch.setattr(AccountHubClient, 'login', lambda self, username, password, captcha: ('access', 'refresh'))
     monkeypatch.setattr(
         AccountHubClient,
         'check_tokens',
-        lambda self, access, refresh: _claims(f'{PREFIX}unknown', 999),
+        lambda self, access, refresh: _claims(f'{PREFIX}unknown', 999, role_names={'OTHER'}),
     )
-    response = client.get(f'/auth/account-hub/callback?code=code&state={state}')
+    response = client.post('/login', data={'username': f'{PREFIX}unknown', 'password': 'password'})
     assert response.status_code == 403
-    assert b'not approved' in response.data
+    assert b'CVE_SYSTEM' in response.data
+    with app.app_context():
+        assert get_web_database()['auth'].find_one({'username': f'{PREFIX}unknown'}) is None
+
+
+def test_remote_rejection_blocks_login_without_creating_user(monkeypatch):
+    monkeypatch.setattr(AccountHubClient, 'login', Mock(side_effect=AccountHubInvalid('Invalid Account Hub username, password, or CAPTCHA.')))
+    client = app.test_client()
+    response = client.post('/login', data={'username': f'{PREFIX}wrong', 'password': 'wrong'})
+    assert response.status_code == 401
+    with app.app_context():
+        assert get_web_database()['auth'].find_one({'username': f'{PREFIX}wrong'}) is None
+
+
+def test_local_admin_can_assign_and_revoke_sub_admin_role(monkeypatch):
+    username = f'{PREFIX}role-assignment'
+    monkeypatch.setattr(AccountHubClient, 'login', lambda self, name, password, captcha: ('access', 'refresh'))
+    monkeypatch.setattr(AccountHubClient, 'check_tokens', lambda self, access, refresh: _claims(username, 721))
+    member = app.test_client()
+    assert member.post('/login', data={'username': username, 'password': 'password'}).status_code == 302
+    assert member.get('/admin/account-users').status_code == 403
+    admin = app.test_client()
+    _bootstrap_session(admin)
+    users = admin.get('/api/admin/account-users').get_json()['data']
+    item = next(user for user in users if user['username'] == username)
+    assert item['role'] == 'user'
+    update_url = f"/api/admin/account-users/{item['id']}"
+    assert admin.put(update_url, json={'role': 'admin'}).status_code == 400
+    assert admin.put(update_url, json={'role': 'sub_admin'}).status_code == 200
+    assert member.get('/api/admin/account-users').status_code == 403
+    with app.app_context():
+        assert get_web_database()['auth'].find_one({'username': username})['role'] == 'sub_admin'
+    assert member.get('/settings').status_code == 200
+    assert admin.put(update_url, json={'role': 'user'}).status_code == 200
+    assert member.get('/admin/account-users').status_code == 403
+
+
+def test_account_hub_cannot_auto_approve_a_legacy_local_user(monkeypatch):
+    username = f'{PREFIX}legacy-local'
+    with app.app_context():
+        upsert_user(username, 'local-password', auth_source=AUTH_SOURCE_LOCAL)
+    client = app.test_client()
+    monkeypatch.setattr(AccountHubClient, 'login', lambda self, username, password, captcha: ('access', 'refresh'))
+    monkeypatch.setattr(
+        AccountHubClient,
+        'check_tokens',
+        lambda self, access, refresh: _claims(username, 1001),
+    )
+    response = client.post('/login', data={'username': username, 'password': 'remote-password'})
+    assert response.status_code == 403
+    with app.app_context():
+        user = get_web_database()['auth'].find_one({'username': username})
+        assert user['auth_source'] == AUTH_SOURCE_LOCAL
+
+
+def test_account_hub_allowlist_cannot_retain_a_top_admin_role():
+    username = f'{PREFIX}stale-hub-admin'
+    with app.app_context():
+        auth = get_web_database()['auth']
+        auth.insert_one({
+            'username': username,
+            'username_key': username.casefold(),
+            'auth_source': AUTH_SOURCE_ACCOUNT_HUB,
+            'role': ROLE_ADMIN,
+            'password': 'stale',
+        })
+        user = ensure_account_hub_user(username)
+    assert user['role'] == 'user'
+    with app.app_context():
+        stored = get_web_database()['auth'].find_one({'username': username})
+    assert stored['role'] == 'user'
+    assert 'password' not in stored
+
+
+def test_account_hub_user_cannot_access_top_admin_configuration(monkeypatch):
+    client = app.test_client()
+    monkeypatch.setattr(AccountHubClient, 'login', lambda self, username, password, captcha: ('access', 'refresh'))
+    monkeypatch.setattr(
+        AccountHubClient,
+        'check_tokens',
+        lambda self, access, refresh: _claims(
+            f'{PREFIX}delegated', 4242, {'portal:admin'},
+        ),
+    )
+    assert client.post('/login', data={'username': f'{PREFIX}delegated', 'password': 'password'}).status_code == 302
+    response = client.get('/admin/account-users')
+    assert response.status_code == 403
+    assert client.get('/operations').status_code == 403
+    assert client.get('/api/operations/newsletter-editor').status_code == 403
+    assert client.put('/api/operations/newsletter-editor', json={}).status_code == 403
+    assert client.post('/set-news', json={}).status_code == 403
+    assert client.post('/api/reports/evidence-cache/purge').status_code == 403
+    assert client.post('/api/reports/search-cache/purge').status_code == 403
+    with app.app_context():
+        user = get_web_database()['auth'].find_one({'username': f'{PREFIX}delegated'})
+        assert user['role'] == 'user'
+
+
+def test_local_bootstrap_can_sign_in_and_remains_top_admin(monkeypatch):
+    username = f'{PREFIX}local-admin'
+    with app.app_context():
+        upsert_user(username, 'local-password', role=ROLE_ADMIN, auth_source=AUTH_SOURCE_LOCAL)
+    monkeypatch.setitem(app.config, 'WEB_AUTH_BOOTSTRAP_USERNAME', username)
+    client = app.test_client()
+    response = client.post('/login/local', data={
+        'username': username,
+        'password': 'local-password',
+    })
+    assert response.status_code == 302
+    with client.session_transaction() as session:
+        assert session['auth_method'] == AUTH_SOURCE_LOCAL
+    assert client.get('/admin/account-users').status_code == 200
+
+
+def test_account_hub_cannot_replace_local_bootstrap_identity():
+    username = f'{PREFIX}reserved-admin'
+    with app.app_context():
+        upsert_user(username, 'local-password', role=ROLE_ADMIN, auth_source=AUTH_SOURCE_LOCAL)
+        with pytest.raises(ValueError, match='reserved for the local administrator'):
+            ensure_account_hub_user(username)
+
+
+def test_bootstrap_username_is_reserved_even_before_a_local_row_exists():
+    with app.app_context():
+        with pytest.raises(ValueError, match='reserved for the local administrator'):
+            ensure_account_hub_user(app.config['WEB_AUTH_BOOTSTRAP_USERNAME'])
+
+
+def test_bootstrap_startup_never_promotes_a_matching_account_hub_row(monkeypatch):
+    username = f'{PREFIX}hub-collision'
+    with app.app_context():
+        get_web_database()['auth'].insert_one({
+            'username': username,
+            'username_key': username.casefold(),
+            'auth_source': AUTH_SOURCE_ACCOUNT_HUB,
+            'role': 'user',
+            'disabled': False,
+            'pause_managed_subscriptions_when_disabled': False,
+            'must_change_password': False,
+        })
+        monkeypatch.setitem(app.config, 'WEB_AUTH_BOOTSTRAP_USERNAME', username)
+        ensure_bootstrap_user(app.config)
+        user = get_web_database()['auth'].find_one({'username': username})
+    assert user['auth_source'] == AUTH_SOURCE_ACCOUNT_HUB
+    assert user['role'] == 'user'
+
+
+def test_bootstrap_startup_repairs_the_configured_local_record(monkeypatch):
+    username = f'{PREFIX}local-repair'
+    with app.app_context():
+        upsert_user(username, 'local-password', role='user', auth_source=AUTH_SOURCE_LOCAL)
+        monkeypatch.setitem(app.config, 'WEB_AUTH_BOOTSTRAP_USERNAME', username)
+        ensure_bootstrap_user(app.config)
+        user = get_web_database()['auth'].find_one({'username': username})
+    assert user['auth_source'] == AUTH_SOURCE_LOCAL
+    assert user['role'] == ROLE_ADMIN
+    assert user['disabled'] is False
+
+
+def test_bootstrap_startup_does_not_guess_another_local_admin(monkeypatch):
+    username = f'{PREFIX}missing-bootstrap'
+    other = f'{PREFIX}unrelated-admin'
+    with app.app_context():
+        upsert_user(other, 'local-password', role=ROLE_ADMIN, auth_source=AUTH_SOURCE_LOCAL)
+        monkeypatch.setitem(app.config, 'WEB_AUTH_BOOTSTRAP_USERNAME', username)
+        monkeypatch.setitem(app.config, 'WEB_AUTH_BOOTSTRAP_PASSWORD', '')
+        assert ensure_bootstrap_user(app.config) is False
+        user = get_web_database()['auth'].find_one({'username': other})
+    assert user['role'] == ROLE_ADMIN
+    assert user['username'] == other
+
+
+def test_enabling_account_hub_does_not_silently_migrate_local_users():
+    username = f'{PREFIX}legacy-local'
+    with app.app_context():
+        upsert_user(username, 'local-password', role='user', auth_source=AUTH_SOURCE_LOCAL)
+        ensure_bootstrap_user(app.config)
+        user = get_web_database()['auth'].find_one({'username': username})
+    assert user['auth_source'] == AUTH_SOURCE_LOCAL
+    assert user['role'] == 'user'
 
 
 def test_legacy_local_user_cookie_is_expired_when_sso_is_enabled():
@@ -176,6 +340,11 @@ def test_account_hub_subscription_creation_has_no_local_password(monkeypatch):
     monkeypatch.setattr('subscriptions.routes.Mailer', FakeMailer)
     client = app.test_client()
     _bootstrap_session(client)
+    with app.app_context():
+        ensure_account_hub_user(
+            f'{PREFIX}subscriber',
+            f'{PREFIX}subscriber@example.com',
+        )
     response = client.post('/api/subscriptions', json={
         'username': f'{PREFIX}subscriber',
         'emails': [f'{PREFIX}subscriber@example.com'],
@@ -196,21 +365,49 @@ def test_account_hub_subscription_creation_has_no_local_password(monkeypatch):
     assert rejected.status_code == 400
 
 
-def test_logout_hands_account_hub_session_to_global_logout(monkeypatch):
+def test_account_hub_subscription_creation_requires_allowlist_approval():
     client = app.test_client()
+    _bootstrap_session(client)
+    response = client.post('/api/subscriptions', json={
+        'username': f'{PREFIX}not-approved',
+        'emails': [f'{PREFIX}not-approved@example.com'],
+        'team': 'Account Hub',
+        'newsletter_profile': {'enabled': False, 'filters': {}},
+        'report_profile': {'enabled': False, 'filters': {}},
+    })
+    assert response.status_code == 400
+    assert b'must be approved' in response.data
     with app.app_context():
-        ensure_account_hub_user(f'{PREFIX}logout')
-    client.get('/login')
-    state = _state(client)
-    monkeypatch.setattr(AccountHubClient, 'exchange_code', lambda self, code: ('access', 'refresh'))
+        assert get_web_database()['auth'].find_one({
+            'username': f'{PREFIX}not-approved',
+        }) is None
+
+
+def test_account_hub_subscription_cannot_rename_approved_owner_to_unknown_user():
+    from auth.store import ensure_subscription_user, find_user
+
+    username = f'{PREFIX}approved-owner'
+    with app.app_context():
+        approved = ensure_account_hub_user(username)
+        with pytest.raises(ValueError, match='approved before changing its username'):
+            ensure_subscription_user(
+                f'{PREFIX}not-approved',
+                user_id=approved['_id'],
+            )
+        stored = find_user(username)
+        assert stored['_id'] == approved['_id']
+
+
+def test_logout_clears_local_account_hub_session(monkeypatch):
+    client = app.test_client()
+    monkeypatch.setattr(AccountHubClient, 'login', lambda self, username, password, captcha: ('access', 'refresh'))
     monkeypatch.setattr(
         AccountHubClient,
         'check_tokens',
         lambda self, access, refresh: _claims(f'{PREFIX}logout', 123),
     )
-    assert client.get(f'/auth/account-hub/callback?code=code&state={state}').status_code == 302
+    assert client.post('/login', data={'username': f'{PREFIX}logout', 'password': 'password'}).status_code == 302
     response = client.get('/logout')
-    assert response.status_code == 200
-    assert b'https://hub.example/logout' in response.data
+    assert response.status_code == 302
     with client.session_transaction() as session:
         assert not session

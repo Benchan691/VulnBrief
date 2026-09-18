@@ -10,3 +10,4 @@ cert.pem
 key.pem
 
 .codex/
+.account_hub_cleanup/
